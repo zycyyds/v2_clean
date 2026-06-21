@@ -1,0 +1,1436 @@
+{
+  "rules": [
+    {
+      "target_field_path": "病历.人口学.性别",
+      "source_files": [
+        "structured/patients.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "gender"
+      ],
+      "join_keys": [
+        "subject_id"
+      ],
+      "derivation_logic": "保留 patients.gender。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "0503692232840155",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.总胆红素",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "0952c7da48c522b5",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.检查时间",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.charttime 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "0ece11d6f7fe68ab",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "就诊文本.notes[].text",
+      "source_files": [
+        "notes/discharge_notes.csv",
+        "notes/radiology_notes.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "text"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 notes 表保留或聚合 text。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "10e529fb2ec9fa67",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "case_id",
+      "source_files": [],
+      "source_columns": [],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "未找到内置映射，需要由 DataExplorer 根据源表样本补充。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "low",
+      "rule_id": "141f264c3c3f640b",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].项目时间",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.charttime 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "1d4e535e018eab12",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].itemid",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.itemid 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "1d99fb0e7515617c",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "住院用药[].结束时间",
+      "source_files": [
+        "structured/prescriptions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stoptime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 prescriptions.stoptime 抽取住院用药字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "1fa0464da7fbcabe",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "诊断列表[].是否主诊断",
+      "source_files": [
+        "structured/diagnoses_icd.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "seq_num",
+        "icd_code",
+        "icd_version"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 diagnoses_icd 中的诊断编码；seq_num=1 标记主诊断。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "24959de87bdf394c",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "subject_id",
+      "source_files": [],
+      "source_columns": [],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "未找到内置映射，需要由 DataExplorer 根据源表样本补充。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "low",
+      "rule_id": "30abfd57cf5bb484",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.总蛋白",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "31ee9c6484ef6ee7",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.检验套餐",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.itemid 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "32c776c8802a2fd6",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "体格测量.身高_cm",
+      "source_files": [
+        "hosp/omr.csv",
+        "structured/omr.csv",
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "charttime",
+        "result_name",
+        "result_value",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 OMR 或 chartevents 抽取身高、体重、BMI。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "36a8ce3d0967d423",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.住院天数",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "admittime",
+        "dischtime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "由 admissions.dischtime - admissions.admittime 计算住院天数。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "377aeebef92db0f7",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "住院用药[].药名",
+      "source_files": [
+        "structured/prescriptions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "drug"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 prescriptions.drug 抽取住院用药字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "424f342a1cbd58ed",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.人口学.种族",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "race"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 admissions.race。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "4bf3a2f9165cc238",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.白蛋白",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "4c6ece8c2bbc82ae",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "体格测量.体重_kg",
+      "source_files": [
+        "hosp/omr.csv",
+        "structured/omr.csv",
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "charttime",
+        "result_name",
+        "result_value",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 OMR 或 chartevents 抽取身高、体重、BMI。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "57244ea15ecdeeef",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.首次测量时间",
+      "source_files": [
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid",
+        "charttime",
+        "valuenum",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 ICU chartevents 筛选生命体征 itemid。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "5801129ce96c3c36",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.呼吸_次每分",
+      "source_files": [
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid",
+        "charttime",
+        "valuenum",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 ICU chartevents 筛选生命体征 itemid。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "5b7d72a718cdf408",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "体格测量.BMI",
+      "source_files": [
+        "hosp/omr.csv",
+        "structured/omr.csv",
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "charttime",
+        "result_name",
+        "result_value",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 OMR 或 chartevents 抽取身高、体重、BMI。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "6153a13d5238101c",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].参考下限",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "ref_range_lower"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.ref_range_lower 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "64fec9ac9f216382",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].结果文本",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "value"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.value 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "68f35d7afe2a41e7",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].单位",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.valueuom 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "6c535d506bc631d3",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.脉搏_次每分",
+      "source_files": [
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid",
+        "charttime",
+        "valuenum",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 ICU chartevents 筛选生命体征 itemid。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "6f5f9fa069175c3b",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].参考上限",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "ref_range_upper"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.ref_range_upper 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "72b83809ec694b42",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "体格测量.测量时间",
+      "source_files": [
+        "hosp/omr.csv",
+        "structured/omr.csv",
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "charttime",
+        "result_name",
+        "result_value",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 OMR 或 chartevents 抽取身高、体重、BMI。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "7753742739648023",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "就诊文本.notes[].note_id",
+      "source_files": [
+        "notes/discharge_notes.csv",
+        "notes/radiology_notes.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "note_id"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 notes 表保留或聚合 note_id。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "77f16b68241cb81c",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "诊断列表[].icd_title",
+      "source_files": [
+        "structured/diagnoses_icd.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "icd_code",
+        "icd_version",
+        "long_title"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "用 diagnoses_icd.icd_code/icd_version 关联 ICD 标题映射。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_column_missing",
+      "confidence": "high",
+      "rule_id": "810a44aa4387e6f2",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "就诊文本.num_notes",
+      "source_files": [
+        "notes/discharge_notes.csv",
+        "notes/radiology_notes.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "note_id"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "按 hadm_id 统计 note_id 数量。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "8442a0abe25b24b6",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.入院科室",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "admission_location"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "使用 admissions.admission_location 作为入院来源/科室近似字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "84b5f4d8f709383f",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.碱性磷酸酶",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "85fcd88e8a363168",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.出院时间",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "dischtime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 admissions.dischtime。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "8611e1f0ac90a3ff",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.体温_C",
+      "source_files": [
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid",
+        "charttime",
+        "valuenum",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 ICU chartevents 筛选生命体征 itemid。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "88897a1d2849f2b4",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "住院用药[].给药途径",
+      "source_files": [
+        "structured/prescriptions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "route"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 prescriptions.route 抽取住院用药字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "8a3534fced12d43a",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.AST",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "8f441a61b2bdcd34",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].异常标记",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "flag"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.flag 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "94cfbdfa14e86d95",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.死亡时间",
+      "source_files": [
+        "structured/admissions.csv",
+        "structured/patients.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "deathtime",
+        "dod",
+        "hospital_expire_flag"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "优先保留 admissions.deathtime；缺失时参考 patients.dod 或 hospital_expire_flag。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "9ed635e4e405835e",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "诊断列表[].icd_version",
+      "source_files": [
+        "structured/diagnoses_icd.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "seq_num",
+        "icd_code",
+        "icd_version"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 diagnoses_icd 中的诊断编码；seq_num=1 标记主诊断。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "a07d8f06aa03c1fb",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.ALT",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "a2f21d5075bce0d4",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "hadm_id",
+      "source_files": [],
+      "source_columns": [],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "未找到内置映射，需要由 DataExplorer 根据源表样本补充。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "low",
+      "rule_id": "a2fef2c48967592e",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.人口学.年龄_入院时",
+      "source_files": [
+        "structured/patients.csv",
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "anchor_age",
+        "anchor_year",
+        "admittime"
+      ],
+      "join_keys": [
+        "subject_id"
+      ],
+      "derivation_logic": "用 patients anchor_age/anchor_year 结合 admissions.admittime 估计入院年龄。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "b5aa31a6cb6ac07e",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].名称",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "itemid",
+        "label"
+      ],
+      "join_keys": [
+        "itemid"
+      ],
+      "derivation_logic": "用 labevents.itemid 关联 d_labitems.label 获取检验名称。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_column_missing",
+      "confidence": "high",
+      "rule_id": "b7ab6af42b9aaf04",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "住院用药[].剂量值",
+      "source_files": [
+        "structured/prescriptions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "dose_val_rx"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 prescriptions.dose_val_rx 抽取住院用药字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "c2840984ac153abb",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.GGT",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "c5311747ce70226d",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.血压_mmHg.舒张压",
+      "source_files": [
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid",
+        "charttime",
+        "valuenum",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 ICU chartevents 筛选生命体征 itemid。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "cdc5ca59e93728a7",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.出院去向",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "discharge_location"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 admissions.discharge_location。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "ce33ed05423a8985",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "住院用药[].开始时间",
+      "source_files": [
+        "structured/prescriptions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "starttime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 prescriptions.starttime 抽取住院用药字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "d9647b856edaf23f",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.入院类型",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "admission_type"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 admissions.admission_type。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "ddc8aee8c6a60d7d",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "病历.入院时间",
+      "source_files": [
+        "structured/admissions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "admittime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 admissions.admittime。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "df453550d3a13ae9",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.直接胆红素",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "e15cfaf3219bfdbd",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "就诊文本.notes[].charttime",
+      "source_files": [
+        "notes/discharge_notes.csv",
+        "notes/radiology_notes.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "charttime"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 notes 表保留或聚合 charttime。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "e4bb2b5ee20bb165",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "诊断列表[].icd_code",
+      "source_files": [
+        "structured/diagnoses_icd.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "seq_num",
+        "icd_code",
+        "icd_version"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "保留 diagnoses_icd 中的诊断编码；seq_num=1 标记主诊断。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "e6e6d5aa25bf84b5",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "住院用药[].剂量单位",
+      "source_files": [
+        "structured/prescriptions.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "dose_unit_rx"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 prescriptions.dose_unit_rx 抽取住院用药字段。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "eadea9795ba19397",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.肝病相关指标.INR",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents 筛选肝病相关检验 itemid 并聚合。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "f8be38e6294753f0",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "实验室检验.*.项目明细[].结果数值",
+      "source_files": [
+        "structured/labevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "valuenum"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 labevents.valuenum 抽取检验字段，并按 subject_id/hadm_id 对齐。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "fad5ff4957ebebc8",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "生命体征.血压_mmHg.收缩压",
+      "source_files": [
+        "icu/chartevents.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid",
+        "charttime",
+        "valuenum",
+        "valueuom"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "itemid"
+      ],
+      "derivation_logic": "从 ICU chartevents 筛选生命体征 itemid。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_not_found",
+      "confidence": "high",
+      "rule_id": "fd30eb3b5905393e",
+      "created_at": "2026-06-18T12:00:27"
+    },
+    {
+      "target_field_path": "就诊文本.notes[].type",
+      "source_files": [
+        "notes/discharge_notes.csv",
+        "notes/radiology_notes.csv"
+      ],
+      "source_columns": [
+        "subject_id",
+        "hadm_id",
+        "note_type"
+      ],
+      "join_keys": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "derivation_logic": "从 notes 表保留或聚合 note_type。",
+      "examples_or_failure_cases": [],
+      "validation_metric_delta": 0.0,
+      "status": "draft",
+      "source_status": "source_schema_available",
+      "confidence": "high",
+      "rule_id": "ff0f9260e0eb33d6",
+      "created_at": "2026-06-18T12:00:27"
+    }
+  ],
+  "created_at": "2026-06-18T12:00:27"
+}

@@ -1,0 +1,39 @@
+# v2 配置文件 —— 公开版（不包含真实 key）
+# 真实 key 请放到 model_config.local.yaml（已 .gitignore），会自动覆盖这里的值
+#
+# 配置块分两部分：
+#   react_planner  —— 必填（Planner/Explorer/Engineer 三个 ReActAgent 共用）
+#   embedding      —— 选填（仅当 extract_text_features skill 被调用时使用）
+#                     大多数 v2 任务不会触发，可以整段注释掉
+#
+# 模型选择优先级（从高到低）：
+#   1. 环境变量（OPENAI_API_KEY / OPENAI_API_BASE / MODEL_NAME）
+#   2. model_config.local.yaml
+#   3. 本文件默认值（占位符，会让程序报错）
+
+
+# ════════════════════════════════════════════════════════════════
+# Part 1: react_planner（必填）—— 所有 ReActAgent 推理用
+# ════════════════════════════════════════════════════════════════
+react_planner:
+  api_key: "YOUR_API_KEY_HERE"
+  base_url: "https://yunwu.ai/v1"
+  model: "gpt-5.1"
+  temperature: 0.0
+  seed: 666
+
+
+# ════════════════════════════════════════════════════════════════
+# Part 2: embedding（选填）—— extract_text_features skill 用
+# ════════════════════════════════════════════════════════════════
+# v2 默认流程（处理结构化 CSV）不会调到这里。
+# 只有数据包含非结构化文本（放射报告、出院小结）需要 LLM 抽字段 + 语义聚类时才用。
+#
+# 这个块只配 embedding 端点；step2-3 需要的 chat 端点会自动从环境变量
+# OPENAI_API_KEY / OPENAI_API_BASE 读取（与 react_planner 共享），不需要重复配。
+#
+# 如果你的任务永远不调 extract_text_features skill，把整段注释掉即可。
+embedding:
+  api_key: "YOUR_API_KEY_HERE"
+  base_url: "https://yunwu.ai/v1"
+  model: "text-embedding-3-small"
