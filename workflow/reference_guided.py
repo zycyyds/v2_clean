@@ -5,9 +5,13 @@ import csv
 import gzip
 import hashlib
 import json
+import os
 import re
+import signal
 import shutil
+import tempfile
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -29,6 +33,10 @@ from agent_tools.context import EngineerToolContext
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
 from lib.agent_runtime import format_message_content, make_user_msg
 from workflow.reference_splits import infer_dataset_profile
+from workflow.reference_evaluation import (
+    SCORER_VERSION,
+    evaluate_reference_directory_package as evaluate_balanced_reference_directory_package,
+)
 from workflow.skill_adapter import persist_validated_variants, restore_bundle_variants
 
 
@@ -84,6 +92,9 @@ def _migrate_reference_experiment_state(state: dict[str, Any]) -> dict[str, Any]
     if int(migrated.get("schema_version") or 1) >= 2:
         migrated.setdefault("attempts", [])
         migrated.setdefault("rounds", [])
+        migrated.setdefault("checkpoints", [])
+        migrated.setdefault("sessions", [])
+        migrated.setdefault("abandoned_checkpoints", [])
         migrated.setdefault("best_attempt", 0)
         migrated.setdefault("best_feedback", "")
         migrated.setdefault("consecutive_valid_no_improvement", 0)
@@ -147,6 +158,9 @@ def _migrate_reference_experiment_state(state: dict[str, Any]) -> dict[str, Any]
             "best_feedback": best_feedback,
             "consecutive_valid_no_improvement": _trailing_valid_non_improvements(attempts),
             "invalid_attempt_count": invalid_attempt_count,
+            "checkpoints": [],
+            "sessions": [],
+            "abandoned_checkpoints": [],
         }
     )
     migrated.pop("consecutive_no_improvement", None)
@@ -177,9 +191,7 @@ def _finish_reference_attempt_state(
     updated = _migrate_reference_experiment_state(state)
     gate_payload = gate or {"valid": True, "issues": []}
     valid = bool(gate_payload.get("valid", True)) and score is not None
-    improved = valid and (
-        not updated.get("rounds") or float(score) > float(updated.get("best_score") or 0.0)
-    )
+    improved = valid and float(score) > float(updated.get("best_score") or 0.0)
     attempt = {
         "attempt": attempt_index,
         "status": "evaluated" if valid else "invalid",
@@ -393,6 +405,7 @@ def _train_regression_schema_issues(report: dict[str, Any], changed_files: list[
         "key_coverage",
         "value_recall",
         "passed",
+        "failure_reason",
     }
     for relative in changed_files:
         item = entries.get(relative)
@@ -406,6 +419,8 @@ def _train_regression_schema_issues(report: dict[str, Any], changed_files: list[
             continue
         if not isinstance(item.get("passed"), bool):
             issues.append(f"train regression passed must be boolean for {relative}")
+        if item.get("passed") is False and not str(item.get("failure_reason") or "").strip():
+            issues.append(f"train regression failure_reason is required when failed for {relative}")
         for key in ("train_rows", "reference_rows"):
             value = item.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -513,6 +528,55 @@ def infer_reference_contract(dataset_split: str | Path) -> dict[str, Any]:
     return contract
 
 
+def _ensure_run_manifest(
+    config: ReferenceGuidedConfig,
+    contract: dict[str, Any],
+    experiment_dir: str | Path,
+) -> dict[str, Any]:
+    experiment = Path(experiment_dir).expanduser().resolve()
+    experiment.mkdir(parents=True, exist_ok=True)
+    manifest_path = experiment / "run_manifest.json"
+    split = Path(config.dataset_split).expanduser().resolve()
+    key_hashes: dict[str, str] = {}
+    for split_name in ("train", "validation", "test"):
+        path = split / split_name / "keys.csv"
+        key_hashes[split_name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+    immutable = {
+        "dataset_split": str(split),
+        "dataset_profile": str(contract.get("dataset_profile") or ""),
+        "reference_type": str(contract.get("reference_type") or ""),
+        "key_column": str(contract.get("key_column") or ""),
+        "key_file_sha256": key_hashes,
+        "task_prompt_sha256": hashlib.sha256(config.task_text.encode("utf-8")).hexdigest(),
+        "scorer_version": SCORER_VERSION,
+    }
+    run_id = hashlib.sha256(
+        json.dumps(immutable, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    expected = {
+        "schema_version": 1,
+        "workflow": "reference-guided-train-validate",
+        "run_id": run_id,
+        **immutable,
+    }
+    if manifest_path.is_file():
+        existing = _load_json(manifest_path)
+        mismatches = [key for key, value in expected.items() if existing.get(key) != value]
+        if mismatches:
+            raise ValueError(
+                "run manifest does not match this experiment: " + ", ".join(sorted(mismatches))
+            )
+        return existing
+    existing_entries = [path for path in experiment.iterdir() if path.name != manifest_path.name]
+    if existing_entries:
+        raise ValueError(
+            "historical experiment directories are not imported; choose a new empty experiment directory"
+        )
+    manifest = {**expected, "created_at": datetime.now().isoformat(timespec="seconds")}
+    _write_json(manifest_path, manifest)
+    return manifest
+
+
 class ReferenceGuidedWorkflow:
     def __init__(self, config: ReferenceGuidedConfig) -> None:
         self.config = config.normalized()
@@ -522,6 +586,7 @@ class ReferenceGuidedWorkflow:
     def run_sync(self) -> dict[str, Any]:
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
         contract = infer_reference_contract(self.config.dataset_split)
+        _ensure_run_manifest(self.config, contract, self.experiment_dir)
         _write_json(self.contract_path, contract)
         if contract.get("status") != "supported":
             return {
@@ -560,6 +625,354 @@ def _copy_active_bundle_for_candidate(active_dir: Path, candidate: Path) -> None
     shutil.copytree(active_dir, candidate, ignore=_ignore)
 
 
+def _archive_promoted_round(
+    *,
+    experiment_dir: str | Path,
+    candidate: str | Path,
+    evaluation: dict[str, Any],
+    round_index: int,
+    attempt_index: int,
+    score: float,
+) -> Path:
+    experiment = Path(experiment_dir).expanduser().resolve()
+    candidate_dir = Path(candidate).expanduser().resolve()
+    script_bundle = _update_candidate_script_bundle(
+        candidate_dir,
+        round_index=round_index,
+        attempt_index=attempt_index,
+    )
+    rounds_dir = experiment / "rounds"
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    round_dir = rounds_dir / f"round_{round_index:04d}"
+    prepared_round = rounds_dir / f".round_{round_index:04d}.staging"
+    if prepared_round.exists():
+        shutil.rmtree(prepared_round)
+    prepared_round.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(script_bundle, prepared_round / "script_bundle")
+    result_package = candidate_dir / "results" / "result_package"
+    if not result_package.is_dir():
+        raise RuntimeError(f"promoted candidate has no result_package: {result_package}")
+    shutil.copytree(result_package, prepared_round / "validation_result")
+    evaluation_report = Path(str(evaluation.get("evaluation_report") or "")).expanduser()
+    if evaluation_report.is_file():
+        shutil.copytree(evaluation_report.resolve().parent, prepared_round / "evaluation")
+    else:
+        evaluation_dir = prepared_round / "evaluation"
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+        for name, raw_path in sorted(evaluation.items()):
+            source = Path(str(raw_path or "")).expanduser()
+            if source.is_file():
+                shutil.copy2(source, evaluation_dir / f"{name}{source.suffix}")
+    bundle_hash = _directory_sha256(script_bundle)
+    result_hash = _directory_sha256(result_package)
+    provenance = {
+        "schema_version": 1,
+        "status": "SUCCESS",
+        "round": round_index,
+        "attempt": attempt_index,
+        "score": score,
+        "candidate": str(candidate_dir),
+        "script_bundle_sha256": bundle_hash,
+        "validation_result_sha256": result_hash,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    _write_json(prepared_round / "provenance.json", provenance)
+    _commit_prepared_directory(prepared_round, round_dir)
+    return round_dir
+
+
+def _update_candidate_script_bundle(
+    candidate: Path,
+    *,
+    round_index: int,
+    attempt_index: int,
+) -> Path:
+    bundle = candidate / "script_bundle"
+    bundle.mkdir(parents=True, exist_ok=True)
+    for name in ("capabilities", "adapter_bundle"):
+        source = candidate / name
+        if not source.is_dir():
+            continue
+        target = bundle / name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+    for name in (
+        "skill_bindings.json",
+        "skill_registry.json",
+        "skill_packaging_plan.json",
+        "adapter_bundle_manifest.json",
+    ):
+        source = candidate / name
+        if source.is_file():
+            shutil.copy2(source, bundle / name)
+
+    workspace_target = bundle / "workspace"
+    workspace_target.mkdir(parents=True, exist_ok=True)
+    workspaces = sorted(
+        (path for path in (candidate / "agent_runs").rglob("workspace") if path.is_dir())
+        if (candidate / "agent_runs").is_dir()
+        else [],
+        key=lambda path: path.stat().st_mtime_ns,
+    )
+    if workspaces:
+        _merge_script_workspace(workspaces[-1], workspace_target)
+
+    runtime_target = bundle / "runtime" / f"round_{round_index:04d}"
+    runtime_target.mkdir(parents=True, exist_ok=True)
+    if (candidate / "agent_runs").is_dir():
+        for source in sorted(path for path in (candidate / "agent_runs").rglob("*") if path.is_file()):
+            if source.name not in {
+                "runtime_trace.jsonl",
+                "context_summary.md",
+                "agent_response.txt",
+                "pipeline_skill_usage_check.json",
+                "train_regression_report.json",
+                "feedback_response.json",
+            }:
+                continue
+            relative = source.relative_to(candidate / "agent_runs")
+            target = runtime_target / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+    manifest_path = bundle / "manifest.json"
+    if manifest_path.exists():
+        manifest_path.unlink()
+    file_hashes = _relative_file_hashes(bundle)
+    _write_json(
+        manifest_path,
+        {
+            "schema_version": 1,
+            "status": "SUCCESS",
+            "latest_round": round_index,
+            "source_attempt": attempt_index,
+            "file_count": len(file_hashes),
+            "files": file_hashes,
+            "bundle_sha256": _hash_manifest(file_hashes),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    return bundle
+
+
+def _merge_script_workspace(source: Path, target: Path) -> None:
+    allowed_suffixes = {
+        ".py",
+        ".json",
+        ".jsonl",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".md",
+        ".txt",
+        ".sh",
+    }
+    excluded_parts = {"result_package", "artifacts", "__pycache__", ".pytest_cache"}
+    for path in sorted(item for item in source.rglob("*") if item.is_file()):
+        relative = path.relative_to(source)
+        if excluded_parts.intersection(relative.parts) or path.suffix.casefold() not in allowed_suffixes:
+            continue
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+
+
+def _hash_manifest(file_hashes: dict[str, str]) -> str:
+    payload = json.dumps(file_hashes, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _directory_sha256(root: Path) -> str:
+    return _hash_manifest(_relative_file_hashes(root))
+
+
+def _replace_directory_atomically(source: Path, target: Path) -> None:
+    source = source.expanduser().resolve()
+    target = target.expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    prepared = target.parent / f".{target.name}.next"
+    backup = target.parent / f".{target.name}.previous"
+    for stale in (prepared, backup):
+        if stale.exists():
+            shutil.rmtree(stale)
+    shutil.copytree(source, prepared)
+    source_hash = _directory_sha256(source)
+    if _directory_sha256(prepared) != source_hash:
+        shutil.rmtree(prepared, ignore_errors=True)
+        raise RuntimeError(f"prepared directory does not match source: {source}")
+    _commit_prepared_directory(prepared, target)
+
+
+def _commit_prepared_directory(prepared: Path, target: Path) -> None:
+    prepared = prepared.expanduser().resolve()
+    target = target.expanduser().resolve()
+    backup = target.parent / f".{target.name}.previous"
+    if backup.exists():
+        shutil.rmtree(backup)
+    had_target = target.exists()
+    try:
+        with _defer_sigint():
+            if had_target:
+                os.replace(target, backup)
+            os.replace(prepared, target)
+        _fsync_directory(target.parent)
+    except BaseException:
+        if target.exists():
+            shutil.rmtree(target)
+        if backup.exists():
+            os.replace(backup, target)
+        if prepared.exists():
+            shutil.rmtree(prepared)
+        _fsync_directory(target.parent)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
+
+
+@contextmanager
+def _defer_sigint() -> Iterator[None]:
+    previous_mask: set[signal.Signals] | None = None
+    if hasattr(signal, "pthread_sigmask"):
+        try:
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        except (OSError, ValueError):
+            previous_mask = None
+    try:
+        yield
+    finally:
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _checkpoint_fingerprint(
+    frozen_script_bundle: Path,
+    contract: dict[str, Any],
+    *,
+    scorer_version: str,
+) -> str:
+    test_keys_text = str((contract.get("paths") or {}).get("test_keys") or "")
+    test_keys = Path(test_keys_text).expanduser().resolve() if test_keys_text else None
+    test_key_hash = (
+        hashlib.sha256(test_keys.read_bytes()).hexdigest()
+        if test_keys is not None and test_keys.is_file()
+        else ""
+    )
+    payload = {
+        "frozen_script_bundle_sha256": _directory_sha256(frozen_script_bundle),
+        "test_keys_sha256": test_key_hash,
+        "scorer_version": scorer_version,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _next_checkpoint_index(root: Path, state: dict[str, Any]) -> int:
+    indices = {
+        int(item.get("checkpoint") or 0)
+        for item in state.get("checkpoints") or []
+        if int(item.get("checkpoint") or 0) > 0
+    }
+    if root.is_dir():
+        for path in root.glob("checkpoint_*_best_round_*"):
+            match = re.fullmatch(r"checkpoint_(\d+)_best_round_\d+", path.name)
+            if match:
+                indices.add(int(match.group(1)))
+    return max(indices, default=0) + 1
+
+
+def _promote_active_bundle_atomically(
+    *,
+    active_dir: str | Path,
+    candidate: str | Path,
+    state_path: str | Path,
+    state: dict[str, Any],
+    journal_path: str | Path,
+) -> None:
+    active = Path(active_dir).expanduser().resolve()
+    candidate_dir = Path(candidate).expanduser().resolve()
+    state_file = Path(state_path).expanduser().resolve()
+    journal = Path(journal_path).expanduser().resolve()
+    if journal.is_file():
+        _recover_interrupted_promotion(journal, state_file)
+    prepared = active.parent / f".{active.name}.next"
+    backup = active.parent / f".{active.name}.previous"
+    for stale in (prepared, backup):
+        if stale.exists():
+            shutil.rmtree(stale)
+    shutil.copytree(candidate_dir, prepared)
+    candidate_hash = _directory_sha256(candidate_dir)
+    if _directory_sha256(prepared) != candidate_hash:
+        shutil.rmtree(prepared, ignore_errors=True)
+        raise RuntimeError("prepared active bundle does not match promoted candidate")
+    payload = {
+        "schema_version": 1,
+        "stage": "prepared",
+        "active_dir": str(active),
+        "backup_dir": str(backup),
+        "prepared_dir": str(prepared),
+        "candidate_sha256": candidate_hash,
+        "best_attempt": int(state.get("best_attempt") or 0),
+        "best_round": int(state.get("best_round") or 0),
+        "had_active": active.exists(),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    _write_json(journal, payload)
+    with _defer_sigint():
+        if active.exists():
+            os.replace(active, backup)
+        payload["stage"] = "old_moved"
+        _write_json(journal, payload)
+        os.replace(prepared, active)
+        payload["stage"] = "new_active"
+        _write_json(journal, payload)
+        _write_json(state_file, state)
+        payload["stage"] = "state_committed"
+        _write_json(journal, payload)
+    if backup.exists():
+        shutil.rmtree(backup)
+    journal.unlink(missing_ok=True)
+    _fsync_directory(active.parent)
+
+
+def _recover_interrupted_promotion(journal_path: str | Path, state_path: str | Path) -> None:
+    journal = Path(journal_path).expanduser().resolve()
+    if not journal.is_file():
+        return
+    payload = _load_json(journal)
+    active = Path(str(payload["active_dir"])).expanduser().resolve()
+    backup = Path(str(payload["backup_dir"])).expanduser().resolve()
+    prepared = Path(str(payload["prepared_dir"])).expanduser().resolve()
+    state_file = Path(state_path).expanduser().resolve()
+    state = _load_json(state_file) if state_file.is_file() else {}
+    state_committed = int(state.get("best_attempt") or 0) == int(payload.get("best_attempt") or -1)
+    active_matches = (
+        active.is_dir()
+        and str(payload.get("candidate_sha256") or "")
+        and _directory_sha256(active) == str(payload.get("candidate_sha256"))
+    )
+    if state_committed and active_matches:
+        if backup.exists():
+            shutil.rmtree(backup)
+        if prepared.exists():
+            shutil.rmtree(prepared)
+        journal.unlink(missing_ok=True)
+        _fsync_directory(active.parent)
+        return
+
+    if backup.is_dir():
+        if active.exists():
+            shutil.rmtree(active)
+        os.replace(backup, active)
+    elif not bool(payload.get("had_active")) and active.exists():
+        shutil.rmtree(active)
+    if prepared.exists():
+        shutil.rmtree(prepared)
+    journal.unlink(missing_ok=True)
+    _fsync_directory(active.parent)
+
+
 class ReferenceCodeAgentRuntime:
     """Codex-style single-agent runtime for reference-guided package materialization."""
 
@@ -577,19 +990,43 @@ class ReferenceCodeAgentRuntime:
         self.active_dir = self.experiment_dir / "active_bundle"
         self.candidates_dir = self.experiment_dir / "candidates"
         self.evaluations_dir = self.experiment_dir / "evaluations"
+        self.test_checkpoints_dir = self.experiment_dir / "test_checkpoints"
         self.state_path = self.experiment_dir / "experiment_state.json"
+        self.promotion_journal_path = self.experiment_dir / "promotion_journal.json"
 
     def run_sync(self) -> dict[str, Any]:
         if not self.state_path.exists():
             self._initialize()
+        _recover_interrupted_promotion(self.promotion_journal_path, self.state_path)
         raw_state = _load_json(self.state_path)
         if int(raw_state.get("schema_version") or 1) < 2:
             backup = self.experiment_dir / "experiment_state.v1.json"
             if not backup.exists():
                 _write_json(backup, raw_state)
         state = _migrate_reference_experiment_state(raw_state)
+        pending_text = str(state.pop("pending_checkpoint", "") or "")
+        if pending_text:
+            pending = Path(pending_text).expanduser().resolve()
+            shutil.rmtree(pending / "test_evaluation", ignore_errors=True)
+            (pending / "checkpoint_report.json").unlink(missing_ok=True)
+            state.setdefault("abandoned_checkpoints", []).append(
+                {
+                    "checkpoint_dir": str(pending),
+                    "status": "abandoned_on_resume",
+                    "recovered_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
         state["status"] = "active"
         state.pop("termination_reason", None)
+        state["consecutive_valid_no_improvement"] = 0
+        state.setdefault("sessions", []).append(
+            {
+                "session": len(state.get("sessions") or []) + 1,
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "starting_attempt": len(state.get("attempts") or []) + 1,
+                "starting_round": len(state.get("rounds") or []) + 1,
+            }
+        )
         _write_json(self.state_path, state)
         promotions_this_run = 0
         attempts_this_run = 0
@@ -604,94 +1041,140 @@ class ReferenceCodeAgentRuntime:
                 target_score=self.config.target_score,
             )
             if stop_reason:
-                self._freeze(stop_reason)
-                state = _load_json(self.state_path)
+                try:
+                    state = self._checkpoint_and_test(stop_reason, state)
+                except KeyboardInterrupt:
+                    state = self._mark_interrupted("second_interrupt")
                 break
 
             attempt_index = len(state.get("attempts", [])) + 1
-            candidate = self._begin_attempt(attempt_index)
-            public_feedback_text = str(state.get("best_feedback") or "")
-            public_feedback = Path(public_feedback_text) if public_feedback_text else None
-            if public_feedback is not None and not public_feedback.is_file():
-                public_feedback = None
-            previous_outcome = self._latest_attempt_outcome(state)
-            package: dict[str, Any] = {}
+            candidate = self.candidates_dir / f"attempt_{attempt_index:04d}"
             attempts_this_run += 1
             try:
-                package = asyncio.run(
-                    self._run_attempt(
-                        candidate=candidate,
-                        attempt_index=attempt_index,
-                        public_feedback=public_feedback,
-                        previous_outcome=previous_outcome,
-                    )
-                )
-            except Exception as exc:
-                gate = {
-                    "schema_version": 1,
-                    "valid": False,
-                    "status": "NEEDS_REPAIR",
-                    "issues": [f"agent attempt failed: {type(exc).__name__}: {exc}"],
-                }
-                state, _ = _finish_reference_attempt_state(
-                    state,
+                candidate = self._begin_attempt(attempt_index)
+                state, improved = self._execute_attempt(
+                    state=state,
+                    candidate=candidate,
                     attempt_index=attempt_index,
-                    score=None,
-                    candidate_dir=str(candidate),
-                    result=package,
-                    evaluation={},
-                    gate=gate,
                 )
-                self._persist_attempt_state(state, candidate, gate)
-                continue
+            except KeyboardInterrupt:
+                _recover_interrupted_promotion(self.promotion_journal_path, self.state_path)
+                state = _migrate_reference_experiment_state(_load_json(self.state_path))
+                state = self._cancel_uncommitted_attempt(state, attempt_index, candidate)
+                try:
+                    state = self._checkpoint_and_test("cancelled_by_user", state)
+                except KeyboardInterrupt:
+                    state = self._mark_interrupted("second_interrupt")
+                break
+            if improved:
+                promotions_this_run += 1
+        return self._result(state)
 
-            gate = _reference_candidate_quality_gate(
-                active=self.active_dir,
-                candidate=candidate,
-                contract=self.contract,
-                repair_targets=candidate / "repair_targets.json" if (candidate / "repair_targets.json").is_file() else None,
-            )
-            _write_json(candidate / "candidate_quality_gate.json", gate)
-            if not gate["valid"]:
-                state, _ = _finish_reference_attempt_state(
-                    state,
+    def _execute_attempt(
+        self,
+        *,
+        state: dict[str, Any],
+        candidate: Path,
+        attempt_index: int,
+    ) -> tuple[dict[str, Any], bool]:
+        public_feedback_text = str(state.get("best_feedback") or "")
+        public_feedback = Path(public_feedback_text) if public_feedback_text else None
+        if public_feedback is not None and not public_feedback.is_file():
+            public_feedback = None
+        previous_outcome = self._latest_attempt_outcome(state)
+        package: dict[str, Any] = {}
+        try:
+            package = asyncio.run(
+                self._run_attempt(
+                    candidate=candidate,
                     attempt_index=attempt_index,
-                    score=None,
-                    candidate_dir=str(candidate),
-                    result=package,
-                    evaluation={},
-                    gate=gate,
+                    public_feedback=public_feedback,
+                    previous_outcome=previous_outcome,
                 )
-                self._persist_attempt_state(state, candidate, gate)
-                continue
-
-            evaluation = evaluate_reference_directory_package(
-                result_package=package["result_package"],
-                validation_reference_root=self.contract["paths"].get("validation_reference_root")
-                or self.contract["paths"].get("validation_reference_private_root")
-                or self.contract["paths"].get("validation_reference_private")
-                or None,
-                output_dir=self.evaluations_dir / f"attempt_{attempt_index:04d}",
-                key_column=str(self.contract.get("key_column") or self.contract.get("record_grain") or ""),
             )
-            report = _load_json(evaluation["evaluation_report"])
-            score = float((report.get("metrics") or {}).get("composite_score") or 0.0)
-            state, improved = _finish_reference_attempt_state(
+        except Exception as exc:
+            gate = {
+                "schema_version": 1,
+                "valid": False,
+                "status": "NEEDS_REPAIR",
+                "issues": [f"agent attempt failed: {type(exc).__name__}: {exc}"],
+            }
+            state, _ = _finish_reference_attempt_state(
                 state,
                 attempt_index=attempt_index,
-                score=score,
+                score=None,
                 candidate_dir=str(candidate),
                 result=package,
-                evaluation=evaluation,
+                evaluation={},
                 gate=gate,
             )
-            if improved:
-                if self.active_dir.exists():
-                    shutil.rmtree(self.active_dir)
-                shutil.copytree(candidate, self.active_dir)
-                promotions_this_run += 1
             self._persist_attempt_state(state, candidate, gate)
-        return self._result(state)
+            return state, False
+
+        gate = _reference_candidate_quality_gate(
+            active=self.active_dir,
+            candidate=candidate,
+            contract=self.contract,
+            repair_targets=(
+                candidate / "repair_targets.json"
+                if (candidate / "repair_targets.json").is_file()
+                else None
+            ),
+        )
+        _write_json(candidate / "candidate_quality_gate.json", gate)
+        if not gate["valid"]:
+            state, _ = _finish_reference_attempt_state(
+                state,
+                attempt_index=attempt_index,
+                score=None,
+                candidate_dir=str(candidate),
+                result=package,
+                evaluation={},
+                gate=gate,
+            )
+            self._persist_attempt_state(state, candidate, gate)
+            return state, False
+
+        evaluation = evaluate_reference_directory_package(
+            result_package=package["result_package"],
+            validation_reference_root=self.contract["paths"].get("validation_reference_root")
+            or self.contract["paths"].get("validation_reference_private_root")
+            or self.contract["paths"].get("validation_reference_private")
+            or None,
+            output_dir=self.evaluations_dir / f"attempt_{attempt_index:04d}",
+            key_column=str(self.contract.get("key_column") or self.contract.get("record_grain") or ""),
+        )
+        report = _load_json(evaluation["evaluation_report"])
+        score = float((report.get("metrics") or {}).get("composite_score") or 0.0)
+        state, improved = _finish_reference_attempt_state(
+            state,
+            attempt_index=attempt_index,
+            score=score,
+            candidate_dir=str(candidate),
+            result=package,
+            evaluation=evaluation,
+            gate=gate,
+        )
+        if improved:
+            round_dir = _archive_promoted_round(
+                experiment_dir=self.experiment_dir,
+                candidate=candidate,
+                evaluation=evaluation,
+                round_index=int(state.get("best_round") or len(state.get("rounds", []))),
+                attempt_index=attempt_index,
+                score=score,
+            )
+            state["rounds"][-1]["formal_round_dir"] = str(round_dir)
+            state["rounds"][-1]["script_bundle"] = str(round_dir / "script_bundle")
+            _promote_active_bundle_atomically(
+                active_dir=self.active_dir,
+                candidate=candidate,
+                state_path=self.state_path,
+                state=state,
+                journal_path=self.promotion_journal_path,
+            )
+        self._persist_attempt_state(state, candidate, gate)
+        return state, improved
 
     def _initialize(self) -> None:
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
@@ -723,6 +1206,9 @@ class ReferenceCodeAgentRuntime:
                 "invalid_attempt_count": 0,
                 "attempts": [],
                 "rounds": [],
+                "checkpoints": [],
+                "sessions": [],
+                "abandoned_checkpoints": [],
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -735,10 +1221,73 @@ class ReferenceCodeAgentRuntime:
         return candidate
 
     def _latest_attempt_outcome(self, state: dict[str, Any]) -> Path | None:
-        latest = (state.get("attempts") or [{}])[-1]
-        candidate_dir = str(latest.get("candidate_dir") or "")
-        path = Path(candidate_dir) / "attempt_outcome.json" if candidate_dir else None
-        return path if path is not None and path.is_file() else None
+        for latest in reversed(state.get("attempts") or []):
+            if latest.get("status") == "cancelled_by_user":
+                continue
+            candidate_dir = str(latest.get("candidate_dir") or "")
+            path = Path(candidate_dir) / "attempt_outcome.json" if candidate_dir else None
+            if path is not None and path.is_file():
+                return path
+        return None
+
+    def _cancel_uncommitted_attempt(
+        self,
+        state: dict[str, Any],
+        attempt_index: int,
+        candidate: Path,
+    ) -> dict[str, Any]:
+        state = _migrate_reference_experiment_state(state)
+        if any(int(item.get("attempt") or 0) == attempt_index for item in state.get("attempts") or []):
+            return state
+
+        next_round_index = len(state.get("rounds") or []) + 1
+        orphan_staging = self.experiment_dir / "rounds" / f".round_{next_round_index:04d}.staging"
+        shutil.rmtree(orphan_staging, ignore_errors=True)
+        orphan_round = self.experiment_dir / "rounds" / f"round_{next_round_index:04d}"
+        provenance = orphan_round / "provenance.json"
+        if provenance.is_file():
+            payload = _load_json(provenance)
+            if int(payload.get("attempt") or 0) == attempt_index:
+                shutil.rmtree(orphan_round)
+
+        gate = {
+            "schema_version": 1,
+            "valid": False,
+            "status": "CANCELLED",
+            "issues": ["validation attempt cancelled by user before atomic commit"],
+        }
+        state.setdefault("attempts", []).append(
+            {
+                "attempt": attempt_index,
+                "status": "cancelled_by_user",
+                "valid": False,
+                "score": None,
+                "improved": False,
+                "candidate_dir": str(candidate),
+                "producer": "",
+                "result": {},
+                "evaluation": {},
+                "gate": gate,
+            }
+        )
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self._persist_attempt_state(state, candidate, gate)
+        return state
+
+    def _mark_interrupted(self, reason: str) -> dict[str, Any]:
+        _recover_interrupted_promotion(self.promotion_journal_path, self.state_path)
+        state = _migrate_reference_experiment_state(_load_json(self.state_path))
+        pending_text = str(state.pop("pending_checkpoint", "") or "")
+        if pending_text:
+            pending = Path(pending_text).expanduser().resolve()
+            shutil.rmtree(pending / "test_evaluation", ignore_errors=True)
+            (pending / "checkpoint_report.json").unlink(missing_ok=True)
+            state["interrupted_checkpoint"] = str(pending)
+        state["status"] = "interrupted"
+        state["termination_reason"] = reason
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_json(self.state_path, state)
+        return state
 
     async def _run_attempt(
         self,
@@ -988,7 +1537,7 @@ class ReferenceCodeAgentRuntime:
             "【最终必须生成的核心结果】",
             "- result_package/ 目录",
             "- result_package 下与 train/reference 同构的 cohort/、features/ 等子文件",
-            "- train_regression_report.json，格式必须包含 schema_version=2、status=SUCCESS、files 列表；files 每项必须包含 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall 和布尔值 passed，并覆盖本轮修改的每个业务文件",
+            "- train_regression_report.json，格式必须包含 schema_version=2、status=SUCCESS、files 列表；files 每项必须包含 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、布尔值 passed 和 failure_reason，并覆盖本轮修改的每个业务文件",
             "- 不要求生成 reference.csv；不要为了凑 reference.csv 把多文件 reference 强行合成一张表",
             "",
             "【可选运行记录】",
@@ -1096,22 +1645,139 @@ class ReferenceCodeAgentRuntime:
             },
         )
 
-    def _freeze(self, reason: str) -> None:
-        frozen = self.experiment_dir / "frozen_bundle"
-        if frozen.exists():
-            shutil.rmtree(frozen)
-        shutil.copytree(self.active_dir, frozen)
-        state = _load_json(self.state_path)
-        state["status"] = "frozen"
+    def _checkpoint_and_test(self, reason: str, state: dict[str, Any]) -> dict[str, Any]:
+        state = _migrate_reference_experiment_state(state)
         state["termination_reason"] = reason
-        state["frozen_bundle"] = str(frozen)
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        best_round = int(state.get("best_round") or 0)
+        best_attempt = int(state.get("best_attempt") or 0)
+        if best_round < 1 or best_attempt < 1:
+            state["status"] = "checkpointed_without_best"
+            _write_json(self.state_path, state)
+            return state
+
+        checkpoint_index = _next_checkpoint_index(self.test_checkpoints_dir, state)
+        checkpoint_dir = (
+            self.test_checkpoints_dir
+            / f"checkpoint_{checkpoint_index:04d}_best_round_{best_round:04d}"
+        )
+        checkpoint_dir.mkdir(parents=True, exist_ok=False)
+        state["status"] = "checkpointing"
+        state["pending_checkpoint"] = str(checkpoint_dir)
+        _write_json(self.state_path, state)
+        frozen_script_bundle = checkpoint_dir / "frozen_script_bundle"
+        frozen_bundle = self.experiment_dir / "frozen_bundle"
+        fingerprint = ""
+        try:
+            formal_bundle = (
+                self.experiment_dir
+                / "rounds"
+                / f"round_{best_round:04d}"
+                / "script_bundle"
+            )
+            if not formal_bundle.is_dir():
+                formal_bundle = self.active_dir / "script_bundle"
+            if not formal_bundle.is_dir():
+                raise RuntimeError(f"formal best script bundle is missing: {formal_bundle}")
+
+            _replace_directory_atomically(formal_bundle, frozen_script_bundle)
+            _replace_directory_atomically(self.active_dir, frozen_bundle)
+            fingerprint = _checkpoint_fingerprint(
+                frozen_script_bundle,
+                self.contract,
+                scorer_version=SCORER_VERSION,
+            )
+            prior = next(
+                (
+                    item
+                    for item in reversed(state.get("checkpoints") or [])
+                    if item.get("fingerprint") == fingerprint
+                    and item.get("test_status") in {"success", "reused"}
+                ),
+                None,
+            )
+            if prior is not None:
+                report = {
+                    "schema_version": 1,
+                    "workflow": "reference-checkpoint-test",
+                    "test_status": "reused",
+                    "reused_from": prior.get("checkpoint_dir", ""),
+                    "fingerprint": fingerprint,
+                    "best_round": best_round,
+                    "best_attempt": best_attempt,
+                    "validation_best_score": state.get("best_score", 0.0),
+                    "metrics": prior.get("metrics") or {},
+                    "evaluation": prior.get("evaluation") or {},
+                }
+                report_path = checkpoint_dir / "checkpoint_report.json"
+                _write_json(report_path, report)
+                report["report_path"] = str(report_path)
+            else:
+                from workflow.reference_test_stage import (
+                    ReferenceCheckpointTestConfig,
+                    ReferenceCheckpointTestRuntime,
+                )
+
+                state["status"] = "testing"
+                _write_json(self.state_path, state)
+                report = ReferenceCheckpointTestRuntime(
+                    ReferenceCheckpointTestConfig(
+                        dataset_split=self.config.dataset_split,
+                        experiment_dir=self.experiment_dir,
+                        checkpoint_dir=checkpoint_dir,
+                        frozen_script_bundle=frozen_script_bundle,
+                        best_round=best_round,
+                        best_attempt=best_attempt,
+                        best_score=float(state.get("best_score") or 0.0),
+                        max_iters=self.config.max_iters,
+                    )
+                ).run_sync()
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            report = {
+                "schema_version": 1,
+                "workflow": "reference-checkpoint-test",
+                "test_status": "test_failed",
+                "best_round": best_round,
+                "best_attempt": best_attempt,
+                "validation_best_score": state.get("best_score", 0.0),
+                "metrics": {},
+                "evaluation": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            report_path = checkpoint_dir / "checkpoint_report.json"
+            _write_json(report_path, report)
+            report["report_path"] = str(report_path)
+
+        checkpoint_record = {
+            "checkpoint": checkpoint_index,
+            "checkpoint_dir": str(checkpoint_dir),
+            "fingerprint": fingerprint,
+            "scorer_version": SCORER_VERSION,
+            "best_round": best_round,
+            "best_attempt": best_attempt,
+            "validation_best_score": state.get("best_score", 0.0),
+            "test_status": report.get("test_status", "test_failed"),
+            "report_path": report.get("report_path", str(checkpoint_dir / "checkpoint_report.json")),
+            "metrics": report.get("metrics") or {},
+            "evaluation": report.get("evaluation") or {},
+            "reused_from": report.get("reused_from", ""),
+        }
+        state.setdefault("checkpoints", []).append(checkpoint_record)
+        state["status"] = "checkpointed"
+        state.pop("pending_checkpoint", None)
+        state["latest_checkpoint"] = str(checkpoint_dir)
+        state["frozen_bundle"] = str(frozen_bundle) if frozen_bundle.is_dir() else ""
         state["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _write_json(self.state_path, state)
+        return state
 
     def _result(self, state: dict[str, Any]) -> dict[str, Any]:
         latest_attempt = (state.get("attempts") or [{}])[-1]
         latest_round = (state.get("rounds") or [{}])[-1]
         frozen = self.experiment_dir / "frozen_bundle"
+        latest_checkpoint = (state.get("checkpoints") or [{}])[-1]
         return {
             "status": state.get("status", "active"),
             "termination_reason": state.get("termination_reason", ""),
@@ -1129,6 +1795,9 @@ class ReferenceCodeAgentRuntime:
             "latest_attempt": latest_attempt,
             "active_bundle": str(self.active_dir),
             "frozen_bundle": str(frozen) if frozen.is_dir() else "",
+            "checkpoint_count": len(state.get("checkpoints", [])),
+            "latest_checkpoint": latest_checkpoint,
+            "test_status": latest_checkpoint.get("test_status", ""),
         }
 
 
@@ -1177,7 +1846,7 @@ def _reference_code_agent_system_prompt(skill_manifest_text: str, context: Engin
 6. 原始 skills/、lib/、workflow/ 和 teacher pipeline 始终只读；需要实现时只在 workspace 写脚本或 adapter。
 7. 不要调用 execute_current_extraction_task；不要调用 finalize_result_package；不要把固定 workflow 当兜底。
 8. train reference 是公开示例，可用 CompareArtifact 回归；validation reference/private report 禁止读取。
-9. 最终核心产物是完整 result_package 和机器可判定的 train_regression_report.json；后者必须以 schema_version=2、status=SUCCESS 覆盖每个修改业务文件，并为每项提供 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、passed。reference_shape_contract、skill_usage_report 是可选记录。
+9. 最终核心产物是完整 result_package 和机器可判定的 train_regression_report.json；后者必须以 schema_version=2、status=SUCCESS 覆盖每个修改业务文件，并为每项提供 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、passed、failure_reason。通过时 failure_reason 可为空，失败时必须写明原因。reference_shape_contract、skill_usage_report 是可选记录。
 10. ExecutePython 绝不能直接写回 workspace/result_package。第 2 轮及以后，先在 step OUTPUT_DIR/result_package 复制 current best 的完整包并替换修复文件；第 1 轮从零生成完整包。然后必须用 PublishDirectoryArtifact 发布整个目录到 workspace。
 11. validation result_package 必须通过 ValidateResultPackage，或至少生成可由宿主基础校验的同构目录文件；不要求 reference.csv 或 package_manifest.json。
 12. 未涉及本轮 repair target 的 current best 业务文件不得改变；只改 manifest、报告或 adapter 而不改反馈相关业务文件的候选不会进入隐藏评估。
@@ -2137,39 +2806,13 @@ def evaluate_reference_directory_package(
     output_dir: str | Path,
     key_column: str = "",
 ) -> dict[str, str]:
-    """Evaluate a result package by comparing files against a hidden reference directory."""
-    output = Path(output_dir).expanduser().resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    package_root = Path(result_package).expanduser().resolve()
-    reference_root = Path(validation_reference_root).expanduser().resolve() if validation_reference_root else None
-    if reference_root is None or not reference_root.is_dir():
-        report = {
-            "schema_version": 1,
-            "status": "NEEDS_REPAIR",
-            "mode": "reference_directory",
-            "metrics": {
-                "file_coverage": 0.0,
-                "column_coverage": 0.0,
-                "row_coverage": 0.0,
-                "value_consistency": 0.0,
-                "composite_score": 0.0,
-            },
-            "issues": ["validation reference directory is unavailable"],
-        }
-    else:
-        report = _reference_directory_score_report(package_root, reference_root, key_column=key_column)
-    public_feedback = _public_feedback_from_directory_report(report)
-    report_path = output / "evaluation_report.json"
-    public_path = output / "public_feedback.json"
-    private_path = output / "private_report.json"
-    _write_json(report_path, report)
-    _write_json(public_path, public_feedback)
-    _write_json(private_path, {**report, "privacy": "private_reference_directory_metrics"})
-    return {
-        "evaluation_report": str(report_path),
-        "public_feedback": str(public_path),
-        "private_report": str(private_path),
-    }
+    """Evaluate with the fixed-weight, row-aligned schema-v2 scorer."""
+    return evaluate_balanced_reference_directory_package(
+        result_package=result_package,
+        validation_reference_root=validation_reference_root,
+        output_dir=output_dir,
+        key_column=key_column,
+    )
 
 
 def _reference_directory_score_report(package_root: Path, reference_root: Path, *, key_column: str) -> dict[str, Any]:
@@ -3346,4 +3989,32 @@ def _load_json(path: str | Path) -> dict[str, Any]:
 def _write_json(path: str | Path, value: Any) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        _fsync_directory(target.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)

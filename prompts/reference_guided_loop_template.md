@@ -76,9 +76,9 @@
 2. 本轮修改必须对应 public_feedback 里的具体缺口。
 3. 不能重新从 train/reference 学一套全新的逻辑。
 4. train 回归只用于确认本轮修改没有破坏基础结构。
-5. 只要 validation composite_score 高于历史 best，就应晋升当前 candidate。
+5. 只有 validation composite_score 严格高于历史 best，当前 candidate 才会成为正式 loop 并晋升。
 6. 如果 validation 分数没有提升，保留上一轮 best，不要用本轮结果覆盖 active bundle。
-7. 连续两轮没有提升或没有可执行修复目标时，应冻结 best bundle。
+7. 下降或持平只记录为有效 attempt；连续两个有效但未提升的 attempt 才停止。门禁失败的无效 attempt 不计入 patience。
 
 【Validation 输出要求】
 1. 必须处理 validation keys 中全部 <VALIDATION_KEY_COUNT> 个 <KEY_COLUMN>。
@@ -88,7 +88,7 @@
 5. 成功前必须真实读取或验证最终 result_package。
 
 【报告要求】
-1. train_regression_report.json 需要说明每个文件的 train 行数、reference 行数、误差比例、是否通过、边界差异原因。
+1. train_regression_report.json 必须使用 schema_version=2；每个修改文件至少包含 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、passed、failure_reason。通过时 failure_reason 可以为空，失败时必须写明原因。
 2. skill_usage_report.json 需要说明调用、跳过、适配或派生 skill 的理由。
 3. result_package_validation_report.json 需要记录 result_package 结构、文件、行数、key 覆盖率。
 4. 如果创建或修改 adapter/fork，必须记录到当前 experiment bundle，不得写入全局 skills/。

@@ -1,6 +1,6 @@
 # MIMIC ICU Mortality Reference Agent
 
-这个项目只保留一条 MIMIC-IV ICU mortality 数据包复现链路：从公开的 train reference 学习转换规则，在 hidden validation 上迭代 adapter，最后冻结最佳 adapter 并评估测试集。
+这个项目只保留一条 MIMIC-IV ICU mortality 数据包复现链路：从公开的 train reference 学习转换规则，在 hidden validation 上迭代并沉淀脚本，停止后自动用全新上下文的同类 Agent 处理 test 并私有评分。
 
 ## 环境
 
@@ -9,7 +9,7 @@ conda env create -f environment.yml
 conda activate py310
 ```
 
-训练验证阶段需要在 `model_config.local.yaml` 配置模型访问凭据；该文件只在本机保存，不能提交。数据划分、既有结果复评和测试阶段运行已冻结 adapter 时不读取该配置。
+Validation Agent 和自动 Test Agent 需要在 `model_config.local.yaml` 配置模型访问凭据；该文件只在本机保存，不能提交。数据划分、评分器和手工兼容测试入口本身不调用模型。
 
 ## 主链路
 
@@ -28,9 +28,9 @@ python main.py \
 
 输出目录必须包含 `train/`、`validation/` 和 `test/`。Agent 只能读取 `train/raw`、`train/reference`、`validation/raw` 和 validation keys；validation/test 的 reference 都由宿主评分器私有读取。
 
-### 2. 三轮训练验证
+### 2. 训练验证与自动 Test
 
-使用 [reference_guided_loop_template.md](/Users/mac/PycharmProjects/v2_clean/prompts/reference_guided_loop_template.md) 生成任务提示词后运行：
+使用 [reference_guided_loop_template.md](prompts/reference_guided_loop_template.md) 生成任务提示词后运行：
 
 ```bash
 python main.py \
@@ -42,9 +42,26 @@ python main.py \
   "<reference-guided task prompt>"
 ```
 
-每轮只会在 `experiment-dir` 内创建或修改 adapter/fork；只有 validation composite score 提升时才会晋升 `active_bundle`。连续两轮无提升会冻结最佳 bundle。
+`--round-limit` 只统计分数严格提升的正式 loop。下降、持平和门禁失败只记录为 attempt；默认连续两个有效但未提升的 attempt 才停止，无效 attempt 不占 patience。每个正式 loop 会归档累计 `script_bundle`、validation 结果、评分和 provenance。
 
-### 3. 冻结 adapter 的测试集评估
+Validation 因 `round-limit`、patience、`max-attempts`、`target-score` 自然停止后，会自动从最新正式 best 创建 checkpoint，并在同一 Python 进程中用全新 memory/toolkit/workspace 的 `ReferenceCodeAgent` 处理 test。Validation 阶段第一次按 `Ctrl+C` 也会取消当前未提交 attempt 并进入该流程；Test 阶段再次按 `Ctrl+C` 才终止整个程序。
+
+自动输出位于：
+
+```text
+test_checkpoints/checkpoint_XXXX_best_round_XXXX/
+  frozen_script_bundle/
+  agent_runs/reference_code_agent/
+  test_run/result_package/
+  test_evaluation/
+  checkpoint_report.json
+```
+
+新评分器对 validation 和 test 使用同一套 schema-v2 规则：`20% core + 60% feature + 20% summary`。每个文件内部为 `10% Schema F1 + 20% Key/行结构 F1 + 40% 对齐后逐行单元格 F1 + 30% 完整行 F1`；文件和列使用固定等权，不受 chart 行数影响。
+
+### 3. 手工兼容测试入口
+
+正常主链路不需要 `--adapter-script`。仅在手工复评一个已有独立 adapter 时使用：
 
 ```bash
 python main.py \
@@ -54,7 +71,7 @@ python main.py \
   --adapter-script experiments/mimic_icu_mortality_5000test_from_best_0_9603/build_result_package.py
 ```
 
-测试结果写入 `test_run/result_package`，评分报告写入 `test_evaluation/` 和 `reference_test_stage_report.json`。当前冻结 adapter 在 5000 例测试集上的 composite score 为 `0.9435`；训练验证最佳分数 `0.9603` 保留在历史实验目录中。
+测试结果写入 `test_run/result_package`，评分报告写入 `test_evaluation/` 和 `reference_test_stage_report.json`。旧报告保留原评分含义；新实验只使用 schema-v2 评分器，不重写历史分数。
 
 ## 保留的 Skills
 
