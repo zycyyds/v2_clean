@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+.conda_holoclean_py37_x64/
+.conda_pkgs/
+
+# v2 本机私有配置（真实 API key）
+model_config.local.yaml
+
+# v2 运行产物（中间 CSV、日志、agent_runs、code_outputs）
+output/
+program/output/
+experiments/
+
+# 本地数据集与验证/示例数据，不上传 GitHub
+mimic*/
+mimic-*/
+*-processed/
+!skills/mimic_*/
+!skills/mimic_*/skill.py
+
+# 系统
+.DS_Store
+Icon?
+*.swp
+.idea/
+.vscode/
+.claude/
