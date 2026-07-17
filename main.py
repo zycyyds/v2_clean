@@ -94,7 +94,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         choices=(
             "prepare-reference-splits",
+            "prepare-correction-split",
             "reference-guided-train-validate",
+            "reference-guided-correct",
             "reference-test-evaluate",
         ),
         help="要运行的主链路阶段。",
@@ -117,6 +119,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--split-counts", default="")
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--split-key", default="")
+    parser.add_argument("--source-archive", default="", help="纠错数据集来源压缩包。")
+    parser.add_argument("--train-count", type=int, default=10, help="纠错标准示例 stay 数。")
     return parser.parse_args(argv)
 
 
@@ -177,6 +181,39 @@ def run_reference_guided_train_validate(args: argparse.Namespace) -> None:
     _print_result(result)
 
 
+def run_prepare_correction_split(args: argparse.Namespace) -> None:
+    _required(args, "source_archive", "split_output")
+    from workflow.correction_dataset import build_correction_dataset
+
+    _print_result(
+        build_correction_dataset(
+            args.source_archive,
+            args.split_output,
+            train_count=args.train_count,
+        )
+    )
+
+
+def run_reference_guided_correct(args: argparse.Namespace) -> None:
+    _required(args, "dataset_split", "experiment_dir")
+    if not args.input.strip():
+        raise SystemExit("reference-guided-correct 需要任务提示词")
+    from workflow.reference_correction import (
+        ReferenceCorrectionConfig,
+        ReferenceCorrectionWorkflow,
+    )
+
+    result = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=args.dataset_split,
+            experiment_dir=args.experiment_dir,
+            task_text=args.input,
+            max_iters=args.max_iters,
+        )
+    ).run_sync()
+    _print_result(result)
+
+
 def run_reference_test_evaluate(args: argparse.Namespace) -> None:
     _required(args, "dataset_split", "experiment_dir", "adapter_script")
     from workflow.reference_test_stage import ReferenceTestStageConfig, run_reference_test_stage
@@ -197,7 +234,9 @@ def main(argv: list[str] | None = None) -> None:
     print(f"日志保存至: {log_path}")
     runners = {
         "prepare-reference-splits": run_prepare_reference_splits,
+        "prepare-correction-split": run_prepare_correction_split,
         "reference-guided-train-validate": run_reference_guided_train_validate,
+        "reference-guided-correct": run_reference_guided_correct,
         "reference-test-evaluate": run_reference_test_evaluate,
     }
     runners[args.workflow](args)
