@@ -1,6 +1,6 @@
 ---
 name: pipeline_extract_proc_features
-description: Use when ReferenceCodeAgent needs MIMIC procedure or operation features from procedures_icd, d_icd_procedures, or ICU procedure events.
+description: Use when Data Cleaning Agent needs MIMIC procedure or operation features from procedures_icd, d_icd_procedures, or ICU procedure events.
 ---
 
 # pipeline_extract_proc_features

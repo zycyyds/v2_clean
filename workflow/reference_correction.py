@@ -195,7 +195,7 @@ class ReferenceCorrectionWorkflow:
             }
 
         phase_manifest_path = (
-            self.experiment / "agent_runs/reference_code_agent/manifest.json"
+            self.experiment / "agent_runs/data_cleaning_agent/manifest.json"
         )
         phase_manifest = (
             json.loads(phase_manifest_path.read_text(encoding="utf-8"))
@@ -304,10 +304,10 @@ class ReferenceCorrectionWorkflow:
 
     def _run_agent_session(self) -> Path:
         agent_runs = self.experiment / "agent_runs"
-        phase = init_phase_session(agent_runs, "reference_code_agent")
+        phase = init_phase_session(agent_runs, "data_cleaning_agent")
         phase_root = Path(phase["phase_root"])
         run_id = "reference_guided_correction"
-        set_phase_context(run_id, agent_runs, "reference_code_agent", phase_root)
+        set_phase_context(run_id, agent_runs, "data_cleaning_agent", phase_root)
         contract_path = phase_root / "sanitized_correction_contract.json"
         _write_json(contract_path, self.sanitized_contract)
         resume_context_path: Path | None = None
@@ -336,14 +336,14 @@ class ReferenceCorrectionWorkflow:
             _remove_fixed_reference_incompatible_tools(toolkit)
             model, formatter = make_reference_model()
             agent = ReActAgent(
-                name="ReferenceCodeAgent",
+                name="Data Cleaning Agent",
                 sys_prompt=_correction_system_prompt(context),
                 model=model,
                 formatter=formatter,
                 toolkit=toolkit,
                 memory=create_reference_memory(
                     {
-                        "phase_name": "reference_code_agent",
+                        "phase_name": "data_cleaning_agent",
                         "phase_root": str(phase_root),
                         "run_id": run_id,
                         "run_root": str(agent_runs),
@@ -360,7 +360,7 @@ class ReferenceCorrectionWorkflow:
             (phase_root / "agent_response.txt").write_text(response_text, encoding="utf-8")
             package = _latest_result_package_dir(phase_root)
             if package is None:
-                raise RuntimeError("ReferenceCodeAgent did not publish workspace/result_package")
+                raise RuntimeError("Data Cleaning Agent did not publish workspace/result_package")
             return package
         finally:
             clear_phase_context()
@@ -446,7 +446,7 @@ def validate_correction_result_package(
 def _correction_system_prompt(context: EngineerToolContext) -> str:
     roots = "\n".join(f"- {path}" for path in context.read_roots)
     return f"""\
-你是 ReferenceCodeAgent，当前执行一次独立的 reference-guided 数据纠错任务。
+你是 Data Cleaning Agent，当前执行一次独立的 reference-guided 数据纠错任务。
 
 你只能读取：
 {roots}

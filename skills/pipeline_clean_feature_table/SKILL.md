@@ -1,6 +1,6 @@
 ---
 name: pipeline_clean_feature_table
-description: Use when ReferenceCodeAgent needs to merge cohort and feature CSVs into a cleaned MIMIC feature table before writing custom table assembly code.
+description: Use when Data Cleaning Agent needs to merge cohort and feature CSVs into a cleaned MIMIC feature table before writing custom table assembly code.
 ---
 
 # pipeline_clean_feature_table

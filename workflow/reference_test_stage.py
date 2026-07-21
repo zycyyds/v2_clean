@@ -82,7 +82,7 @@ class ReferenceCheckpointTestConfig:
 
 
 class ReferenceCheckpointTestRuntime:
-    """Run a fresh ReferenceCodeAgent in test mode, then evaluate after it exits."""
+    """Run a fresh Data Cleaning Agent in test mode, then evaluate after it exits."""
 
     def __init__(self, config: ReferenceCheckpointTestConfig) -> None:
         self.config = config.normalized()
@@ -204,10 +204,10 @@ class ReferenceCheckpointTestRuntime:
             )
 
     def _run_agent_session(self) -> Path:
-        phase = init_phase_session(self.agent_runs_dir, "reference_code_agent")
+        phase = init_phase_session(self.agent_runs_dir, "data_cleaning_agent")
         phase_root = Path(phase["phase_root"])
         run_id = f"reference_code_test_checkpoint_{self.config.best_round:04d}"
-        set_phase_context(run_id, self.agent_runs_dir, "reference_code_agent", phase_root)
+        set_phase_context(run_id, self.agent_runs_dir, "data_cleaning_agent", phase_root)
         sanitized_contract_path = phase_root / "sanitized_test_contract.json"
         _write_json(sanitized_contract_path, self.sanitized_contract)
         read_roots = self._read_roots(sanitized_contract_path)
@@ -231,14 +231,14 @@ class ReferenceCheckpointTestRuntime:
             _remove_fixed_reference_incompatible_tools(toolkit)
             model, formatter = make_reference_model()
             agent = ReActAgent(
-                name="ReferenceCodeAgent",
+                name="Data Cleaning Agent",
                 sys_prompt=_checkpoint_test_system_prompt(context),
                 model=model,
                 formatter=formatter,
                 toolkit=toolkit,
                 memory=create_reference_memory(
                     {
-                        "phase_name": "reference_code_agent",
+                        "phase_name": "data_cleaning_agent",
                         "phase_root": str(phase_root),
                         "run_id": run_id,
                         "run_root": str(self.agent_runs_dir),
@@ -276,7 +276,7 @@ class ReferenceCheckpointTestRuntime:
                     break
                 prompt = _test_repair_prompt(gate, context.workspace_dir)
             if runner_spec is None or not runner_spec.is_file():
-                raise RuntimeError("ReferenceCodeAgent produced no runner_spec.json")
+                raise RuntimeError("Data Cleaning Agent produced no runner_spec.json")
             return runner_spec
         finally:
             clear_phase_context()
@@ -300,7 +300,7 @@ class ReferenceCheckpointTestRuntime:
     def _task_text(self, phase_root: Path, sanitized_contract_path: Path) -> str:
         paths = self.sanitized_contract["paths"]
         return f"""\
-请以 ReferenceCodeAgent 的 test 模式完成当前 checkpoint 的一次测试数据处理。
+请以 Data Cleaning Agent 的 test 模式完成当前 checkpoint 的一次测试数据处理。
 
 【唯一允许的当前实验输入】
 - 冻结脚本包（只读）：{self.bundle}
@@ -401,7 +401,7 @@ def _build_sanitized_test_contract(contract: dict[str, Any]) -> dict[str, Any]:
 def _checkpoint_test_system_prompt(context: EngineerToolContext) -> str:
     read_roots = "\n".join(f"- {path}" for path in context.read_roots)
     return f"""\
-你是 ReferenceCodeAgent。当前是 test checkpoint 阶段，使用与 validation attempt 相同的 Agent 实现，但拥有全新的 memory、toolkit 和 workspace。
+你是 Data Cleaning Agent。当前是 test checkpoint 阶段，使用与 validation attempt 相同的 Agent 实现，但拥有全新的 memory、toolkit 和 workspace。
 
 你只能读取以下授权路径：
 {read_roots}

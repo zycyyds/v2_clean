@@ -117,7 +117,7 @@ def test_native_semantic_compression_keeps_verified_rules_and_recent_context(
             summary_schema=ReferenceCompressionSummary,
         )
         agent = ReActAgent(
-            name="ReferenceCodeAgent",
+            name="Data Cleaning Agent",
             sys_prompt="只进行测试。",
             model=_CompressionModel(),
             formatter=OpenAIChatFormatter(),

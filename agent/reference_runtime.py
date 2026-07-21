@@ -24,7 +24,7 @@ from skills._registry import load_skills
 
 
 V2_DIR = Path(__file__).resolve().parent.parent
-REFERENCE_CODE_AGENT_PIPELINE_SKILLS = {
+DATA_CLEANING_AGENT_PIPELINE_SKILLS = {
     "pipeline_build_cohort",
     "pipeline_filter_disease_cohort",
     "pipeline_extract_diag_features",
@@ -61,7 +61,7 @@ class ReferenceCompressionSummary(BaseModel):
 
 REFERENCE_COMPRESSION_PROMPT = """\
 <system-hint>
-上下文即将压缩。请生成一份可以让 ReferenceCodeAgent 无损继续工作的结构化续接摘要。
+上下文即将压缩。请生成一份可以让 Data Cleaning Agent 无损继续工作的结构化续接摘要。
 
 要求：
 1. 只保留对后续执行有用的事实，不复述冗长工具输出。
@@ -160,7 +160,7 @@ def create_reference_memory(
 def create_reference_compression_config(
     model: OpenAIChatModel,
 ) -> ReActAgent.CompressionConfig:
-    """Build token-triggered semantic compression for ReferenceCodeAgent."""
+    """Build token-triggered semantic compression for Data Cleaning Agent."""
     model_name = str(
         getattr(model, "model_name", "")
         or getattr(model, "model", "")
@@ -183,7 +183,7 @@ def create_reference_compression_config(
 def create_reference_toolkit(context: EngineerToolContext) -> tuple[Toolkit, list[dict]]:
     """Expose only the pipeline Skills and local-code tools used by this workflow."""
     toolkit = Toolkit()
-    manifest = load_skills(toolkit, allowed_names=REFERENCE_CODE_AGENT_PIPELINE_SKILLS)
+    manifest = load_skills(toolkit, allowed_names=DATA_CLEANING_AGENT_PIPELINE_SKILLS)
     for item in manifest:
         for tool_name in item.get("tool_names") or []:
             toolkit.tools.pop(tool_name, None)

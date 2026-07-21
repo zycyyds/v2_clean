@@ -1,6 +1,6 @@
 ---
 name: pipeline_build_cohort
-description: Use when ReferenceCodeAgent needs to build a MIMIC-IV structured cohort from train/raw or validation/raw before writing custom cohort scripts.
+description: Use when Data Cleaning Agent needs to build a MIMIC-IV structured cohort from train/raw or validation/raw before writing custom cohort scripts.
 ---
 
 # pipeline_build_cohort

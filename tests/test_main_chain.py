@@ -9,12 +9,12 @@ import pytest
 
 import workflow.reference_guided as reference_guided
 
-from agent.reference_runtime import REFERENCE_CODE_AGENT_PIPELINE_SKILLS, create_reference_toolkit
+from agent.reference_runtime import DATA_CLEANING_AGENT_PIPELINE_SKILLS, create_reference_toolkit
 from agent_tools.context import EngineerToolContext, EngineerToolPermissionError
 from main import parse_args
 from workflow.mimic_pipeline import split_teacher_reference
 from workflow.reference_guided import (
-    ReferenceCodeAgentRuntime,
+    DataCleaningAgentRuntime,
     ReferenceGuidedConfig,
     ReferenceGuidedWorkflow,
     _finish_reference_attempt_state,
@@ -162,13 +162,13 @@ def _expected_business_files(reference: Path) -> list[str]:
 
 def _build_runtime_with_formal_round(
     tmp_path: Path,
-) -> tuple[ReferenceCodeAgentRuntime, dict, Path]:
+) -> tuple[DataCleaningAgentRuntime, dict, Path]:
     split = _build_split(tmp_path / "split")
     experiment = tmp_path / "experiment"
     contract = infer_reference_contract(split)
     contract_path = experiment / "reference_contract.json"
     _write_json(contract_path, contract)
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(split, experiment, "task", max_iters=10).normalized(),
         contract=contract,
         contract_path=contract_path,
@@ -308,7 +308,7 @@ def test_reference_round_requires_a_published_workspace_package(tmp_path: Path) 
 def test_reference_toolkit_registers_only_retained_skills(tmp_path: Path) -> None:
     context = EngineerToolContext.from_task(task_text="MIMIC ICU mortality", engineer_phase_root=tmp_path)
     _, manifest = create_reference_toolkit(context)
-    assert {item["name"] for item in manifest} == REFERENCE_CODE_AGENT_PIPELINE_SKILLS
+    assert {item["name"] for item in manifest} == DATA_CLEANING_AGENT_PIPELINE_SKILLS
 
 
 def test_reference_test_stage_runs_adapter_against_hidden_test_reference(tmp_path: Path) -> None:
@@ -368,7 +368,7 @@ def test_checkpoint_agent_read_roots_block_private_reference_and_other_experimen
             max_iters=10,
         )
     )
-    phase_root = checkpoint / "agent_runs/reference_code_agent/phase"
+    phase_root = checkpoint / "agent_runs/data_cleaning_agent/phase"
     sanitized_contract = phase_root / "sanitized_test_contract.json"
     _write_json(sanitized_contract, runtime.sanitized_contract)
     context = EngineerToolContext(
@@ -403,7 +403,7 @@ def test_checkpoint_prompt_only_allows_runner_spec_not_business_scripts(tmp_path
             max_iters=10,
         )
     )
-    phase_root = checkpoint / "agent_runs/reference_code_agent/phase"
+    phase_root = checkpoint / "agent_runs/data_cleaning_agent/phase"
     prompt = runtime._task_text(phase_root, phase_root / "sanitized_test_contract.json")
 
     assert "runner_spec.json" in prompt
@@ -1444,7 +1444,7 @@ def test_promoted_round_archives_cumulative_scripts_results_and_evaluation(tmp_p
     candidate = experiment / "candidates" / "attempt_0002"
     _write_csv(candidate / "script_bundle" / "workspace" / "previous.py", "PREVIOUS = True\n")
     _write_csv(
-        candidate / "agent_runs" / "reference_code_agent" / "phase" / "workspace" / "build_package.py",
+        candidate / "agent_runs" / "data_cleaning_agent" / "phase" / "workspace" / "build_package.py",
         "CURRENT = True\n",
     )
     _write_csv(candidate / "results" / "result_package" / "csv" / "labels.csv", "stay_id,label\n1,0\n")
@@ -1604,7 +1604,7 @@ def test_legacy_best_consolidates_pipeline_before_checkpoint_without_mutating_hi
     contract = infer_reference_contract(split)
     contract_path = experiment / "reference_contract.json"
     _write_json(contract_path, contract)
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(
             split,
             experiment,
@@ -1682,7 +1682,7 @@ def test_failed_legacy_consolidation_keeps_best_and_skips_test(tmp_path: Path, m
     contract = infer_reference_contract(split)
     contract_path = experiment / "reference_contract.json"
     _write_json(contract_path, contract)
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(split, experiment, "task", max_iters=10).normalized(),
         contract=contract,
         contract_path=contract_path,
@@ -2163,7 +2163,7 @@ def test_runtime_counts_only_promotions_and_reuses_best_feedback(tmp_path: Path,
     contract = infer_reference_contract(split)
     contract_path = tmp_path / "reference_contract.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(
             split,
             tmp_path / "experiment",
@@ -2311,7 +2311,7 @@ def test_fresh_synthetic_workflow_runs_promotion_checkpoint_and_test_end_to_end(
         _write_host_replay_success(candidate)
         return {"producer": "mock-agent", "result_package": str(package)}
 
-    monkeypatch.setattr(ReferenceCodeAgentRuntime, "_run_attempt", fake_run_attempt)
+    monkeypatch.setattr(DataCleaningAgentRuntime, "_run_attempt", fake_run_attempt)
     monkeypatch.setattr(
         reference_guided,
         "_reference_candidate_quality_gate",
@@ -2349,7 +2349,7 @@ def test_runtime_invalid_attempts_stop_at_safety_limit_without_hidden_evaluation
     contract = infer_reference_contract(split)
     contract_path = tmp_path / "reference_contract.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(
             split,
             tmp_path / "experiment",
@@ -2390,7 +2390,7 @@ def test_first_ctrl_c_cancels_attempt_and_checkpoints_committed_best(
     contract = infer_reference_contract(split)
     contract_path = tmp_path / "reference_contract.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(
             split,
             tmp_path / "experiment",
@@ -2468,7 +2468,7 @@ def test_ctrl_c_while_copying_first_candidate_checkpoints_without_best(
     contract = infer_reference_contract(split)
     contract_path = tmp_path / "reference_contract.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(
             split,
             tmp_path / "experiment",
@@ -2498,7 +2498,7 @@ def test_second_ctrl_c_interrupts_test_without_changing_validation_best(
     contract = infer_reference_contract(split)
     contract_path = tmp_path / "reference_contract.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
-    runtime = ReferenceCodeAgentRuntime(
+    runtime = DataCleaningAgentRuntime(
         config=ReferenceGuidedConfig(
             split,
             tmp_path / "experiment",

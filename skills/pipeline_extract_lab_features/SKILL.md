@@ -1,6 +1,6 @@
 ---
 name: pipeline_extract_lab_features
-description: Use when ReferenceCodeAgent needs MIMIC lab features from labevents and d_labitems with chunked reading before writing custom lab scripts.
+description: Use when Data Cleaning Agent needs MIMIC lab features from labevents and d_labitems with chunked reading before writing custom lab scripts.
 ---
 
 # pipeline_extract_lab_features

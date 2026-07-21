@@ -1,4 +1,4 @@
-"""Minimal run-local adapter lifecycle for the reference code agent."""
+"""Minimal run-local adapter lifecycle for the Data Cleaning Agent."""
 from __future__ import annotations
 
 import ast
@@ -247,7 +247,7 @@ class ReferenceVariantTools:
 
     def _base_skill_dir(self, skill_name: str) -> Path:
         if skill_name not in self.skill_names:
-            raise ValueError(f"Skill is not available to ReferenceCodeAgent: {skill_name}")
+            raise ValueError(f"Skill is not available to Data Cleaning Agent: {skill_name}")
         path = (self.skills_root / skill_name).resolve()
         if path.parent != self.skills_root or not path.is_dir():
             raise ValueError(f"Base Skill directory does not exist: {path}")

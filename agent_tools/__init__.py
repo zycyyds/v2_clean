@@ -1,4 +1,4 @@
-"""Restricted filesystem and adapter tools for ReferenceCodeAgent."""
+"""Restricted filesystem and adapter tools for Data Cleaning Agent."""
 
 from .context import EngineerToolContext
 from .reference_variants import ReferenceVariantTools, register_reference_variant_tools

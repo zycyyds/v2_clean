@@ -1,6 +1,6 @@
 ---
 name: pipeline_extract_med_features
-description: Use when ReferenceCodeAgent needs MIMIC medication features from prescriptions or inputevents before writing custom medication scripts.
+description: Use when Data Cleaning Agent needs MIMIC medication features from prescriptions or inputevents before writing custom medication scripts.
 ---
 
 # pipeline_extract_med_features

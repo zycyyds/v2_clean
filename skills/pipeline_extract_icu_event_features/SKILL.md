@@ -1,6 +1,6 @@
 ---
 name: pipeline_extract_icu_event_features
-description: Use when ReferenceCodeAgent needs MIMIC ICU event, chart, vital, or stay features from icustays, chartevents, d_items, outputevents, procedureevents, or inputevents.
+description: Use when Data Cleaning Agent needs MIMIC ICU event, chart, vital, or stay features from icustays, chartevents, d_items, outputevents, procedureevents, or inputevents.
 ---
 
 # pipeline_extract_icu_event_features

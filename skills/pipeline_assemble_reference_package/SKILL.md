@@ -1,6 +1,6 @@
 ---
 name: pipeline_assemble_reference_package
-description: Use when ReferenceCodeAgent needs to assemble generated cohort/features/detail files into a result_package matching train/reference shape without requiring reference.csv or package_manifest.json.
+description: Use when Data Cleaning Agent needs to assemble generated cohort/features/detail files into a result_package matching train/reference shape without requiring reference.csv or package_manifest.json.
 ---
 
 # pipeline_assemble_reference_package

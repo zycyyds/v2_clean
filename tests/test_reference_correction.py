@@ -552,7 +552,7 @@ def test_correction_workflow_explicitly_resumes_failed_same_experiment(
     )
 
     def fail_agent_session() -> Path:
-        phase = experiment / "agent_runs/reference_code_agent"
+        phase = experiment / "agent_runs/data_cleaning_agent"
         phase.mkdir(parents=True, exist_ok=True)
         (phase / "rules.json").write_text('{"rules": {}}', encoding="utf-8")
         raise ConnectionError("network unavailable")

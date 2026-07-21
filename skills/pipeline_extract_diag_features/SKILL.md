@@ -1,6 +1,6 @@
 ---
 name: pipeline_extract_diag_features
-description: Use when ReferenceCodeAgent needs MIMIC diagnosis ICD features from diagnoses_icd and d_icd_diagnoses before writing custom diagnosis extraction code.
+description: Use when Data Cleaning Agent needs MIMIC diagnosis ICD features from diagnoses_icd and d_icd_diagnoses before writing custom diagnosis extraction code.
 ---
 
 # pipeline_extract_diag_features

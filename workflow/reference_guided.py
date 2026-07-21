@@ -24,7 +24,7 @@ from agentscope.agent import ReActAgent
 
 from agent.reference_runtime import (
     ENGINEER_CODE_READ_ROOTS,
-    REFERENCE_CODE_AGENT_PIPELINE_SKILLS,
+    DATA_CLEANING_AGENT_PIPELINE_SKILLS,
     create_reference_compression_config,
     create_reference_memory,
     create_reference_toolkit,
@@ -683,12 +683,12 @@ class ReferenceGuidedWorkflow:
         return {
             **self._run_mimic_reference_agent(contract),
             "workflow": "reference-guided-train-validate",
-            "routed_workflow": "reference-code-agent",
+            "routed_workflow": "data-cleaning-agent",
             "reference_contract": str(self.contract_path),
         }
 
     def _run_mimic_reference_agent(self, contract: dict[str, Any]) -> dict[str, Any]:
-        return ReferenceCodeAgentRuntime(
+        return DataCleaningAgentRuntime(
             config=self.config,
             contract=contract,
             contract_path=self.contract_path,
@@ -1092,7 +1092,7 @@ def _recover_interrupted_promotion(journal_path: str | Path, state_path: str | P
     _fsync_directory(active.parent)
 
 
-class ReferenceCodeAgentRuntime:
+class DataCleaningAgentRuntime:
     """Codex-style single-agent runtime for reference-guided package materialization."""
 
     def __init__(
@@ -1333,7 +1333,7 @@ class ReferenceCodeAgentRuntime:
                 "schema_version": 1,
                 "status": "active",
                 "version": 0,
-                "runtime": "ReferenceCodeAgentRuntime",
+                "runtime": "DataCleaningAgentRuntime",
             },
         )
         _write_json(
@@ -1341,7 +1341,7 @@ class ReferenceCodeAgentRuntime:
             {
                 "schema_version": 2,
                 "workflow": "reference-guided-train-validate",
-                "routed_workflow": "reference-code-agent",
+                "routed_workflow": "data-cleaning-agent",
                 "engineer_mode": "agent",
                 "status": "active",
                 "best_score": 0.0,
@@ -1445,9 +1445,9 @@ class ReferenceCodeAgentRuntime:
         test_rule_feedback: Path | None = None,
     ) -> dict[str, Any]:
         attempt_root = candidate / "agent_runs"
-        phase = init_phase_session(attempt_root, "reference_code_agent")
+        phase = init_phase_session(attempt_root, "data_cleaning_agent")
         run_id = f"reference_code_attempt_{attempt_index:04d}"
-        set_phase_context(run_id, attempt_root, "reference_code_agent", phase["phase_root"])
+        set_phase_context(run_id, attempt_root, "data_cleaning_agent", phase["phase_root"])
         phase_root = Path(phase["phase_root"])
         paths = self.contract["paths"]
         train_reference_root = Path(
@@ -1580,14 +1580,14 @@ class ReferenceCodeAgentRuntime:
             )
             model, formatter = make_reference_model()
             agent = ReActAgent(
-                name="ReferenceCodeAgent",
-                sys_prompt=_reference_code_agent_system_prompt("", context),
+                name="Data Cleaning Agent",
+                sys_prompt=_data_cleaning_agent_system_prompt("", context),
                 model=model,
                 formatter=formatter,
                 toolkit=toolkit,
                 memory=create_reference_memory(
                     {
-                        "phase_name": "reference_code_agent",
+                        "phase_name": "data_cleaning_agent",
                         "phase_root": str(phase_root),
                         "run_id": run_id,
                         "run_root": str(attempt_root),
@@ -1607,7 +1607,7 @@ class ReferenceCodeAgentRuntime:
             if not pipeline_check["has_pipeline_skill_exposure"]:
                 self._write_context_summary(phase_root, attempt_index, "needs_repair")
                 raise RuntimeError(
-                    "ReferenceCodeAgent did not expose any pipeline AgentScope skills; "
+                    "Data Cleaning Agent did not expose any pipeline AgentScope skills; "
                     f"see {phase_root / 'pipeline_skill_usage_check.json'}"
                 )
             package = _complete_reference_package_paths(phase_root, self.contract)
@@ -1615,7 +1615,7 @@ class ReferenceCodeAgentRuntime:
                 check = _write_reference_completion_check(phase_root, self.contract)
                 self._write_context_summary(phase_root, attempt_index, "needs_repair")
                 raise RuntimeError(
-                    "ReferenceCodeAgent did not produce a complete reference result package; "
+                    "Data Cleaning Agent did not produce a complete reference result package; "
                     f"see {check}"
                 )
             staged_pipeline = _stage_workspace_pipeline(context.workspace_dir, candidate)
@@ -1628,7 +1628,7 @@ class ReferenceCodeAgentRuntime:
             )
             adapter_bundle = _write_adapter_bundle_manifest(candidate, persisted, packaged_skills)
             staged = _stage_reference_agent_package(package, candidate)
-            staged["producer"] = "reference_code_agent"
+            staged["producer"] = "data_cleaning_agent"
             staged["engineer_phase_root"] = str(phase_root)
             staged["adapter_bundle"] = str(adapter_bundle)
             staged["pipeline"] = str(staged_pipeline) if staged_pipeline is not None else ""
@@ -1681,7 +1681,7 @@ class ReferenceCodeAgentRuntime:
             )
             if public_feedback is not None and not delta["has_material_delta"]:
                 raise RuntimeError(
-                    "ReferenceCodeAgent produced no feedback-linked material delta; "
+                    "Data Cleaning Agent produced no feedback-linked material delta; "
                     f"see {candidate / 'candidate_delta.json'}"
                 )
             return staged
@@ -1708,7 +1708,7 @@ class ReferenceCodeAgentRuntime:
         lines = [
             _task_text_with_reference_contract(self.config.task_text, self.contract),
             "",
-            "【ReferenceCodeAgent 目标】",
+            "【Data Cleaning Agent 目标】",
             "你是一个 Codex-style 本地代码智能体。不要调用固定 workflow/executor 兜底。",
             "你需要自己读取 train/raw 与 train/reference，学习 raw -> reference package 的转换关系，",
             "写 experiment 内 adapter/fork，在 train 上回归验证，再处理 validation raw。",
@@ -1806,7 +1806,7 @@ class ReferenceCodeAgentRuntime:
         result_package = _latest_result_package_dir_for_summary(phase_root)
         package_manifest = result_package / "package_manifest.json" if result_package else phase_root / "artifacts"
         summary_lines = [
-            "# ReferenceCodeAgent Context",
+            "# Data Cleaning Agent Context",
             "",
             "## Current State",
             f"- attempt: {attempt_index}",
@@ -2225,13 +2225,13 @@ class ReferenceCodeAgentRuntime:
         consolidation_root: Path,
         best_round: int,
     ) -> Path:
-        phase = init_phase_session(consolidation_root / "agent_runs", "reference_code_agent")
+        phase = init_phase_session(consolidation_root / "agent_runs", "data_cleaning_agent")
         phase_root = Path(phase["phase_root"])
         run_id = f"reference_code_pipeline_consolidation_round_{best_round:04d}"
         set_phase_context(
             run_id,
             consolidation_root / "agent_runs",
-            "reference_code_agent",
+            "data_cleaning_agent",
             phase_root,
         )
         paths = self.contract.get("paths") or {}
@@ -2327,9 +2327,9 @@ summary 的实现方式由你自主判断。若 raw 无法稳定推导公开 tra
                 f"- {Path(root).expanduser().resolve()}" for root in read_roots
             )
             agent = ReActAgent(
-                name="ReferenceCodeAgent",
+                name="Data Cleaning Agent",
                 sys_prompt=f"""\
-你是 ReferenceCodeAgent 的一次性 pipeline consolidation 上下文。
+你是 Data Cleaning Agent 的一次性 pipeline consolidation 上下文。
 只整理本次实验已晋升脚本，不创建新业务规则，不读取隐藏结果。
 
 workspace: {context.workspace_dir}
@@ -2400,11 +2400,11 @@ workspace: {context.workspace_dir}
         }
 
 
-def _reference_code_agent_system_prompt(skill_manifest_text: str, context: EngineerToolContext) -> str:
+def _data_cleaning_agent_system_prompt(skill_manifest_text: str, context: EngineerToolContext) -> str:
     read_roots = "\n".join(f"- {path}" for path in context.read_roots)
     reports = "\n".join(f"- {name}: {path}" for name, path in sorted(context.required_report_paths.items()))
     return f"""\
-你是 ReferenceCodeAgent，一个 Codex-style 本地代码智能体。
+你是 Data Cleaning Agent，一个 Codex-style 本地代码智能体。
 
 # Skill 策略
 
@@ -2513,7 +2513,7 @@ def _write_pipeline_skill_usage_check(phase_root: Path) -> dict[str, Any]:
     counts = _pipeline_skill_call_counts(phase_root)
     prompt_path = phase_root / "agentscope_skill_prompt.txt"
     prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.is_file() else ""
-    expected = sorted(REFERENCE_CODE_AGENT_PIPELINE_SKILLS)
+    expected = sorted(DATA_CLEANING_AGENT_PIPELINE_SKILLS)
     registered_agent_skills = [name for name in expected if name in prompt]
     has_agent_skills = bool(registered_agent_skills)
     has_any_exposure = bool(counts) or has_agent_skills
@@ -2529,7 +2529,7 @@ def _write_pipeline_skill_usage_check(phase_root: Path) -> dict[str, Any]:
         "missing_agentscope_agent_skill_names": [name for name in expected if name not in registered_agent_skills],
         "required_prefix": "pipeline_",
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "issues": [] if has_any_exposure else ["No pipeline AgentScope skill or pipeline_* tool was exposed to ReferenceCodeAgent"],
+        "issues": [] if has_any_exposure else ["No pipeline AgentScope skill or pipeline_* tool was exposed to Data Cleaning Agent"],
     }
     _write_json(phase_root / "pipeline_skill_usage_check.json", payload)
     return payload
@@ -3119,7 +3119,7 @@ def _stage_reference_feedback_response(
             "status": "SUCCESS",
             "source": "",
             "generated_by": "host_fallback",
-            "fallback_reason": "ReferenceCodeAgent did not write feedback_response.json before package staging.",
+            "fallback_reason": "Data Cleaning Agent did not write feedback_response.json before package staging.",
             "responses": _host_reference_feedback_responses(targets_by_id),
         }
     else:
@@ -3189,7 +3189,7 @@ def _host_reference_feedback_responses(targets_by_id: dict[str, dict[str, Any]])
                 "columns": target.get("columns") or [],
                 "changed_files": changed_files,
                 "reason": (
-                    "ReferenceCodeAgent did not provide an explicit response for this public feedback target. "
+                    "Data Cleaning Agent did not provide an explicit response for this public feedback target. "
                     "The host generated this value-free carry-forward response so the candidate can still be "
                     "evaluated without reading or leaking hidden reference values."
                 ),

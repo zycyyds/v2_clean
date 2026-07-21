@@ -1,6 +1,6 @@
 ---
 name: pipeline_filter_disease_cohort
-description: Use when ReferenceCodeAgent needs to filter a MIMIC cohort by disease, ICD prefixes, or admitted-due-to rules before writing custom disease filtering code.
+description: Use when Data Cleaning Agent needs to filter a MIMIC cohort by disease, ICD prefixes, or admitted-due-to rules before writing custom disease filtering code.
 ---
 
 # pipeline_filter_disease_cohort

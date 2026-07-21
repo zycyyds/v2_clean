@@ -1,4 +1,4 @@
-# MIMIC ICU Mortality Reference Agent
+# MIMIC ICU Mortality Data Cleaning Agent
 
 这个项目只保留一条 MIMIC-IV ICU mortality 数据包复现链路：从公开的 train reference 学习转换规则，在 hidden validation 上迭代并沉淀脚本，停止后自动用全新上下文的同类 Agent 处理 test 并私有评分。
 
@@ -44,14 +44,14 @@ python main.py \
 
 `--round-limit` 只统计分数严格提升的正式 loop。下降、持平和门禁失败只记录为 attempt；默认连续两个有效但未提升的 attempt 才停止，无效 attempt 不占 patience。每个正式 loop 会归档累计 `script_bundle`、validation 结果、评分和 provenance。
 
-Validation 因 `round-limit`、patience、`max-attempts`、`target-score` 自然停止后，会自动从最新正式 best 创建 checkpoint，并在同一 Python 进程中用全新 memory/toolkit/workspace 的 `ReferenceCodeAgent` 处理 test。Validation 阶段第一次按 `Ctrl+C` 也会取消当前未提交 attempt 并进入该流程；Test 阶段再次按 `Ctrl+C` 才终止整个程序。
+Validation 因 `round-limit`、patience、`max-attempts`、`target-score` 自然停止后，会自动从最新正式 best 创建 checkpoint，并在同一 Python 进程中用全新 memory/toolkit/workspace 的 `Data Cleaning Agent` 处理 test。Validation 阶段第一次按 `Ctrl+C` 也会取消当前未提交 attempt 并进入该流程；Test 阶段再次按 `Ctrl+C` 才终止整个程序。
 
 自动输出位于：
 
 ```text
 test_checkpoints/checkpoint_XXXX_best_round_XXXX/
   frozen_script_bundle/
-  agent_runs/reference_code_agent/
+  agent_runs/data_cleaning_agent/
   test_run/result_package/
   test_evaluation/
   checkpoint_report.json
@@ -75,7 +75,7 @@ python main.py \
 
 ## 保留的 Skills
 
-ReferenceCodeAgent 只注册以下 9 个 MIMIC Pipeline Skills：
+Data Cleaning Agent 只注册以下 9 个 MIMIC Pipeline Skills：
 
 - `pipeline_build_cohort`
 - `pipeline_filter_disease_cohort`
