@@ -362,6 +362,21 @@ def test_correction_cli_exposes_prepare_and_single_run_workflows() -> None:
     assert prepare.workflow == "prepare-correction-split"
     assert prepare.train_count == 10
     assert run.workflow == "reference-guided-correct"
+    assert run.resume is False
+
+    resumed = parse_args(
+        [
+            "--workflow",
+            "reference-guided-correct",
+            "--dataset-split",
+            "/tmp/dataset",
+            "--experiment-dir",
+            "/tmp/experiment",
+            "--resume",
+            "task",
+        ]
+    )
+    assert resumed.resume is True
 
 
 def test_correction_agent_contract_and_prompt_hide_private_truth_and_taxonomy(
@@ -392,6 +407,11 @@ def test_correction_agent_contract_and_prompt_hide_private_truth_and_taxonomy(
     assert "error_subtype" not in prompt
     assert "schema_range_violation" not in prompt
     assert "repair_hint" not in prompt
+    assert "根据2个成对标准示例" in prompt
+    assert "根据10个成对标准示例" not in prompt
+    assert 'key_column="stay_id"' in prompt
+    assert "不得按 `hadm_id` 去重" in prompt
+    assert workflow.sanitized_contract["key_column"] == "stay_id"
     assert str(dataset / "train/raw") in roots
     assert str(dataset / "train/reference") in roots
     assert str(dataset / "correction/raw") in roots
@@ -413,6 +433,8 @@ def test_correction_result_gate_requires_complete_matching_package(tmp_path: Pat
     valid = validate_correction_result_package(
         result_package=result,
         input_package=dataset / "correction/raw",
+        split_keys=dataset / "correction/keys.csv",
+        key_column="stay_id",
     )
     assert valid["valid"] is True
 
@@ -420,9 +442,54 @@ def test_correction_result_gate_requires_complete_matching_package(tmp_path: Pat
     invalid = validate_correction_result_package(
         result_package=result,
         input_package=dataset / "correction/raw",
+        split_keys=dataset / "correction/keys.csv",
+        key_column="stay_id",
     )
     assert invalid["valid"] is False
     assert any("missing" in issue for issue in invalid["issues"])
+
+
+def test_correction_result_gate_uses_stay_id_not_hadm_id(tmp_path: Path) -> None:
+    from workflow.correction_dataset import build_correction_dataset
+    from workflow.reference_correction import validate_correction_result_package
+
+    archive = _build_synthetic_correction_archive(tmp_path / "source.zip")
+    dataset = tmp_path / "dataset"
+    build_correction_dataset(archive, dataset, train_count=2)
+    result = tmp_path / "result"
+    shutil.copytree(dataset / "correction/reference_private", result)
+
+    cohort_path = result / "cohort/cohort_icu_mortality_0__.csv.gz"
+    with gzip.open(cohort_path, "rt", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+        columns = list(rows[0])
+    rows[1]["hadm_id"] = rows[0]["hadm_id"]
+    with gzip.open(cohort_path, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    valid = validate_correction_result_package(
+        result_package=result,
+        input_package=dataset / "correction/raw",
+        split_keys=dataset / "correction/keys.csv",
+        key_column="stay_id",
+    )
+    assert valid["valid"] is True
+
+    rows.pop()
+    with gzip.open(cohort_path, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+    invalid = validate_correction_result_package(
+        result_package=result,
+        input_package=dataset / "correction/raw",
+        split_keys=dataset / "correction/keys.csv",
+        key_column="stay_id",
+    )
+    assert invalid["valid"] is False
+    assert any("correction stay_id" in issue for issue in invalid["issues"])
 
 
 def test_correction_workflow_runs_one_agent_session_then_private_evaluation(
@@ -461,3 +528,155 @@ def test_correction_workflow_runs_one_agent_session_then_private_evaluation(
     assert report["metrics"]["exact_repair_recall"] == 1.0
     assert Path(report["result_package"]).is_dir()
     assert Path(report["evaluation_report"]).is_file()
+
+
+def test_correction_workflow_explicitly_resumes_failed_same_experiment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from workflow.correction_dataset import build_correction_dataset
+    from workflow.reference_correction import ReferenceCorrectionConfig, ReferenceCorrectionWorkflow
+
+    archive = _build_synthetic_correction_archive(tmp_path / "source.zip")
+    dataset = tmp_path / "dataset"
+    build_correction_dataset(archive, dataset, train_count=2)
+    experiment = tmp_path / "experiment"
+
+    first = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=experiment,
+            task_text="discover and correct",
+            max_iters=20,
+        )
+    )
+
+    def fail_agent_session() -> Path:
+        phase = experiment / "agent_runs/reference_code_agent"
+        phase.mkdir(parents=True, exist_ok=True)
+        (phase / "rules.json").write_text('{"rules": {}}', encoding="utf-8")
+        raise ConnectionError("network unavailable")
+
+    monkeypatch.setattr(first, "_run_agent_session", fail_agent_session)
+    failed = first.run_sync()
+    assert failed["status"] == "correction_failed"
+
+    resumed = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=experiment,
+            task_text="discover and correct",
+            max_iters=20,
+            resume=True,
+        )
+    )
+
+    def successful_agent_session() -> Path:
+        assert resumed.resume_context is not None
+        assert resumed.resume_context["previous_error"] == "ConnectionError: network unavailable"
+        package = experiment / "agent_output/result_package"
+        shutil.copytree(dataset / "correction/reference_private", package)
+        return package
+
+    monkeypatch.setattr(resumed, "_run_agent_session", successful_agent_session)
+    report = resumed.run_sync()
+
+    assert report["status"] == "SUCCESS"
+    history = sorted((experiment / "resume_history").glob("resume_*_previous_report.json"))
+    assert len(history) == 1
+    previous = json.loads(history[0].read_text(encoding="utf-8"))
+    assert previous["status"] == "correction_failed"
+    manifest = json.loads((experiment / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["resume_count"] == 1
+
+
+def test_correction_resume_rejects_changed_experiment_identity(tmp_path: Path) -> None:
+    from workflow.correction_dataset import build_correction_dataset
+    from workflow.reference_correction import ReferenceCorrectionConfig, ReferenceCorrectionWorkflow
+
+    archive = _build_synthetic_correction_archive(tmp_path / "source.zip")
+    dataset = tmp_path / "dataset"
+    build_correction_dataset(archive, dataset, train_count=2)
+    experiment = tmp_path / "experiment"
+    experiment.mkdir()
+    (experiment / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workflow": "reference-guided-correct",
+                "dataset_split": str(dataset.resolve()),
+                "source_archive_sha256": "wrong",
+                "task_text_sha256": "wrong",
+                "max_iters": 20,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (experiment / "correction_run_report.json").write_text(
+        json.dumps({"status": "correction_failed", "error": "ConnectionError: offline"}),
+        encoding="utf-8",
+    )
+    workflow = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=experiment,
+            task_text="discover and correct",
+            max_iters=20,
+            resume=True,
+        )
+    )
+
+    with pytest.raises(ValueError, match="resume manifest does not match"):
+        workflow.run_sync()
+
+
+def test_correction_resume_context_includes_host_gate_issues(tmp_path: Path) -> None:
+    from workflow.correction_dataset import build_correction_dataset
+    from workflow.reference_correction import ReferenceCorrectionConfig, ReferenceCorrectionWorkflow
+
+    archive = _build_synthetic_correction_archive(tmp_path / "source.zip")
+    dataset = tmp_path / "dataset"
+    build_correction_dataset(archive, dataset, train_count=2)
+    experiment = tmp_path / "experiment"
+    workflow = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=experiment,
+            task_text="discover and correct",
+            max_iters=20,
+            resume=True,
+        )
+    )
+    experiment.mkdir()
+    (experiment / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                **workflow._manifest_identity(),
+                "created_at": "2026-01-01T00:00:00",
+                "resume_count": 0,
+                "resumes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (experiment / "correction_run_report.json").write_text(
+        json.dumps(
+            {
+                "status": "correction_failed",
+                "gate": {
+                    "valid": False,
+                    "issues": [
+                        "features/preproc_chart_icu.csv.gz: contains 2 unknown stay_id values"
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    context = workflow._prepare_experiment(experiment / "correction_run_report.json")
+    assert context is not None
+    assert context["previous_error"] == (
+        "Host result gate failed: features/preproc_chart_icu.csv.gz: "
+        "contains 2 unknown stay_id values"
+    )

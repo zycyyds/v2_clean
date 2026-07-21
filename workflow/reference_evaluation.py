@@ -732,6 +732,10 @@ def _iter_table_dicts(path: Path) -> Iterator[dict[str, Any]]:
             delimiter = "\t" if name.endswith((".tsv", ".tsv.gz")) else ","
             reader = csv.DictReader(handle, delimiter=delimiter)
             for row in reader:
+                if None in row:
+                    raise ValueError(
+                        f"row {reader.line_num} contains extra CSV cells beyond the declared header"
+                    )
                 yield {str(key): value for key, value in row.items() if key is not None}
         return
     frame = _read_table(path, nrows=None)

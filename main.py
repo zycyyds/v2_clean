@@ -121,6 +121,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--split-key", default="")
     parser.add_argument("--source-archive", default="", help="纠错数据集来源压缩包。")
     parser.add_argument("--train-count", type=int, default=10, help="纠错标准示例 stay 数。")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="显式恢复同一失败实验；仅 reference-guided-correct 使用。",
+    )
     return parser.parse_args(argv)
 
 
@@ -209,6 +214,7 @@ def run_reference_guided_correct(args: argparse.Namespace) -> None:
             experiment_dir=args.experiment_dir,
             task_text=args.input,
             max_iters=args.max_iters,
+            resume=args.resume,
         )
     ).run_sync()
     _print_result(result)

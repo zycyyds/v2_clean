@@ -15,6 +15,7 @@ from agentscope.agent import ReActAgent
 
 from agent.reference_runtime import (
     ENGINEER_CODE_READ_ROOTS,
+    create_reference_compression_config,
     create_reference_memory,
     create_reference_toolkit,
     make_reference_model,
@@ -23,22 +24,24 @@ from agent_tools.context import EngineerToolContext
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
 from lib.agent_runtime import format_message_content, make_user_msg
 from workflow.reference_evaluation import (
-    _iter_table_dicts,
-    _key_columns,
-    _normalize_value,
     _structured_package_files,
-    _table_columns,
+)
+from workflow.reference_package_gate import (
+    MIMIC_EXPECTED_BUSINESS_FILE_COUNT,
+    validate_business_result_package,
 )
 from workflow.reference_guided import (
     _directory_sha256,
-    _latest_result_package_dir,
     _remove_fixed_reference_incompatible_tools,
-    _restore_claude_style_capabilities,
     _write_json,
     evaluate_reference_directory_package,
     infer_reference_contract,
 )
-from workflow.skill_adapter import restore_bundle_variants
+from workflow.reference_pipeline import (
+    pipeline_directory_sha256,
+    run_pipeline_isolated,
+    validate_pipeline_structure,
+)
 
 
 @dataclass(frozen=True)
@@ -97,21 +100,21 @@ class ReferenceCheckpointTestRuntime:
         bundle_hash_before = _directory_sha256(self.bundle)
         started_at = datetime.now().isoformat(timespec="seconds")
         try:
-            agent_package = self._run_agent_session()
-            gate = self._last_gate or self._quality_gate(agent_package, bundle_hash_before)
+            runner_spec = self._run_agent_session()
+            runner_gate = self._last_gate or {}
             bundle_hash_after = _directory_sha256(self.bundle)
             if bundle_hash_after != bundle_hash_before:
-                gate = {
-                    **gate,
+                runner_gate = {
+                    **runner_gate,
                     "valid": False,
                     "status": "NEEDS_REPAIR",
-                    "issues": [*(gate.get("issues") or []), "frozen script bundle changed during test"],
+                    "issues": [*(runner_gate.get("issues") or []), "frozen script bundle changed during test"],
                 }
-            if not gate.get("valid"):
+            if not runner_gate.get("valid"):
                 return self._write_report(
                     test_status="test_failed",
                     started_at=started_at,
-                    gate=gate,
+                    gate=runner_gate,
                     evaluation={},
                     metrics={},
                     bundle_hash_before=bundle_hash_before,
@@ -119,10 +122,49 @@ class ReferenceCheckpointTestRuntime:
                 )
 
             output_package = self.test_run_dir / "result_package"
-            if output_package.exists():
-                shutil.rmtree(output_package)
-            output_package.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(agent_package, output_package)
+            execution = run_pipeline_isolated(
+                pipeline_dir=self.bundle / "pipeline",
+                raw_root=self.sanitized_contract["paths"]["test_raw"],
+                output_dir=output_package,
+                split_mode="test",
+                log_path=self.test_run_dir / "pipeline_run.log",
+            )
+            if execution["returncode"] != 0:
+                gate = {
+                    **runner_gate,
+                    "valid": False,
+                    "status": "PIPELINE_RULE_FAILURE",
+                    "issues": [*(runner_gate.get("issues") or []), "frozen pipeline failed on test raw"],
+                    "execution": execution,
+                }
+                self._last_gate = gate
+                return self._write_report(
+                    test_status="pipeline_rule_failure",
+                    started_at=started_at,
+                    gate=gate,
+                    evaluation={},
+                    metrics={},
+                    bundle_hash_before=bundle_hash_before,
+                    bundle_hash_after=_directory_sha256(self.bundle),
+                    result_package=output_package if output_package.is_dir() else None,
+                )
+
+            gate = self._quality_gate(output_package, bundle_hash_before)
+            gate["runner_spec"] = str(runner_spec)
+            gate["execution"] = execution
+            self._last_gate = gate
+            if not gate.get("valid"):
+                gate["status"] = "PIPELINE_RULE_FAILURE"
+                return self._write_report(
+                    test_status="pipeline_rule_failure",
+                    started_at=started_at,
+                    gate=gate,
+                    evaluation={},
+                    metrics={},
+                    bundle_hash_before=bundle_hash_before,
+                    bundle_hash_after=_directory_sha256(self.bundle),
+                    result_package=output_package,
+                )
 
             # The Agent session has returned and clear_phase_context() has run.
             # Only the host process can resolve and read the private test reference.
@@ -187,8 +229,6 @@ class ReferenceCheckpointTestRuntime:
             )
             toolkit, _ = create_reference_toolkit(context)
             _remove_fixed_reference_incompatible_tools(toolkit)
-            restore_bundle_variants(self.bundle, context.variant_root)
-            _restore_claude_style_capabilities(self.bundle, context.workspace_dir / "capabilities")
             model, formatter = make_reference_model()
             agent = ReActAgent(
                 name="ReferenceCodeAgent",
@@ -205,12 +245,13 @@ class ReferenceCheckpointTestRuntime:
                     },
                     model,
                 ),
+                compression_config=create_reference_compression_config(model),
                 parallel_tool_calls=False,
                 max_iters=self.config.max_iters,
                 print_hint_msg=False,
             )
             prompt = task_text
-            package: Path | None = None
+            runner_spec: Path | None = None
             for repair_index in range(3):
                 response = asyncio.run(agent(make_user_msg(name="user", content=prompt)))
                 response_text = format_message_content(getattr(response, "content", "")).strip()
@@ -218,24 +259,25 @@ class ReferenceCheckpointTestRuntime:
                     response_text,
                     encoding="utf-8",
                 )
-                package = _latest_result_package_dir(phase_root)
-                if package is None:
-                    gate = {
-                        "schema_version": 1,
-                        "valid": False,
-                        "status": "NEEDS_REPAIR",
-                        "issues": ["ReferenceCodeAgent did not publish workspace/result_package"],
-                    }
-                else:
-                    gate = self._quality_gate(package, _directory_sha256(self.bundle))
+                runner_spec = context.workspace_dir / "runner_spec.json"
+                gate = _runner_spec_quality_gate(
+                    runner_spec=runner_spec,
+                    workspace=context.workspace_dir,
+                    frozen_script_bundle=self.bundle,
+                    test_raw=Path(self.sanitized_contract["paths"]["test_raw"]),
+                    output_dir=self.test_run_dir / "result_package",
+                    train_reference_root=Path(
+                        self.sanitized_contract["paths"]["train_reference_root"]
+                    ),
+                )
                 self._last_gate = gate
-                _write_json(phase_root / f"test_quality_gate_{repair_index + 1}.json", gate)
+                _write_json(phase_root / f"runner_spec_gate_{repair_index + 1}.json", gate)
                 if gate.get("valid") or repair_index == 2:
                     break
                 prompt = _test_repair_prompt(gate, context.workspace_dir)
-            if package is None:
-                raise RuntimeError("ReferenceCodeAgent produced no test result_package")
-            return package
+            if runner_spec is None or not runner_spec.is_file():
+                raise RuntimeError("ReferenceCodeAgent produced no runner_spec.json")
+            return runner_spec
         finally:
             clear_phase_context()
 
@@ -262,6 +304,7 @@ class ReferenceCheckpointTestRuntime:
 
 【唯一允许的当前实验输入】
 - 冻结脚本包（只读）：{self.bundle}
+- 冻结 Pipeline SHA-256：{pipeline_directory_sha256(self.bundle / 'pipeline') if (self.bundle / 'pipeline').is_dir() else ''}
 - 脱敏 test contract：{sanitized_contract_path}
 - train raw：{paths['train_raw']}
 - train reference：{paths['train_reference_root']}
@@ -270,13 +313,13 @@ class ReferenceCheckpointTestRuntime:
 - test keys：{paths['test_keys']}
 
 【执行要求】
-1. 这是一个统一任务，不要判断或声明 standalone/non-standalone 模式。
-2. 自己阅读冻结脚本，决定直接执行、参数化路径、补 runner、调整调用顺序或衔接已有脚本。
-3. 不得修改冻结脚本包；新增 runner 和适配代码只能写在本次 workspace。
-4. 可以先用 train/raw -> train/reference 检查衔接是否正确，再用完全相同的 runner 处理 test/raw。
-5. 不得搜索或读取 experiments 根目录、其他实验、validation 数据、validation/test reference 或任何评分报告。
-6. 最终必须通过 PublishDirectoryArtifact 发布完整目录到 {phase_root / 'workspace' / 'result_package'}。
-7. 结果必须包含 train/reference 中全部同名业务文件和 schema，并覆盖 test keys。
+1. 冻结入口唯一固定为：{self.bundle / 'pipeline/run.py'}。
+2. 你只能在 workspace 写 runner_spec.json，字段必须包含 schema_version、entrypoint、pipeline_sha256、raw_root、output_dir、split_mode。
+3. raw_root 固定为 {paths['test_raw']}；output_dir 固定为 {self.test_run_dir / 'result_package'}；split_mode 固定为 test。
+4. 不得创建 build_test.py、runner.py、shell 脚本、adapter 或任何业务转换代码，也不得生成或修改业务 CSV。
+5. 不得执行清洗规则；runner_spec 通过后由宿主隔离执行冻结 Pipeline。
+6. 不得修改冻结脚本包，不得搜索历史实验、validation 数据、private reference 或评分报告。
+7. 如果你确认冻结 Pipeline 的业务规则本身不足，只能在 runner_spec.json 的 notes 中记录；宿主执行失败后会标记 pipeline_rule_failure 并返回 Validation。
 """
 
     def _quality_gate(self, result_package: Path, bundle_hash_before: str) -> dict[str, Any]:
@@ -363,8 +406,96 @@ def _checkpoint_test_system_prompt(context: EngineerToolContext) -> str:
 你只能读取以下授权路径：
 {read_roots}
 
-你必须自行理解并衔接冻结脚本，不得搜索历史实验。ExecutePython 只能写本步骤 OUTPUT_DIR；最终用 PublishDirectoryArtifact 发布完整 result_package。任何 validation/test 金标准和评分结果都不可见。
+你只负责提交 runner_spec.json，不得编写或改写任何业务转换代码，也不得生成 result_package。宿主会执行冻结的唯一入口。任何 validation/test 金标准和评分结果都不可见。
 """
+
+
+def _runner_spec_quality_gate(
+    *,
+    runner_spec: str | Path,
+    workspace: str | Path,
+    frozen_script_bundle: str | Path,
+    test_raw: str | Path,
+    output_dir: str | Path,
+    train_reference_root: str | Path,
+) -> dict[str, Any]:
+    spec_path = Path(runner_spec).expanduser().resolve()
+    workspace_path = Path(workspace).expanduser().resolve()
+    bundle = Path(frozen_script_bundle).expanduser().resolve()
+    pipeline = bundle / "pipeline"
+    issues: list[str] = []
+    forbidden_scripts = sorted(
+        path.relative_to(workspace_path).as_posix()
+        for path in workspace_path.rglob("*")
+        if path.is_file() and path.suffix.casefold() in {".py", ".sh"}
+    ) if workspace_path.is_dir() else []
+    if forbidden_scripts:
+        issues.append(
+            "test workspace contains forbidden business/runner scripts: "
+            + ", ".join(forbidden_scripts[:20])
+        )
+
+    expected_files = sorted(
+        path.relative_to(Path(train_reference_root).expanduser().resolve()).as_posix()
+        for path in _structured_package_files(Path(train_reference_root).expanduser().resolve())
+        if path.name not in {
+            "package_manifest.json",
+            "result_manifest.json",
+            "target_field_mapping.json",
+            "reference.csv",
+        }
+    )
+    manifest_path = pipeline / "pipeline_manifest.json"
+    manifest: dict[str, Any] = {}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+    structure = validate_pipeline_structure(
+        pipeline,
+        expected_files=expected_files,
+        expected_parent_sha256=str(manifest.get("parent_pipeline_sha256") or ""),
+        train_reference_root=train_reference_root,
+    )
+    issues.extend(f"frozen pipeline: {item}" for item in structure["issues"])
+
+    spec: dict[str, Any] = {}
+    if not spec_path.is_file():
+        issues.append("runner_spec.json is missing")
+    else:
+        try:
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            issues.append(f"runner_spec.json is invalid JSON: {type(exc).__name__}: {exc}")
+    if spec:
+        expected_values = {
+            "schema_version": 1,
+            "entrypoint": str((pipeline / "run.py").resolve()),
+            "pipeline_sha256": pipeline_directory_sha256(pipeline),
+            "raw_root": str(Path(test_raw).expanduser().resolve()),
+            "output_dir": str(Path(output_dir).expanduser().resolve()),
+            "split_mode": "test",
+        }
+        for key, expected in expected_values.items():
+            if spec.get(key) != expected:
+                issues.append(
+                    f"runner_spec {key} mismatch: expected={expected!r}, actual={spec.get(key)!r}"
+                )
+        allowed_fields = {*expected_values, "notes"}
+        unexpected = sorted(set(spec) - allowed_fields)
+        if unexpected:
+            issues.append("runner_spec contains unsupported fields: " + ", ".join(unexpected))
+
+    return {
+        "schema_version": 1,
+        "status": "SUCCESS" if not issues else "NEEDS_REPAIR",
+        "valid": not issues,
+        "runner_spec": str(spec_path),
+        "pipeline_structure": structure,
+        "forbidden_scripts": forbidden_scripts,
+        "issues": issues,
+    }
 
 
 def _test_repair_prompt(gate: dict[str, Any], workspace: Path) -> str:
@@ -373,7 +504,7 @@ def _test_repair_prompt(gate: dict[str, Any], workspace: Path) -> str:
 当前 test 结果未通过公开结构门禁。以下信息只来自 train schema 和 test keys，不含 test 金标准：
 {issues}
 
-请继续在同一个 Agent 会话中修复 runner 或输出，并重新发布完整目录到 {workspace / 'result_package'}。不得修改冻结脚本包。
+请继续在同一个 Agent 会话中只修复 {workspace / 'runner_spec.json'}。不得创建 Python/Shell 脚本、不得生成业务 CSV、不得修改冻结脚本包。
 """
 
 
@@ -388,88 +519,16 @@ def _test_package_quality_gate(
     validation_result_package: str | Path | None = None,
 ) -> dict[str, Any]:
     package = Path(result_package).expanduser().resolve()
-    reference = Path(train_reference_root).expanduser().resolve()
-    keys_path = Path(test_keys).expanduser().resolve()
     bundle = Path(frozen_script_bundle).expanduser().resolve()
-    issues: list[str] = []
-    files: list[dict[str, Any]] = []
-    expected_files = [
-        path
-        for path in _structured_package_files(reference)
-        if path.name not in {"package_manifest.json", "result_manifest.json", "target_field_mapping.json", "reference.csv"}
-    ]
-    test_key_values = _read_key_values(keys_path, key_column)
-    for reference_file in expected_files:
-        relative = reference_file.relative_to(reference).as_posix()
-        result_file = package / relative
-        file_report: dict[str, Any] = {"relative_path": relative, "passed": True, "issues": []}
-        if not result_file.is_file():
-            file_report["passed"] = False
-            file_report["issues"].append("missing file")
-        else:
-            try:
-                expected_columns = _table_columns(reference_file)
-                result_columns = _table_columns(result_file)
-                if result_columns != expected_columns:
-                    file_report["passed"] = False
-                    file_report["issues"].append("schema differs from train reference")
-                business_key_columns = _key_columns(relative, expected_columns, key_column)
-                result_business_duplicates = _duplicate_business_key_count(
-                    result_file,
-                    business_key_columns,
-                )
-                reference_business_duplicates = _duplicate_business_key_count(
-                    reference_file,
-                    business_key_columns,
-                )
-                row_count, observed_keys, duplicate_keys, placeholder_only = _scan_gate_file(
-                    result_file,
-                    result_columns,
-                    key_column=key_column,
-                    require_unique_key=relative.startswith("cohort/") or relative.endswith("/labels.csv"),
-                )
-                file_report.update(
-                    {
-                        "row_count": row_count,
-                        "observed_key_count": len(observed_keys),
-                        "duplicate_key_count": duplicate_keys,
-                        "business_key_columns": business_key_columns,
-                        "duplicate_business_key_count": result_business_duplicates,
-                        "train_duplicate_business_key_count": reference_business_duplicates,
-                    }
-                )
-                if result_business_duplicates and not reference_business_duplicates:
-                    file_report["passed"] = False
-                    file_report["issues"].append(
-                        f"contains {result_business_duplicates} duplicate business keys"
-                    )
-                if row_count == 0 and _count_file_rows(reference_file) > 0:
-                    file_report["passed"] = False
-                    file_report["issues"].append("empty output file")
-                if placeholder_only:
-                    file_report["passed"] = False
-                    file_report["issues"].append("output contains only placeholder values")
-                if key_column in result_columns:
-                    unknown_keys = sorted(observed_keys - test_key_values)
-                    if unknown_keys:
-                        file_report["passed"] = False
-                        file_report["issues"].append(
-                            f"contains {len(unknown_keys)} unknown test keys"
-                        )
-                if (relative.startswith("cohort/") or relative.endswith("/labels.csv")) and key_column in result_columns:
-                    missing_keys = sorted(test_key_values - observed_keys)
-                    if missing_keys:
-                        file_report["passed"] = False
-                        file_report["issues"].append(f"missing {len(missing_keys)} test keys")
-                    if duplicate_keys:
-                        file_report["passed"] = False
-                        file_report["issues"].append(f"contains {duplicate_keys} duplicate primary keys")
-            except Exception as exc:
-                file_report["passed"] = False
-                file_report["issues"].append(f"read error: {type(exc).__name__}: {exc}")
-        if not file_report["passed"]:
-            issues.extend(f"{relative}: {item}" for item in file_report["issues"])
-        files.append(file_report)
+    report = validate_business_result_package(
+        result_package=package,
+        train_reference_root=train_reference_root,
+        split_keys=test_keys,
+        key_column=key_column,
+        split_mode="test",
+        required_file_count=MIMIC_EXPECTED_BUSINESS_FILE_COUNT,
+    )
+    issues = list(report["issues"])
 
     current_bundle_hash = _directory_sha256(bundle)
     if current_bundle_hash != frozen_hash_before:
@@ -479,76 +538,13 @@ def _test_package_quality_gate(
         if validation_package.is_dir() and package.is_dir() and _directory_sha256(validation_package) == _directory_sha256(package):
             issues.append("test output is a direct copy of the validation result package")
     return {
-        "schema_version": 1,
+        **report,
         "status": "SUCCESS" if not issues else "NEEDS_REPAIR",
         "valid": not issues,
-        "expected_file_count": len(expected_files),
-        "test_key_count": len(test_key_values),
+        "test_key_count": report["split_key_count"],
         "frozen_script_bundle_sha256": current_bundle_hash,
         "issues": issues,
-        "files": files,
     }
-
-
-def _scan_gate_file(
-    path: Path,
-    columns: list[str],
-    *,
-    key_column: str,
-    require_unique_key: bool,
-) -> tuple[int, set[str], int, bool]:
-    observed_keys: set[str] = set()
-    duplicate_keys = 0
-    row_count = 0
-    non_placeholder_value = False
-    placeholders = {"placeholder", "todo", "unknown", "n/a", "not available"}
-    for row in _iter_table_dicts(path):
-        row_count += 1
-        if key_column in columns:
-            value = str(row.get(key_column, "")).strip()
-            if require_unique_key and value in observed_keys:
-                duplicate_keys += 1
-            observed_keys.add(value)
-        if row_count <= 1000:
-            for column in columns:
-                if column == key_column:
-                    continue
-                value = str(row.get(column, "")).strip().casefold()
-                if value and value not in placeholders:
-                    non_placeholder_value = True
-    placeholder_only = row_count > 0 and len(columns) > int(key_column in columns) and not non_placeholder_value
-    return row_count, observed_keys, duplicate_keys, placeholder_only
-
-
-def _duplicate_business_key_count(path: Path, key_columns: list[str]) -> int:
-    if not key_columns:
-        return 0
-    seen: set[tuple[str, ...]] = set()
-    duplicates = 0
-    for row in _iter_table_dicts(path):
-        key = tuple(_normalize_value(row.get(column, "")) for column in key_columns)
-        if key in seen:
-            duplicates += 1
-        else:
-            seen.add(key)
-    return duplicates
-
-
-def _read_key_values(path: Path, key_column: str) -> set[str]:
-    if not path.is_file():
-        raise ValueError(f"test keys do not exist: {path}")
-    values = {
-        str(row.get(key_column, "")).strip()
-        for row in _iter_table_dicts(path)
-        if str(row.get(key_column, "")).strip()
-    }
-    if not values:
-        raise ValueError(f"test keys contain no {key_column} values: {path}")
-    return values
-
-
-def _count_file_rows(path: Path) -> int:
-    return sum(1 for _ in _iter_table_dicts(path))
 
 
 def _private_test_reference(contract: dict[str, Any]) -> Path:

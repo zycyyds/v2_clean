@@ -25,6 +25,7 @@ from agentscope.agent import ReActAgent
 from agent.reference_runtime import (
     ENGINEER_CODE_READ_ROOTS,
     REFERENCE_CODE_AGENT_PIPELINE_SKILLS,
+    create_reference_compression_config,
     create_reference_memory,
     create_reference_toolkit,
     make_reference_model,
@@ -34,8 +35,20 @@ from lib.agent_artifacts import clear_phase_context, init_phase_session, set_pha
 from lib.agent_runtime import format_message_content, make_user_msg
 from workflow.reference_splits import infer_dataset_profile
 from workflow.reference_evaluation import (
+    IGNORED_PACKAGE_FILES,
     SCORER_VERSION,
     evaluate_reference_directory_package as evaluate_balanced_reference_directory_package,
+)
+from workflow.reference_package_gate import (
+    MIMIC_EXPECTED_BUSINESS_FILE_COUNT,
+    validate_business_result_package,
+)
+from workflow.reference_pipeline import (
+    PIPELINE_MODULES,
+    pipeline_directory_sha256,
+    pipeline_modules_for_business_targets,
+    validate_and_replay_candidate_pipeline,
+    validate_pipeline_structure,
 )
 from workflow.skill_adapter import persist_validated_variants, restore_bundle_variants
 
@@ -272,18 +285,30 @@ def _reference_candidate_quality_gate(
         issues.append("no changed business file")
 
     allowed_targets: set[str] = set()
+    has_generic_target = False
     if repair_targets is not None and repair_targets.is_file():
         payload = _load_json(repair_targets)
+        target_items = [item for item in payload.get("targets") or [] if isinstance(item, dict)]
+        has_generic_target = any(
+            not str(item.get("relative_path") or "").strip()
+            for item in target_items
+        )
         allowed_targets = {
             str(item.get("relative_path") or "").strip().lstrip("/")
-            for item in payload.get("targets") or []
+            for item in target_items
             if isinstance(item, dict) and str(item.get("relative_path") or "").strip()
         }
-        unrelated = sorted(set(changed_business) - allowed_targets)
-        if unrelated:
-            issues.append("unrelated business files changed: " + ", ".join(unrelated[:20]))
-        if changed_business and not (set(changed_business) & allowed_targets):
-            issues.append("no feedback-linked business file changed")
+        if not has_generic_target:
+            unrelated = sorted(set(changed_business) - allowed_targets)
+            if unrelated:
+                issues.append("unrelated business files changed: " + ", ".join(unrelated[:20]))
+            if changed_business and not (set(changed_business) & allowed_targets):
+                issues.append("no feedback-linked business file changed")
+    allowed_changed_modules = (
+        pipeline_modules_for_business_targets(allowed_targets)
+        if repair_targets is not None and repair_targets.is_file() and not has_generic_target
+        else None
+    )
 
     delta_path = candidate / "candidate_delta.json"
     if delta_path.is_file():
@@ -305,47 +330,102 @@ def _reference_candidate_quality_gate(
         if missing_files:
             issues.append("result_package is incomplete: " + ", ".join(missing_files[:20]))
 
-    regression_path = candidate / "train_regression_report.json"
-    if not regression_path.is_file():
-        issues.append("train_regression_report.json is missing")
-        regression_files: dict[str, bool] = {}
-    else:
-        regression_payload = _load_json(regression_path)
-        regression_files = _train_regression_file_statuses(regression_payload)
-        issues.extend(_train_regression_schema_issues(regression_payload, changed_business))
-        if str(regression_payload.get("status") or "").upper() != "SUCCESS":
-            issues.append("train regression status is not SUCCESS")
-        missing_regressions = sorted(path for path in changed_business if path not in regression_files)
-        failed_regressions = sorted(path for path in changed_business if regression_files.get(path) is False)
-        if missing_regressions:
-            issues.append("changed files missing train regression: " + ", ".join(missing_regressions[:20]))
-        if failed_regressions:
-            issues.append("train regression failed: " + ", ".join(failed_regressions[:20]))
-
-    validation_path = candidate / "result_package_validation_report.json"
-    if validation_path.is_file():
-        validation = _load_json(validation_path)
-        if validation.get("valid") is False or str(validation.get("status") or "SUCCESS").upper() != "SUCCESS":
-            issues.append("result package validation did not pass")
-
-    expected_count = _validation_key_count(contract)
+    paths = contract.get("paths") or {}
     key_column = str(contract.get("key_column") or contract.get("record_grain") or "")
-    if expected_count and key_column and candidate_package.is_dir():
-        cohort = _find_package_cohort_file(candidate_package)
-        if cohort is None:
-            issues.append("cohort file is missing for exact key coverage validation")
+    required_host_paths = {
+        name: Path(str(paths.get(name))).expanduser().resolve()
+        for name in (
+            "train_raw",
+            "train_reference_root",
+            "train_keys",
+            "validation_raw",
+            "validation_keys",
+        )
+        if str(paths.get(name) or "").strip()
+    }
+    reference_directory_contract = contract.get("reference_type") == "reference_directory"
+    host_path_issues: list[str] = []
+    if reference_directory_contract:
+        if not key_column:
+            host_path_issues.append("reference-directory contract has no key_column")
+        for name in ("train_raw", "train_reference_root", "validation_raw"):
+            path = required_host_paths.get(name)
+            if path is None or not path.is_dir():
+                host_path_issues.append(f"required host directory is missing: {name}")
+        for name in ("train_keys", "validation_keys"):
+            path = required_host_paths.get(name)
+            if path is None or not path.is_file():
+                host_path_issues.append(f"required host key file is missing: {name}")
+        issues.extend(host_path_issues)
+    pipeline_required = reference_directory_contract
+    business_gate: dict[str, Any] = {}
+    pipeline_replay_gate: dict[str, Any] = {}
+    if pipeline_required and not host_path_issues:
+        business_gate = validate_business_result_package(
+            result_package=candidate_package,
+            train_reference_root=required_host_paths["train_reference_root"],
+            split_keys=required_host_paths["validation_keys"],
+            key_column=key_column,
+            split_mode="validation",
+            required_file_count=MIMIC_EXPECTED_BUSINESS_FILE_COUNT,
+        )
+        issues.extend(f"business package gate: {item}" for item in business_gate["issues"])
+        previous_pipeline = active / "script_bundle" / "pipeline"
+        pipeline_replay_gate = validate_and_replay_candidate_pipeline(
+            pipeline_dir=candidate / "script_bundle" / "pipeline",
+            previous_pipeline_dir=previous_pipeline if previous_pipeline.is_dir() else None,
+            candidate_result_package=candidate_package,
+            train_raw=required_host_paths["train_raw"],
+            train_reference_root=required_host_paths["train_reference_root"],
+            train_keys=required_host_paths["train_keys"],
+            validation_raw=required_host_paths["validation_raw"],
+            validation_keys=required_host_paths["validation_keys"],
+            key_column=key_column,
+            report_root=candidate / "host_replay",
+            allowed_changed_modules=allowed_changed_modules,
+        )
+        issues.extend(f"pipeline replay gate: {item}" for item in pipeline_replay_gate["issues"])
+    elif not pipeline_required:
+        regression_path = candidate / "train_regression_report.json"
+        if not regression_path.is_file():
+            issues.append("train_regression_report.json is missing")
+            regression_files: dict[str, bool] = {}
         else:
-            try:
-                frame = _read_table_preview(cohort, nrows=None)
-                key_values = frame[key_column].dropna().astype(str) if key_column in frame.columns else pd.Series(dtype=str)
-                if int(key_values.nunique()) != expected_count:
-                    issues.append(
-                        f"cohort key coverage mismatch: expected={expected_count}, actual={int(key_values.nunique())}"
-                    )
-                if bool(key_values.duplicated().any()):
-                    issues.append("cohort contains duplicate keys")
-            except Exception as exc:
-                issues.append(f"could not validate cohort keys: {exc}")
+            regression_payload = _load_json(regression_path)
+            regression_files = _train_regression_file_statuses(regression_payload)
+            issues.extend(_train_regression_schema_issues(regression_payload, changed_business))
+            if str(regression_payload.get("status") or "").upper() != "SUCCESS":
+                issues.append("train regression status is not SUCCESS")
+            missing_regressions = sorted(path for path in changed_business if path not in regression_files)
+            failed_regressions = sorted(path for path in changed_business if regression_files.get(path) is False)
+            if missing_regressions:
+                issues.append("changed files missing train regression: " + ", ".join(missing_regressions[:20]))
+            if failed_regressions:
+                issues.append("train regression failed: " + ", ".join(failed_regressions[:20]))
+
+        validation_path = candidate / "result_package_validation_report.json"
+        if validation_path.is_file():
+            validation = _load_json(validation_path)
+            if validation.get("valid") is False or str(validation.get("status") or "SUCCESS").upper() != "SUCCESS":
+                issues.append("result package validation did not pass")
+
+        expected_count = _validation_key_count(contract)
+        if expected_count and key_column and candidate_package.is_dir():
+            cohort = _find_package_cohort_file(candidate_package)
+            if cohort is None:
+                issues.append("cohort file is missing for exact key coverage validation")
+            else:
+                try:
+                    frame = _read_table_preview(cohort, nrows=None)
+                    key_values = frame[key_column].dropna().astype(str) if key_column in frame.columns else pd.Series(dtype=str)
+                    if int(key_values.nunique()) != expected_count:
+                        issues.append(
+                            f"cohort key coverage mismatch: expected={expected_count}, actual={int(key_values.nunique())}"
+                        )
+                    if bool(key_values.duplicated().any()):
+                        issues.append("cohort contains duplicate keys")
+                except Exception as exc:
+                    issues.append(f"could not validate cohort keys: {exc}")
 
     return {
         "schema_version": 1,
@@ -353,6 +433,8 @@ def _reference_candidate_quality_gate(
         "status": "SUCCESS" if not issues else "NEEDS_REPAIR",
         "changed_business_files": changed_business,
         "allowed_feedback_files": sorted(allowed_targets),
+        "business_gate": business_gate,
+        "pipeline_replay_gate": pipeline_replay_gate,
         "issues": issues,
     }
 
@@ -497,6 +579,7 @@ def infer_reference_contract(dataset_split: str | Path) -> dict[str, Any]:
         "key_column": key_column,
         "paths": {
             "train_raw": str(train_raw),
+            "train_keys": str(split / "train" / "keys.csv"),
             "train_reference_root": str(train_reference_root),
             "train_reference": str(train_reference),
             "validation_raw": str(validation_raw),
@@ -625,6 +708,30 @@ def _copy_active_bundle_for_candidate(active_dir: Path, candidate: Path) -> None
     shutil.copytree(active_dir, candidate, ignore=_ignore)
 
 
+def _inherit_pipeline_to_workspace(active_dir: Path, workspace: Path) -> str:
+    source = active_dir / "script_bundle" / "pipeline"
+    target = workspace / "pipeline"
+    if target.exists():
+        shutil.rmtree(target)
+    if not source.is_dir():
+        return ""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+    return pipeline_directory_sha256(source)
+
+
+def _stage_workspace_pipeline(workspace: Path, candidate: Path) -> Path | None:
+    source = workspace / "pipeline"
+    target = candidate / "script_bundle" / "pipeline"
+    if target.exists():
+        shutil.rmtree(target)
+    if not source.is_dir():
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+    return target
+
+
 def _archive_promoted_round(
     *,
     experiment_dir: str | Path,
@@ -663,8 +770,16 @@ def _archive_promoted_round(
             source = Path(str(raw_path or "")).expanduser()
             if source.is_file():
                 shutil.copy2(source, evaluation_dir / f"{name}{source.suffix}")
+    host_replay = candidate_dir / "host_replay"
+    if host_replay.is_dir():
+        shutil.copytree(host_replay, prepared_round / "host_replay")
     bundle_hash = _directory_sha256(script_bundle)
     result_hash = _directory_sha256(result_package)
+    pipeline = script_bundle / "pipeline"
+    pipeline_hash = pipeline_directory_sha256(pipeline) if pipeline.is_dir() else ""
+    entrypoint = pipeline / "run.py"
+    entrypoint_hash = hashlib.sha256(entrypoint.read_bytes()).hexdigest() if entrypoint.is_file() else ""
+    pipeline_manifest = _load_json(pipeline / "pipeline_manifest.json") if (pipeline / "pipeline_manifest.json").is_file() else {}
     provenance = {
         "schema_version": 1,
         "status": "SUCCESS",
@@ -673,6 +788,10 @@ def _archive_promoted_round(
         "score": score,
         "candidate": str(candidate_dir),
         "script_bundle_sha256": bundle_hash,
+        "pipeline_sha256": pipeline_hash,
+        "entrypoint_sha256": entrypoint_hash,
+        "parent_pipeline_sha256": str(pipeline_manifest.get("parent_pipeline_sha256") or ""),
+        "host_replay_report": str(round_dir / "host_replay/pipeline_replay_report.json") if host_replay.is_dir() else "",
         "validation_result_sha256": result_hash,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -768,7 +887,7 @@ def _merge_script_workspace(source: Path, target: Path) -> None:
         ".txt",
         ".sh",
     }
-    excluded_parts = {"result_package", "artifacts", "__pycache__", ".pytest_cache"}
+    excluded_parts = {"result_package", "artifacts", "pipeline", "__pycache__", ".pytest_cache"}
     for path in sorted(item for item in source.rglob("*") if item.is_file()):
         relative = path.relative_to(source)
         if excluded_parts.intersection(relative.parts) or path.suffix.casefold() not in allowed_suffixes:
@@ -1031,20 +1150,36 @@ class ReferenceCodeAgentRuntime:
         promotions_this_run = 0
         attempts_this_run = 0
         while True:
-            stop_reason = _reference_stop_reason(
-                state,
-                promotions_this_run=promotions_this_run,
-                attempts_this_run=attempts_this_run,
-                round_limit=self.config.round_limit,
-                patience=self.config.patience,
-                max_attempts=self.config.max_attempts,
-                target_score=self.config.target_score,
-            )
+            force_validation_attempt = bool(state.pop("force_validation_attempt", False))
+            if force_validation_attempt:
+                state["status"] = "active"
+                _write_json(self.state_path, state)
+                stop_reason = ""
+            else:
+                stop_reason = _reference_stop_reason(
+                    state,
+                    promotions_this_run=promotions_this_run,
+                    attempts_this_run=attempts_this_run,
+                    round_limit=self.config.round_limit,
+                    patience=self.config.patience,
+                    max_attempts=self.config.max_attempts,
+                    target_score=self.config.target_score,
+                )
             if stop_reason:
                 try:
                     state = self._checkpoint_and_test(stop_reason, state)
                 except KeyboardInterrupt:
                     state = self._mark_interrupted("second_interrupt")
+                if (
+                    state.get("status") == "validation_resume_required"
+                    and attempts_this_run < self.config.max_attempts
+                ):
+                    continue
+                if state.get("status") == "validation_resume_required":
+                    state["status"] = "checkpointed_pipeline_rule_failure"
+                    state["termination_reason"] = "max_attempts_after_test_rule_failure"
+                state.pop("force_validation_attempt", None)
+                _write_json(self.state_path, state)
                 break
 
             attempt_index = len(state.get("attempts", [])) + 1
@@ -1065,6 +1200,11 @@ class ReferenceCodeAgentRuntime:
                     state = self._checkpoint_and_test("cancelled_by_user", state)
                 except KeyboardInterrupt:
                     state = self._mark_interrupted("second_interrupt")
+                if (
+                    state.get("status") == "validation_resume_required"
+                    and attempts_this_run < self.config.max_attempts
+                ):
+                    continue
                 break
             if improved:
                 promotions_this_run += 1
@@ -1082,6 +1222,10 @@ class ReferenceCodeAgentRuntime:
         if public_feedback is not None and not public_feedback.is_file():
             public_feedback = None
         previous_outcome = self._latest_attempt_outcome(state)
+        test_rule_feedback_text = str(state.get("pending_test_rule_feedback", "") or "")
+        test_rule_feedback = Path(test_rule_feedback_text) if test_rule_feedback_text else None
+        if test_rule_feedback is not None and not test_rule_feedback.is_file():
+            test_rule_feedback = None
         package: dict[str, Any] = {}
         try:
             package = asyncio.run(
@@ -1090,6 +1234,7 @@ class ReferenceCodeAgentRuntime:
                     attempt_index=attempt_index,
                     public_feedback=public_feedback,
                     previous_outcome=previous_outcome,
+                    test_rule_feedback=test_rule_feedback,
                 )
             )
         except Exception as exc:
@@ -1156,6 +1301,7 @@ class ReferenceCodeAgentRuntime:
             gate=gate,
         )
         if improved:
+            state.pop("pending_test_rule_feedback", None)
             round_dir = _archive_promoted_round(
                 experiment_dir=self.experiment_dir,
                 candidate=candidate,
@@ -1296,6 +1442,7 @@ class ReferenceCodeAgentRuntime:
         attempt_index: int,
         public_feedback: Path | None,
         previous_outcome: Path | None = None,
+        test_rule_feedback: Path | None = None,
     ) -> dict[str, Any]:
         attempt_root = candidate / "agent_runs"
         phase = init_phase_session(attempt_root, "reference_code_agent")
@@ -1314,6 +1461,44 @@ class ReferenceCodeAgentRuntime:
         active_result_package = self.active_dir / "results" / "result_package"
         if active_result_package.is_dir():
             report_paths["active_result_package"] = str(active_result_package)
+        active_pipeline = self.active_dir / "script_bundle" / "pipeline"
+        parent_pipeline_sha256 = (
+            pipeline_directory_sha256(active_pipeline) if active_pipeline.is_dir() else ""
+        )
+        if active_pipeline.is_dir():
+            report_paths["current_best_pipeline"] = str(active_pipeline)
+        pipeline_contract_path = candidate / "canonical_pipeline_contract.json"
+        _write_json(
+            pipeline_contract_path,
+            {
+                "schema_version": 1,
+                "entrypoint": "pipeline/run.py",
+                "modules": [
+                    "cohort.py",
+                    "labels.py",
+                    "chart.py",
+                    "diag.py",
+                    "med.py",
+                    "out.py",
+                    "proc.py",
+                    "summary.py",
+                ],
+                "expected_files": sorted(
+                    path.relative_to(train_reference_root).as_posix()
+                    for path in _structured_package_files(train_reference_root)
+                    if path.name not in IGNORED_PACKAGE_FILES
+                ),
+                "parent_pipeline_sha256": parent_pipeline_sha256,
+                "forbidden_source_markers": [
+                    "active_bundle",
+                    "validation_result",
+                    "reference_private",
+                    "test_evaluation",
+                    "private_report",
+                ],
+            },
+        )
+        report_paths["canonical_pipeline_contract"] = str(pipeline_contract_path)
         if paths.get("train_reference"):
             report_paths["train_reference_sample"] = str(Path(paths["train_reference"]).expanduser().resolve())
         package_manifest = train_reference_root / "package_manifest.json"
@@ -1334,6 +1519,14 @@ class ReferenceCodeAgentRuntime:
             previous_feedback = Path(previous_feedback_text) if previous_feedback_text else None
             if previous_feedback is not None and previous_feedback.is_file():
                 report_paths["previous_attempt_feedback_negative_evidence"] = str(previous_feedback)
+        if test_rule_feedback is not None:
+            report_paths["test_pipeline_rule_failure"] = str(test_rule_feedback)
+            repair_targets_path = repair_targets_path or candidate / "repair_targets.json"
+            _merge_test_rule_feedback_into_repair_targets(
+                test_rule_feedback,
+                repair_targets_path,
+            )
+            report_paths["repair_targets"] = str(repair_targets_path)
         read_roots = [
             *ENGINEER_CODE_READ_ROOTS,
             paths["train_raw"],
@@ -1346,6 +1539,8 @@ class ReferenceCodeAgentRuntime:
             read_roots.append(validation_keys)
         if previous_outcome is not None:
             read_roots.append(previous_outcome)
+        if test_rule_feedback is not None:
+            read_roots.append(test_rule_feedback)
         previous_feedback_path = report_paths.get("previous_attempt_feedback_negative_evidence", "")
         if previous_feedback_path:
             read_roots.append(previous_feedback_path)
@@ -1360,6 +1555,12 @@ class ReferenceCodeAgentRuntime:
                 split_mode="validation",
                 required_report_paths=report_paths,
             )
+            inherited_parent = _inherit_pipeline_to_workspace(
+                self.active_dir,
+                context.workspace_dir,
+            )
+            if inherited_parent != parent_pipeline_sha256:
+                raise RuntimeError("inherited pipeline hash changed before Agent execution")
             toolkit, manifest = create_reference_toolkit(context)
             _remove_fixed_reference_incompatible_tools(toolkit)
             agent_skill_prompt = toolkit.get_agent_skill_prompt()
@@ -1393,6 +1594,7 @@ class ReferenceCodeAgentRuntime:
                     },
                     model,
                 ),
+                compression_config=create_reference_compression_config(model),
                 parallel_tool_calls=False,
                 max_iters=self.config.max_iters,
                 print_hint_msg=False,
@@ -1416,6 +1618,7 @@ class ReferenceCodeAgentRuntime:
                     "ReferenceCodeAgent did not produce a complete reference result package; "
                     f"see {check}"
                 )
+            staged_pipeline = _stage_workspace_pipeline(context.workspace_dir, candidate)
             persisted = persist_validated_variants(context.variant_root, candidate)
             packaged_skills = _stage_claude_style_agent_skills(
                 phase_root=phase_root,
@@ -1428,6 +1631,7 @@ class ReferenceCodeAgentRuntime:
             staged["producer"] = "reference_code_agent"
             staged["engineer_phase_root"] = str(phase_root)
             staged["adapter_bundle"] = str(adapter_bundle)
+            staged["pipeline"] = str(staged_pipeline) if staged_pipeline is not None else ""
             feedback_response_path = None
             if repair_targets_path is not None:
                 if _latest_named_file(phase_root, "feedback_response.json") is None:
@@ -1495,6 +1699,10 @@ class ReferenceCodeAgentRuntime:
         train_reference_root = Path(
             paths.get("train_reference_root") or Path(paths["train_reference"]).expanduser().resolve().parent
         ).expanduser().resolve()
+        active_pipeline = self.active_dir / "script_bundle" / "pipeline"
+        expected_parent_pipeline_sha256 = (
+            pipeline_directory_sha256(active_pipeline) if active_pipeline.is_dir() else ""
+        )
         validation_keys = Path(paths.get("validation_keys") or "")
         expected_count = _validation_key_count(self.contract)
         lines = [
@@ -1513,6 +1721,8 @@ class ReferenceCodeAgentRuntime:
             f"candidate bundle: {candidate}",
             f"workspace: {phase_root / 'workspace'}",
             f"current best result_package (read-only baseline): {self.active_dir / 'results' / 'result_package' if (self.active_dir / 'results' / 'result_package').is_dir() else ''}",
+            f"current best canonical pipeline (inherited into workspace/pipeline): {report_paths.get('current_best_pipeline', '')}",
+            f"required parent_pipeline_sha256: {expected_parent_pipeline_sha256 or '<root>'}",
             "",
             "【必须先读取】",
             *[f"- {name}: {path}" for name, path in sorted(report_paths.items())],
@@ -1524,26 +1734,30 @@ class ReferenceCodeAgentRuntime:
             "4. 如果 train/reference 是 `preproc_*_icu.csv` 这类事件明细长表，而对应 pipeline skill 默认输出宽表或列名不匹配，说明这是接口/输出契约差异，不是逻辑不可用。",
             "5. 对接口/输出契约差异，先 inspect_skill，再创建 experiment 内 adapter/fork，复用原 pipeline skill 或其 source_pipeline_files 的核心逻辑；不要新增全局 skill，也不要直接写一个匿名大脚本绕过。",
             "6. 如果某个相关 pipeline skill 的核心逻辑确实不适用，写 no_applicable_skill_reason.json 说明缺口，再创建 adapter/fork 或 standalone 草稿。",
-            "7. 创建或更新 experiment 内 adapter/fork；本阶段优先允许脚本和 adapter 在 loop 中持续迭代。",
+            "7. 创建或更新 workspace/pipeline 下的累计 Pipeline；唯一入口必须是 workspace/pipeline/run.py。",
             "7a. 本轮不强制包装 Skill。只有当你已经自然整理好稳定能力时，才可选写 workspace/skill_packaging_plan.json 和 workspace/capabilities/<skill_name>/；缺失或格式不完整不得阻塞 result_package 进入评估。",
-            "8. 在 train raw 上生成预测 reference package，并与 train/reference 做回归检查；不通过就修复再跑。必须生成机器可判定的 train_regression_report.json。",
+            "8. 必须用 workspace/pipeline/run.py 在 train raw 上生成预测 reference package，并与 train/reference 做回归检查；Agent 报告只作参考，宿主会在隔离进程重新生成机器报告。",
             "9. train 回归通过或明确 blocked 后，才处理 validation raw。",
             "10. validation 阶段不能读取 hidden validation reference/private report。",
-            "11. ExecutePython 只能写本步骤 OUTPUT_DIR，绝不能直接写 workspace/result_package。第 2 轮及以后，先把 current best 的完整 result_package 复制到 OUTPUT_DIR/result_package，只替换本轮修复文件；第 1 轮则在 OUTPUT_DIR/result_package 从零生成完整包。",
+            "11. ExecutePython 只能写本步骤 OUTPUT_DIR，绝不能直接写 workspace/result_package。候选完整 result_package 必须由 workspace/pipeline/run.py 生成，不得执行后手工修改任何业务 CSV。",
             "12. 每轮结束前必须用 PublishDirectoryArtifact 将 OUTPUT_DIR/result_package 发布为 workspace/result_package；宿主只会评估这个已发布的完整候选包。",
             "13. 一个 attempt 内可做多次局部修改和 train 检查；未涉及 repair target 的现有业务文件必须与 current best 保持字节一致。只有门禁通过的候选才会隐藏评估，且 composite_score 严格提升才算完成正式 loop。",
-            "14. 用 ValidateResultPackage 校验 validation result_package；如果工具参数不确定，先生成核心 result_package，宿主会做基础收口检查。",
+            "14. workspace/pipeline 必须包含 pipeline_manifest.json、run.py、cohort.py、labels.py、chart.py、diag.py、med.py、out.py、proc.py、summary.py、config.yaml。manifest 必须声明完整业务文件、固定模块以及本轮 required parent_pipeline_sha256。",
+            "14a. summary 的实现方式由你自主决定。若 raw 无法稳定推导 train/reference 中的 summary，你可以把从公开 train/reference 学到的 summary 层信息沉淀到 workspace/pipeline/summary_assets/*.csv，并在 manifest 的 learned_summary_assets 中逐项声明 source、path、sha256；宿主会验证它与 train/reference 对应 summary 文件完全一致。不要为了使用该能力机械复制 summary，能够从 raw 稳定计算时仍可直接计算。",
+            "15. 后续正式 Round 必须继承 workspace 中已有 Pipeline，只修改反馈涉及模块；入口仍必须生成全部17个业务文件。缺入口、manifest、lineage 或宿主可重放能力时不得返回 SUCCESS。",
+            "16. Pipeline 源文件不得引用或写入 active bundle、validation result、private reference、test evaluation 或 private report；这些禁用来源标记也不要出现在 Pipeline 代码、配置和注释中。除已声明且经宿主核验的 summary_assets 外，严禁沉淀 stay_id、subject_id、hadm_id、label、患者级业务行或其他结果数据。",
             "",
             "【最终必须生成的核心结果】",
             "- result_package/ 目录",
             "- result_package 下与 train/reference 同构的 cohort/、features/ 等子文件",
+            "- pipeline/ 目录及唯一入口 pipeline/run.py；调用接口固定为 python pipeline/run.py --raw-root <raw> --output-dir <output> --split-mode train|validation|test",
             "- train_regression_report.json，格式必须包含 schema_version=2、status=SUCCESS、files 列表；files 每项必须包含 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、布尔值 passed 和 failure_reason，并覆盖本轮修改的每个业务文件",
             "- 不要求生成 reference.csv；不要为了凑 reference.csv 把多文件 reference 强行合成一张表",
             "",
             "【可选运行记录】",
             "- package_manifest.json 可作为目录索引/审计文件生成，但不是成功的必要条件。",
             "- reference_shape_contract.json、skill_usage_report.json 可生成，但不要为了补这些可选文件阻塞核心 result_package。",
-            "- 如需修改 pipeline skill 行为，只能创建当前 experiment 内 adapter/fork；本阶段可先以脚本/adapter 形式保存到 candidate，后续轮继续复用和修改。",
+            "- 如需修改 pipeline skill 行为，只能落实到 workspace/pipeline 对应模块；散落在 workspace 其他位置的临时脚本不会成为 canonical Pipeline。",
             "- Skill 包装是验证 loop 收敛后的独立冻结步骤；本轮如创建了 workspace/capabilities 或 skill_packaging_plan.json，只作为可选记录，不作为成功条件。",
             "- 如果生成 package_manifest，不要把 source/source_reference_root/primary_reference 外部路径写入最终结果包。",
             "",
@@ -1572,6 +1786,16 @@ class ReferenceCodeAgentRuntime:
                     "",
                     f"【上一候选失败记录】仅作为负面经验读取，不得替代当前 best repair targets: {report_paths['previous_attempt_outcome']}",
                     f"【上一候选反馈】仅用于避免重复失败，不是当前基线反馈: {report_paths.get('previous_attempt_feedback_negative_evidence', '')}",
+                ]
+            )
+        if report_paths.get("test_pipeline_rule_failure"):
+            lines.extend(
+                [
+                    "",
+                    f"【Test Pipeline 公开失败反馈】{report_paths['test_pipeline_rule_failure']}",
+                    f"该反馈已合并进本轮 repair targets：{report_paths.get('repair_targets', '')}",
+                    "只能继承当前 best Pipeline 修复通用业务规则；不得读取 test reference 或评分。",
+                    "修复后仍必须让 train/validation 重放、业务变化和严格提分规则全部通过。",
                 ]
             )
         return "\n".join(lines)
@@ -1656,6 +1880,13 @@ class ReferenceCodeAgentRuntime:
             _write_json(self.state_path, state)
             return state
 
+        state, canonical_pipeline, formal_bundle = self._ensure_canonical_pipeline(state)
+        if canonical_pipeline is None or formal_bundle is None:
+            state["status"] = "pipeline_consolidation_failed"
+            state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _write_json(self.state_path, state)
+            return state
+
         checkpoint_index = _next_checkpoint_index(self.test_checkpoints_dir, state)
         checkpoint_dir = (
             self.test_checkpoints_dir
@@ -1669,18 +1900,16 @@ class ReferenceCodeAgentRuntime:
         frozen_bundle = self.experiment_dir / "frozen_bundle"
         fingerprint = ""
         try:
-            formal_bundle = (
-                self.experiment_dir
-                / "rounds"
-                / f"round_{best_round:04d}"
-                / "script_bundle"
-            )
-            if not formal_bundle.is_dir():
-                formal_bundle = self.active_dir / "script_bundle"
-            if not formal_bundle.is_dir():
-                raise RuntimeError(f"formal best script bundle is missing: {formal_bundle}")
-
-            _replace_directory_atomically(formal_bundle, frozen_script_bundle)
+            freeze_source = formal_bundle
+            formal_pipeline = formal_bundle / "pipeline"
+            if not formal_pipeline.is_dir() or formal_pipeline.resolve() != canonical_pipeline.resolve():
+                freeze_source = checkpoint_dir / ".canonical_script_bundle_source"
+                shutil.copytree(formal_bundle, freeze_source)
+                shutil.rmtree(freeze_source / "pipeline", ignore_errors=True)
+                shutil.copytree(canonical_pipeline, freeze_source / "pipeline")
+            _replace_directory_atomically(freeze_source, frozen_script_bundle)
+            if freeze_source != formal_bundle:
+                shutil.rmtree(freeze_source, ignore_errors=True)
             _replace_directory_atomically(self.active_dir, frozen_bundle)
             fingerprint = _checkpoint_fingerprint(
                 frozen_script_bundle,
@@ -1765,13 +1994,383 @@ class ReferenceCodeAgentRuntime:
             "reused_from": report.get("reused_from", ""),
         }
         state.setdefault("checkpoints", []).append(checkpoint_record)
-        state["status"] = "checkpointed"
+        if report.get("test_status") == "pipeline_rule_failure":
+            feedback_path = checkpoint_dir / "test_pipeline_rule_feedback.json"
+            gate = report.get("gate") or {}
+            execution = gate.get("execution") or {}
+            execution_failure = {
+                key: execution.get(key)
+                for key in (
+                    "status",
+                    "returncode",
+                    "timed_out",
+                    "resource_limit_reason",
+                    "error",
+                )
+                if execution.get(key) not in (None, "")
+            }
+            log_path_text = str(execution.get("log_path") or "")
+            if log_path_text:
+                execution_failure["log_tail"] = _read_public_log_tail(
+                    Path(log_path_text),
+                    max_chars=12000,
+                )
+            _write_json(
+                feedback_path,
+                {
+                    "schema_version": 1,
+                    "status": "PIPELINE_RULE_FAILURE",
+                    "source": "host_test_business_gate",
+                    "checkpoint": checkpoint_index,
+                    "best_round": best_round,
+                    "pipeline_sha256": state.get("pipeline_sha256", ""),
+                    "issues": gate.get("issues") or [],
+                    "diagnostics": gate.get("diagnostics") or [],
+                    "execution_failure": execution_failure,
+                    "instruction": (
+                        "Update the inherited validation pipeline rules and replay train/validation; "
+                        "do not inspect test reference or test evaluation."
+                    ),
+                },
+            )
+            state["status"] = "validation_resume_required"
+            state["pending_test_rule_feedback"] = str(feedback_path)
+            state["force_validation_attempt"] = True
+            state["consecutive_valid_no_improvement"] = 0
+        else:
+            state["status"] = "checkpointed"
         state.pop("pending_checkpoint", None)
         state["latest_checkpoint"] = str(checkpoint_dir)
         state["frozen_bundle"] = str(frozen_bundle) if frozen_bundle.is_dir() else ""
         state["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _write_json(self.state_path, state)
         return state
+
+    def _ensure_canonical_pipeline(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any], Path | None, Path | None]:
+        best_round = int(state.get("best_round") or 0)
+        formal_bundle = (
+            self.experiment_dir
+            / "rounds"
+            / f"round_{best_round:04d}"
+            / "script_bundle"
+        )
+        if not formal_bundle.is_dir():
+            formal_bundle = self.active_dir / "script_bundle"
+        if not formal_bundle.is_dir():
+            state["pipeline_consolidation"] = {
+                "status": "FAILED",
+                "issues": [f"formal best script bundle is missing: {formal_bundle}"],
+            }
+            return state, None, None
+
+        state_pipeline_text = str(state.get("canonical_pipeline") or "")
+        state_pipeline = Path(state_pipeline_text).expanduser().resolve() if state_pipeline_text else None
+        formal_pipeline = formal_bundle / "pipeline"
+        pipeline_source = ""
+        if formal_pipeline.is_dir():
+            canonical = formal_pipeline.resolve()
+            pipeline_source = "formal_round"
+        elif state_pipeline is not None and state_pipeline.is_dir():
+            canonical = state_pipeline
+            pipeline_source = "legacy_consolidation"
+        else:
+            canonical = self._consolidate_legacy_pipeline(state, best_round)
+            if canonical is None:
+                return state, None, formal_bundle
+            pipeline_source = "legacy_consolidation"
+
+        entrypoint = canonical / "run.py"
+        manifest = canonical / "pipeline_manifest.json"
+        if not entrypoint.is_file() or not manifest.is_file():
+            state["pipeline_consolidation"] = {
+                "status": "FAILED",
+                "issues": ["canonical pipeline is missing run.py or pipeline_manifest.json"],
+            }
+            return state, None, formal_bundle
+        expected_files = sorted(
+            path.relative_to(Path((self.contract.get("paths") or {})["train_reference_root"])).as_posix()
+            for path in _structured_package_files(
+                Path((self.contract.get("paths") or {})["train_reference_root"])
+            )
+            if path.name not in IGNORED_PACKAGE_FILES
+        )
+        manifest_payload = _load_json(manifest)
+        structure = validate_pipeline_structure(
+            canonical,
+            expected_files=expected_files,
+            expected_parent_sha256=str(manifest_payload.get("parent_pipeline_sha256") or ""),
+            train_reference_root=(self.contract.get("paths") or {})["train_reference_root"],
+        )
+        integrity_issues = list(structure.get("issues") or [])
+        current_pipeline_hash = pipeline_directory_sha256(canonical)
+        current_entrypoint_hash = hashlib.sha256(entrypoint.read_bytes()).hexdigest()
+        if pipeline_source == "formal_round":
+            provenance_path = formal_bundle.parent / "provenance.json"
+            provenance = _load_json(provenance_path) if provenance_path.is_file() else {}
+            if not provenance:
+                integrity_issues.append("formal round provenance.json is missing")
+            if str(provenance.get("pipeline_sha256") or "") != current_pipeline_hash:
+                integrity_issues.append("formal pipeline hash differs from promotion provenance")
+            if str(provenance.get("entrypoint_sha256") or "") != current_entrypoint_hash:
+                integrity_issues.append("formal entrypoint hash differs from promotion provenance")
+            if str(provenance.get("script_bundle_sha256") or "") != _directory_sha256(formal_bundle):
+                integrity_issues.append("formal script bundle hash differs from promotion provenance")
+            replay_report = formal_bundle.parent / "host_replay" / "pipeline_replay_report.json"
+            replay = _load_json(replay_report) if replay_report.is_file() else {}
+            if not replay or not replay.get("valid") or replay.get("status") != "SUCCESS":
+                integrity_issues.append("formal host replay report is missing or unsuccessful")
+        else:
+            consolidation = state.get("pipeline_consolidation") or {}
+            if (
+                consolidation.get("status") != "SUCCESS"
+                or not consolidation.get("reproducible")
+                or str(consolidation.get("pipeline_sha256") or "") != current_pipeline_hash
+                or str(consolidation.get("entrypoint_sha256") or "") != current_entrypoint_hash
+            ):
+                integrity_issues.append("legacy consolidation integrity record does not match pipeline")
+        if integrity_issues:
+            state["checkpoint_pipeline_validation"] = {
+                "status": "FAILED",
+                "pipeline": str(canonical),
+                "issues": integrity_issues,
+            }
+            state["reproducible"] = False
+            return state, None, formal_bundle
+        state["canonical_pipeline"] = str(canonical)
+        state["pipeline_sha256"] = current_pipeline_hash
+        state["entrypoint_sha256"] = current_entrypoint_hash
+        state["reproducible"] = True
+        return state, canonical, formal_bundle
+
+    def _consolidate_legacy_pipeline(
+        self,
+        state: dict[str, Any],
+        best_round: int,
+    ) -> Path | None:
+        round_dir = self.experiment_dir / "rounds" / f"round_{best_round:04d}"
+        consolidation_root = round_dir / "pipeline_consolidation"
+        consolidation_root.mkdir(parents=True, exist_ok=True)
+        report_path = consolidation_root / "consolidation_report.json"
+        canonical = consolidation_root / "pipeline"
+        try:
+            generated = self._run_pipeline_consolidation_agent(
+                consolidation_root,
+                best_round,
+            )
+            if canonical.exists():
+                shutil.rmtree(canonical)
+            shutil.copytree(generated, canonical)
+            paths = self.contract.get("paths") or {}
+            replay_gate = validate_and_replay_candidate_pipeline(
+                pipeline_dir=canonical,
+                previous_pipeline_dir=None,
+                candidate_result_package=round_dir / "validation_result",
+                train_raw=paths["train_raw"],
+                train_reference_root=paths["train_reference_root"],
+                train_keys=paths["train_keys"],
+                validation_raw=paths["validation_raw"],
+                validation_keys=paths["validation_keys"],
+                key_column=str(self.contract.get("key_column") or "stay_id"),
+                report_root=consolidation_root / "host_replay",
+            )
+            reproducible = bool(replay_gate.get("valid"))
+            report = {
+                "schema_version": 1,
+                "status": "SUCCESS" if reproducible else "FAILED",
+                "best_round": best_round,
+                "best_score": state.get("best_score", 0.0),
+                "canonical_pipeline": str(canonical),
+                "pipeline_sha256": pipeline_directory_sha256(canonical),
+                "entrypoint_sha256": (
+                    hashlib.sha256((canonical / "run.py").read_bytes()).hexdigest()
+                    if (canonical / "run.py").is_file()
+                    else ""
+                ),
+                "reproducible": reproducible,
+                "host_replay_report": str(
+                    consolidation_root / "host_replay/pipeline_replay_report.json"
+                ),
+                "issues": replay_gate.get("issues") or [],
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            _write_json(report_path, report)
+            state["pipeline_consolidation"] = report
+            if not reproducible:
+                state["reproducible"] = False
+                return None
+            return canonical
+        except Exception as exc:
+            report = {
+                "schema_version": 1,
+                "status": "FAILED",
+                "best_round": best_round,
+                "best_score": state.get("best_score", 0.0),
+                "canonical_pipeline": "",
+                "pipeline_sha256": "",
+                "entrypoint_sha256": "",
+                "reproducible": False,
+                "issues": [f"{type(exc).__name__}: {exc}"],
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            _write_json(report_path, report)
+            state["pipeline_consolidation"] = report
+            state["reproducible"] = False
+            return None
+
+    def _run_pipeline_consolidation_agent(
+        self,
+        consolidation_root: Path,
+        best_round: int,
+    ) -> Path:
+        phase = init_phase_session(consolidation_root / "agent_runs", "reference_code_agent")
+        phase_root = Path(phase["phase_root"])
+        run_id = f"reference_code_pipeline_consolidation_round_{best_round:04d}"
+        set_phase_context(
+            run_id,
+            consolidation_root / "agent_runs",
+            "reference_code_agent",
+            phase_root,
+        )
+        paths = self.contract.get("paths") or {}
+        round_bundles = [
+            self.experiment_dir / "rounds" / f"round_{index:04d}" / "script_bundle"
+            for index in range(1, best_round + 1)
+        ]
+        round_bundles = [path for path in round_bundles if path.is_dir()]
+        expected_files = sorted(
+            path.relative_to(Path(paths["train_reference_root"])).as_posix()
+            for path in _structured_package_files(Path(paths["train_reference_root"]))
+            if path.name not in IGNORED_PACKAGE_FILES
+        )
+        workspace = phase_root / "workspace"
+        bundle_list = "\n".join(f"- {path}" for path in round_bundles)
+        manifest_contract = {
+            "schema_version": 1,
+            "entrypoint": "run.py",
+            "modules": list(PIPELINE_MODULES),
+            "expected_files": expected_files,
+            "parent_pipeline_sha256": "",
+        }
+        task_text = f"""\
+请把当前同一次实验 Round 1 到 Round {best_round} 已成功晋升的脚本规则整理成唯一累计 Pipeline。
+
+你只能读取下面列出的正式 script_bundle、train/raw、train/reference 和 validation/raw；不得读取任何 validation_result、active_bundle、private reference、评分报告或其他实验目录。
+
+【唯一可写 workspace】
+{workspace}
+
+【正式脚本包，只读】
+{bundle_list}
+
+【公开数据，只读】
+- train/raw: {paths['train_raw']}
+- train/reference: {paths['train_reference_root']}
+- validation/raw: {paths['validation_raw']}
+
+【工具纪律】
+- 使用 Read/Glob/Grep 时必须传上面列出的绝对路径，不得猜测项目根目录或 `/workspace`。
+- 使用 Write/Edit 时只能写 {workspace}。
+- ExecutePython 只能执行已经先用 Write 创建在 {workspace} 内的 Python 文件。
+- 读取 Markdown 或代码必须使用 Read，不要用 ExecutePython。
+
+输出只能写到 workspace/pipeline，固定包含：
+- pipeline_manifest.json
+- run.py
+- cohort.py, labels.py, chart.py, diag.py, med.py, out.py, proc.py, summary.py
+- config.yaml
+
+除可选的 `summary_assets/*.csv` 外，workspace/pipeline 内不得出现其他文件或子目录。尤其禁止 `_static_summary/`、其他 CSV/TSV/Parquet/JSONL、第二个入口、临时诊断脚本或缓存文件。
+Pipeline 的代码、配置和注释中也不得出现 active bundle、validation result、private reference、test evaluation 或 private report 等禁用来源标记。
+
+固定接口：
+python pipeline/run.py --raw-root <raw> --output-dir <output> --split-mode train|validation|test
+
+pipeline_manifest.json 必须包含以下字段、字段名和值；不要使用 output_files，不要把 run.py 或 config.yaml 放进 modules：
+{json.dumps(manifest_contract, ensure_ascii=False, indent=2)}
+
+summary 的实现方式由你自主判断。若 raw 无法稳定推导公开 train/reference 中的 summary，可以把必要的 summary 层学习结果写入 `summary_assets/*.csv`，并在 manifest 增加 `learned_summary_assets` 列表；每项只包含 `source`、`path`、`sha256`，且 source 必须是对应的 `summary/*.csv`。宿主会核验资产与 train/reference 完全一致。
+
+除上述受控 summary_assets 外，不得把 train/reference 的业务数据、历史结果 CSV 或 validation 输出复制或转写进 Pipeline，也不得把这些数据伪装进 Python/YAML。严禁硬编码 stay_id、subject_id、hadm_id、label 或患者级业务行。最终17个文件必须由同一入口生成；你可以在 workspace 临时诊断，但最终只有 workspace/pipeline 会被宿主收取并隔离重放。
+"""
+        reports = {
+            "train_reference_root": str(paths["train_reference_root"]),
+            **{
+                f"formal_round_{index:04d}_script_bundle": str(bundle)
+                for index, bundle in enumerate(round_bundles, start=1)
+            },
+        }
+        read_roots: list[str | Path] = [
+            *ENGINEER_CODE_READ_ROOTS,
+            *round_bundles,
+            paths["train_raw"],
+            paths["train_reference_root"],
+            paths["validation_raw"],
+            consolidation_root,
+        ]
+        try:
+            context = EngineerToolContext.from_task(
+                task_text=task_text,
+                engineer_phase_root=phase_root,
+                explorer_phase_root=str(consolidation_root),
+                additional_read_roots=read_roots,
+                require_skill_plan=False,
+                split_mode="validation",
+                required_report_paths=reports,
+            )
+            toolkit, _ = create_reference_toolkit(context)
+            _remove_fixed_reference_incompatible_tools(toolkit)
+            model, formatter = make_reference_model()
+            read_roots_text = "\n".join(
+                f"- {Path(root).expanduser().resolve()}" for root in read_roots
+            )
+            agent = ReActAgent(
+                name="ReferenceCodeAgent",
+                sys_prompt=f"""\
+你是 ReferenceCodeAgent 的一次性 pipeline consolidation 上下文。
+只整理本次实验已晋升脚本，不创建新业务规则，不读取隐藏结果。
+
+workspace: {context.workspace_dir}
+
+授权只读根：
+{read_roots_text}
+
+工具规则：
+1. Read/Glob/Grep 只能访问授权只读根或 workspace，并使用提示中的真实绝对路径。
+2. Write/Edit 只能写 workspace；ExecutePython 只能执行 workspace 内已存在的 .py 文件。
+3. 不得搜索项目根、experiments 总目录、active_bundle、validation_result 或 private reference。
+4. 最终必须生成 {context.workspace_dir / 'pipeline'}；是否可复现由宿主机器验收。
+""",
+                model=model,
+                formatter=formatter,
+                toolkit=toolkit,
+                memory=create_reference_memory(
+                    {
+                        "phase_name": "pipeline_consolidation",
+                        "phase_root": str(phase_root),
+                        "run_id": run_id,
+                        "run_root": str(consolidation_root / "agent_runs"),
+                    },
+                    model,
+                ),
+                compression_config=create_reference_compression_config(model),
+                parallel_tool_calls=False,
+                max_iters=self.config.max_iters,
+                print_hint_msg=False,
+            )
+            response = asyncio.run(agent(make_user_msg(name="user", content=task_text)))
+            (phase_root / "agent_response.txt").write_text(
+                format_message_content(getattr(response, "content", "")).strip(),
+                encoding="utf-8",
+            )
+            pipeline = context.workspace_dir / "pipeline"
+            if not pipeline.is_dir():
+                raise RuntimeError("consolidation Agent did not create workspace/pipeline")
+            return pipeline
+        finally:
+            clear_phase_context()
 
     def _result(self, state: dict[str, Any]) -> dict[str, Any]:
         latest_attempt = (state.get("attempts") or [{}])[-1]
@@ -1809,9 +2408,9 @@ def _reference_code_agent_system_prompt(skill_manifest_text: str, context: Engin
 
 # Skill 策略
 
-当前训练/验证 loop 不沉淀 Skill，也不强制调用 pipeline skill。
-你可以读取授权的 skills/lib/workflow 代码作为参考，但核心目标是用 workspace 内脚本或 adapter 生成正确的 result_package。
-验证集通过并冻结 best bundle 后，系统会在独立阶段再把稳定脚本包装成 Skill。
+当前训练/验证 loop 必须维护 workspace/pipeline 下的累计 canonical Pipeline。
+你可以读取授权的 skills/lib/workflow 代码作为参考，但候选 result_package 必须由 workspace/pipeline/run.py 生成。
+Prompt 只负责指导；宿主会隔离重放 Pipeline，并逐文件比较业务 CSV 的 SHA-256。
 
 # 原子工具
 
@@ -1842,15 +2441,16 @@ def _reference_code_agent_system_prompt(skill_manifest_text: str, context: Engin
 2. 分析 raw 到 reference 的文件、字段、key、join、filter、derive、clean 关系。
 3. 如果 train/reference 中出现 `preproc_chart_icu.csv`、`preproc_med_icu.csv`、`preproc_out_icu.csv`、`preproc_proc_icu.csv`、`preproc_diag_icu.csv`、cohort 明细文件，直接学习并生成同构目录包；不要强行合并成宽表。
 4. 如果现有 pipeline skill 或其接口不匹配 train/reference 形态，允许在当前 experiment 内创建 adapter/fork；不要新增全局 skill。
-5. 本轮不强制包装 Skill。workspace/adapter 脚本、build_package.py 或 standalone 脚本可以作为 candidate artifact 保存并在后续 loop 继续迭代；只有验证 loop 收敛、准备冻结/测试前才单独包装成 Skill。
+5. Round 1 创建完整 Pipeline；后续 Round 继承上一正式 best Pipeline，只修改反馈涉及模块。不得以 build_package.py、standalone 脚本或手工 CSV 替代 canonical Pipeline。
 6. 原始 skills/、lib/、workflow/ 和 teacher pipeline 始终只读；需要实现时只在 workspace 写脚本或 adapter。
 7. 不要调用 execute_current_extraction_task；不要调用 finalize_result_package；不要把固定 workflow 当兜底。
 8. train reference 是公开示例，可用 CompareArtifact 回归；validation reference/private report 禁止读取。
-9. 最终核心产物是完整 result_package 和机器可判定的 train_regression_report.json；后者必须以 schema_version=2、status=SUCCESS 覆盖每个修改业务文件，并为每项提供 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、passed、failure_reason。通过时 failure_reason 可为空，失败时必须写明原因。reference_shape_contract、skill_usage_report 是可选记录。
-10. ExecutePython 绝不能直接写回 workspace/result_package。第 2 轮及以后，先在 step OUTPUT_DIR/result_package 复制 current best 的完整包并替换修复文件；第 1 轮从零生成完整包。然后必须用 PublishDirectoryArtifact 发布整个目录到 workspace。
+9. 最终核心产物是完整 result_package、workspace/pipeline 和可选的 Agent train_regression_report.json；最终 train regression 由宿主重放生成，不信任文字总结。
+10. ExecutePython 绝不能直接写回 workspace/result_package。必须调用 workspace/pipeline/run.py 在 step OUTPUT_DIR 生成完整包，然后用 PublishDirectoryArtifact 发布整个目录；发布后不得手工修改业务 CSV。
 11. validation result_package 必须通过 ValidateResultPackage，或至少生成可由宿主基础校验的同构目录文件；不要求 reference.csv 或 package_manifest.json。
 12. 未涉及本轮 repair target 的 current best 业务文件不得改变；只改 manifest、报告或 adapter 而不改反馈相关业务文件的候选不会进入隐藏评估。
-13. 没有完整 result_package 或合格 train_regression_report.json 时不得返回 SUCCESS。
+13. pipeline_manifest.json 必须声明唯一入口 run.py、固定模块、完整17文件和宿主给出的 parent_pipeline_sha256。没有完整 result_package、manifest、唯一入口或可重放 Pipeline 时不得返回 SUCCESS。
+14. summary 的实现方式由你自主决定；若必须沉淀公开 train/reference 的 summary 层学习结果，只能使用 manifest 已声明的 summary_assets/*.csv。严禁沉淀患者标识、label、患者级业务行或任何 validation/test private 信息。
 """
 
 
@@ -2360,6 +2960,66 @@ def _compile_reference_repair_targets(public_feedback: str | Path, output_path: 
     return payload
 
 
+def _merge_test_rule_feedback_into_repair_targets(
+    test_feedback: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    feedback_path = Path(test_feedback).expanduser().resolve()
+    feedback = _load_json(feedback_path)
+    output = Path(output_path)
+    payload = _load_json(output) if output.is_file() else {
+        "schema_version": 1,
+        "status": "SUCCESS",
+        "public_feedback": "",
+        "targets": [],
+        "privacy": "value_free_repair_targets",
+    }
+    targets = [item for item in payload.get("targets") or [] if isinstance(item, dict)]
+    issue_texts = [str(item) for item in feedback.get("issues") or []]
+    execution_failure = feedback.get("execution_failure") or {}
+    if isinstance(execution_failure, dict) and execution_failure.get("log_tail"):
+        issue_texts.extend(str(execution_failure["log_tail"]).splitlines())
+    relative_paths: set[str] = set()
+    for issue in issue_texts:
+        relative_paths.update(
+            match.group(0).strip().lstrip("/")
+            for match in re.finditer(
+                r"(?:cohort|features|summary|csv)/[^\s,:;]+\.csv",
+                issue,
+                flags=re.IGNORECASE,
+            )
+        )
+    existing = {
+        (str(item.get("type") or ""), str(item.get("relative_path") or ""))
+        for item in targets
+    }
+    candidates = sorted(relative_paths) or [""]
+    for relative_path in candidates:
+        key = ("test_pipeline_rule_failure", relative_path)
+        if key in existing:
+            continue
+        index = len(targets) + 1
+        targets.append(
+            {
+                "repair_target_id": _reference_repair_target_id(
+                    key[0], relative_path, [], index
+                ),
+                "type": key[0],
+                "relative_path": relative_path,
+                "columns": [],
+                "metrics": {},
+                "suggestion": "修复冻结 Pipeline 在 test raw 上暴露的通用规则或路径问题。",
+                "required_decision": True,
+                "source_feedback": str(feedback_path),
+            }
+        )
+    payload["targets"] = targets
+    payload["target_count"] = len(targets)
+    payload["test_pipeline_rule_feedback"] = str(feedback_path)
+    _write_json(output, payload)
+    return payload
+
+
 def _reference_repair_target_id(target_type: str, relative_path: str, columns: list[str], index: int) -> str:
     readable = "__".join(part for part in [target_type, relative_path.replace("/", "_"), "_".join(columns)] if part)
     digest = hashlib.sha256(f"{target_type}|{relative_path}|{','.join(columns)}|{index}".encode("utf-8")).hexdigest()[:10]
@@ -2562,6 +3222,13 @@ def _audit_reference_feedback_response(
         for item in target_payload.get("targets") or []
         if isinstance(item, dict) and item.get("repair_target_id")
     ]
+    generic_target_ids = {
+        str(item.get("repair_target_id"))
+        for item in target_payload.get("targets") or []
+        if isinstance(item, dict)
+        and item.get("repair_target_id")
+        and not str(item.get("relative_path") or "").strip()
+    }
     issues: list[str] = []
     if feedback_response is None or not feedback_response.is_file():
         return {
@@ -2590,6 +3257,15 @@ def _audit_reference_feedback_response(
         for changed_file in response.get("changed_files") or []:
             response_changed_files.add(str(changed_file))
     linked_changed = sorted(changed_set & response_changed_files)
+    generic_addressed = bool(generic_target_ids & addressed)
+    generic_package_link = any(
+        path.rstrip("/") == "results/result_package"
+        for path in response_changed_files
+    )
+    if generic_addressed and generic_package_link:
+        linked_changed = sorted(
+            path for path in changed_set if path.startswith("results/result_package/")
+        )
     unaddressed = sorted(set(target_ids) - addressed)
     if unaddressed:
         issues.append("feedback targets not addressed: " + ", ".join(unaddressed[:20]))
@@ -4004,6 +4680,14 @@ def _write_json(path: str | Path, value: Any) -> None:
         _fsync_directory(target.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _read_public_log_tail(path: Path, *, max_chars: int) -> str:
+    try:
+        text = path.expanduser().resolve().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-max_chars:]
 
 
 def _fsync_directory(path: Path) -> None:
