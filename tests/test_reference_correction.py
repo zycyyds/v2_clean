@@ -409,7 +409,7 @@ def test_correction_agent_contract_and_prompt_hide_private_truth_and_taxonomy(
     assert "repair_hint" not in prompt
     assert "根据2个成对标准示例" in prompt
     assert "根据10个成对标准示例" not in prompt
-    assert 'key_column="stay_id"' in prompt
+    assert "`stay_id` 覆盖和重复情况" in prompt
     assert "不得按 `hadm_id` 去重" in prompt
     assert workflow.sanitized_contract["key_column"] == "stay_id"
     assert str(dataset / "train/raw") in roots

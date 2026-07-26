@@ -2,7 +2,7 @@
 # 真实 key 请放到 model_config.local.yaml（已 .gitignore），会自动覆盖这里的值
 #
 # 配置块分两部分：
-#   react_planner  —— 必填（Planner/Explorer/Engineer 三个 ReActAgent 共用）
+#   react_planner  —— 必填（Data Cleaning Agent 的 AgentScope 2.x Agent 共用）
 #   embedding      —— 选填（仅当 extract_text_features skill 被调用时使用）
 #                     大多数 v2 任务不会触发，可以整段注释掉
 #
@@ -13,7 +13,7 @@
 
 
 # ════════════════════════════════════════════════════════════════
-# Part 1: react_planner（必填）—— 所有 ReActAgent 推理用
+# Part 1: react_planner（必填）—— Data Cleaning Agent 推理用
 # ════════════════════════════════════════════════════════════════
 react_planner:
   api_key: "YOUR_API_KEY_HERE"

@@ -20,16 +20,19 @@ from typing import Any, Iterator
 
 import pandas as pd
 
-from agentscope.agent import ReActAgent
+from agentscope.event import ExceedMaxItersEvent, ModelCallStartEvent, RequireExternalExecutionEvent
+from agentscope.message import TextBlock, ToolResultBlock, ToolResultState
+from agentscope.event import ExternalExecutionResultEvent
 
 from agent.reference_runtime import (
     ENGINEER_CODE_READ_ROOTS,
     DATA_CLEANING_AGENT_PIPELINE_SKILLS,
-    create_reference_compression_config,
-    create_reference_memory,
+    create_reference_agent,
     create_reference_toolkit,
-    make_reference_model,
+    load_agent_state,
+    save_agent_state,
 )
+from agent_tools.agentscope2_tools import ValidationToolServices
 from agent_tools.context import EngineerToolContext
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
 from lib.agent_runtime import format_message_content, make_user_msg
@@ -47,10 +50,10 @@ from workflow.reference_pipeline import (
     PIPELINE_MODULES,
     pipeline_directory_sha256,
     pipeline_modules_for_business_targets,
+    run_pipeline_isolated,
     validate_and_replay_candidate_pipeline,
     validate_pipeline_structure,
 )
-from workflow.skill_adapter import persist_validated_variants, restore_bundle_variants
 
 
 KEY_PRIORITY = ("hadm_id", "stay_id", "subject_id", "case_id", "row_id")
@@ -611,6 +614,33 @@ def infer_reference_contract(dataset_split: str | Path) -> dict[str, Any]:
     return contract
 
 
+def _sanitized_validation_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    """Return only paths and metadata that the validation Agent may observe."""
+    paths = contract.get("paths") or {}
+    allowed_paths = {
+        name: str(paths.get(name) or "")
+        for name in (
+            "train_raw",
+            "train_keys",
+            "train_reference_root",
+            "train_reference",
+            "validation_raw",
+            "validation_keys",
+        )
+    }
+    return {
+        "schema_version": 1,
+        "workflow": "reference-guided-train-validate",
+        "split_mode": "validation",
+        "dataset_profile": str(contract.get("dataset_profile") or ""),
+        "reference_type": str(contract.get("reference_type") or ""),
+        "record_grain": str(contract.get("record_grain") or ""),
+        "key_column": str(contract.get("key_column") or ""),
+        "reference_schema": dict(contract.get("reference_schema") or {}),
+        "paths": allowed_paths,
+    }
+
+
 def _ensure_run_manifest(
     config: ReferenceGuidedConfig,
     contract: dict[str, Any],
@@ -1112,6 +1142,8 @@ class DataCleaningAgentRuntime:
         self.test_checkpoints_dir = self.experiment_dir / "test_checkpoints"
         self.state_path = self.experiment_dir / "experiment_state.json"
         self.promotion_journal_path = self.experiment_dir / "promotion_journal.json"
+        self._pending_attempt_index = 0
+        self._pending_candidate: Path | None = None
 
     def run_sync(self) -> dict[str, Any]:
         if not self.state_path.exists():
@@ -1147,115 +1179,482 @@ class DataCleaningAgentRuntime:
             }
         )
         _write_json(self.state_path, state)
-        promotions_this_run = 0
-        attempts_this_run = 0
-        while True:
-            force_validation_attempt = bool(state.pop("force_validation_attempt", False))
-            if force_validation_attempt:
-                state["status"] = "active"
-                _write_json(self.state_path, state)
-                stop_reason = ""
-            else:
-                stop_reason = _reference_stop_reason(
+        try:
+            state = asyncio.run(self._run_continuous_validation_agent(state))
+        except KeyboardInterrupt:
+            _recover_interrupted_promotion(self.promotion_journal_path, self.state_path)
+            state = _migrate_reference_experiment_state(_load_json(self.state_path))
+            if self._pending_attempt_index and self._pending_candidate is not None:
+                state = self._cancel_uncommitted_attempt(
                     state,
-                    promotions_this_run=promotions_this_run,
-                    attempts_this_run=attempts_this_run,
-                    round_limit=self.config.round_limit,
-                    patience=self.config.patience,
-                    max_attempts=self.config.max_attempts,
-                    target_score=self.config.target_score,
+                    self._pending_attempt_index,
+                    self._pending_candidate,
                 )
-            if stop_reason:
-                try:
-                    state = self._checkpoint_and_test(stop_reason, state)
-                except KeyboardInterrupt:
-                    state = self._mark_interrupted("second_interrupt")
-                if (
-                    state.get("status") == "validation_resume_required"
-                    and attempts_this_run < self.config.max_attempts
-                ):
-                    continue
-                if state.get("status") == "validation_resume_required":
-                    state["status"] = "checkpointed_pipeline_rule_failure"
-                    state["termination_reason"] = "max_attempts_after_test_rule_failure"
-                state.pop("force_validation_attempt", None)
-                _write_json(self.state_path, state)
-                break
-
-            attempt_index = len(state.get("attempts", [])) + 1
-            candidate = self.candidates_dir / f"attempt_{attempt_index:04d}"
-            attempts_this_run += 1
+                self._pending_attempt_index = 0
+                self._pending_candidate = None
             try:
-                candidate = self._begin_attempt(attempt_index)
-                state, improved = self._execute_attempt(
-                    state=state,
-                    candidate=candidate,
-                    attempt_index=attempt_index,
-                )
+                state = self._checkpoint_and_test("cancelled_by_user", state)
             except KeyboardInterrupt:
-                _recover_interrupted_promotion(self.promotion_journal_path, self.state_path)
-                state = _migrate_reference_experiment_state(_load_json(self.state_path))
-                state = self._cancel_uncommitted_attempt(state, attempt_index, candidate)
-                try:
-                    state = self._checkpoint_and_test("cancelled_by_user", state)
-                except KeyboardInterrupt:
-                    state = self._mark_interrupted("second_interrupt")
-                if (
-                    state.get("status") == "validation_resume_required"
-                    and attempts_this_run < self.config.max_attempts
-                ):
-                    continue
-                break
-            if improved:
-                promotions_this_run += 1
+                state = self._mark_interrupted("second_interrupt")
+            _write_json(self.state_path, state)
         return self._result(state)
 
-    def _execute_attempt(
+    async def _run_continuous_validation_agent(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Run one persistent AgentScope Agent across all candidate submissions."""
+        phase_root = self.experiment_dir / "validation_agent"
+        phase_root.mkdir(parents=True, exist_ok=True)
+        run_id = f"validation_agent_session_{len(state.get('sessions') or []):04d}"
+        set_phase_context(run_id, phase_root, "data_cleaning_agent", phase_root)
+        paths = self.contract["paths"]
+        train_reference_root = Path(
+            paths.get("train_reference_root")
+            or Path(paths["train_reference"]).expanduser().resolve().parent
+        ).expanduser().resolve()
+        validation_keys = Path(paths.get("validation_keys") or "").expanduser().resolve()
+        train_keys = Path(paths.get("train_keys") or "").expanduser().resolve()
+        sanitized_contract_path = phase_root / "sanitized_validation_contract.json"
+        _write_json(sanitized_contract_path, _sanitized_validation_contract(self.contract))
+        report_paths = {
+            "reference_contract": str(sanitized_contract_path),
+            "train_reference_root": str(train_reference_root),
+        }
+        read_roots: list[str | Path] = [
+            *ENGINEER_CODE_READ_ROOTS,
+            paths["train_raw"],
+            train_reference_root,
+            paths["validation_raw"],
+            sanitized_contract_path,
+        ]
+        for path in (validation_keys, train_keys):
+            if path.is_file():
+                read_roots.append(path)
+        context = EngineerToolContext.from_task(
+            task_text=self.config.task_text,
+            engineer_phase_root=phase_root,
+            explorer_phase_root=None,
+            additional_read_roots=read_roots,
+            require_skill_plan=False,
+            split_mode="validation",
+            required_report_paths={
+                **report_paths,
+                "train_raw": str(Path(paths["train_raw"]).expanduser().resolve()),
+                "validation_raw": str(Path(paths["validation_raw"]).expanduser().resolve()),
+                "train_keys": str(train_keys),
+                "validation_keys": str(validation_keys),
+            },
+        )
+        self._restore_workspace_from_best(context.workspace_dir, state)
+        current_pipeline = context.workspace_dir / "pipeline"
+        current_result = context.workspace_dir / "result_package"
+        current_feedback = context.workspace_dir / "current_best_feedback.json"
+        if current_pipeline.is_dir():
+            report_paths["current_best_pipeline"] = str(current_pipeline)
+        if current_result.is_dir():
+            report_paths["current_best_result_package"] = str(current_result)
+        if current_feedback.is_file():
+            report_paths["current_best_public_feedback"] = str(current_feedback)
+        task_text = self._task_text(
+            context.workspace_dir,
+            phase_root,
+            report_paths,
+            current_feedback if current_feedback.is_file() else None,
+        )
+        rule_ledger = context.workspace_dir / "rule_ledger.json"
+        if not rule_ledger.is_file():
+            _write_json(
+                rule_ledger,
+                {
+                    "schema_version": 1,
+                    "verified_rules": [],
+                    "rejected_hypotheses": [],
+                    "unresolved_work": [],
+                },
+            )
+
+        services = self._validation_tool_services(context, train_reference_root, train_keys, validation_keys)
+        toolkit, manifest = create_reference_toolkit(context, services)
+        skill_instructions = await toolkit.get_skill_instructions()
+        if skill_instructions:
+            (phase_root / "agentscope_skill_prompt.txt").write_text(
+                skill_instructions,
+                encoding="utf-8",
+            )
+        _write_json(phase_root / "skill_manifest.json", {"skills": manifest})
+
+        agent_state_path = phase_root / "agent_state.json"
+        saved_state = load_agent_state(agent_state_path)
+        agent, workspace = await create_reference_agent(
+            name="Data Cleaning Agent",
+            system_prompt=_data_cleaning_agent_system_prompt("", context),
+            toolkit=toolkit,
+            workspace_dir=context.workspace_dir,
+            max_iters=self.config.max_iters,
+            state=saved_state,
+        )
+        agent.state.middle_context["validation_host"] = {
+            "best_round": int(state.get("best_round") or 0),
+            "best_attempt": int(state.get("best_attempt") or 0),
+            "best_score": float(state.get("best_score") or 0.0),
+            "best_pipeline_sha256": (
+                pipeline_directory_sha256(current_pipeline)
+                if current_pipeline.is_dir()
+                else ""
+            ),
+            "rule_ledger": str(rule_ledger),
+        }
+        starting_attempts = len(state.get("attempts") or [])
+        starting_rounds = len(state.get("rounds") or [])
+        model_calls = 0
+        terminating_reason = ""
+        pending_input: Any = make_user_msg(
+            name="user",
+            content=(
+                task_text
+                if saved_state is None
+                else "继续当前实验。先读取 rule_ledger.json、当前 Task 和 current best 反馈，"
+                "然后从 current best Pipeline 继续，不要重新开始。"
+            ),
+        )
+        try:
+            while model_calls < self.config.max_iters:
+                remaining = self.config.max_iters - model_calls
+                if isinstance(pending_input, ExternalExecutionResultEvent):
+                    agent.react_config.max_iters = agent.state.cur_iter + remaining
+                else:
+                    agent.react_config.max_iters = remaining
+                external_event: RequireExternalExecutionEvent | None = None
+                exceeded = False
+                async for event in agent.reply_stream(pending_input):
+                    if isinstance(event, ModelCallStartEvent):
+                        model_calls += 1
+                    elif isinstance(event, RequireExternalExecutionEvent):
+                        external_event = event
+                    elif isinstance(event, ExceedMaxItersEvent):
+                        exceeded = True
+                save_agent_state(agent_state_path, agent.state)
+
+                if external_event is not None:
+                    tool_call = external_event.tool_calls[0]
+                    if tool_call.name != "SubmitCandidate":
+                        raise RuntimeError(f"Unsupported external tool: {tool_call.name}")
+                    state, payload = self._submit_workspace_candidate(
+                        state=state,
+                        context=context,
+                        services=services,
+                        tool_input=tool_call.input,
+                    )
+                    agent.state.middle_context["validation_host"] = {
+                        "best_round": int(state.get("best_round") or 0),
+                        "best_attempt": int(state.get("best_attempt") or 0),
+                        "best_score": float(state.get("best_score") or 0.0),
+                        "best_pipeline_sha256": str(
+                            payload.get("current_best_pipeline_sha256") or ""
+                        ),
+                        "rule_ledger": str(rule_ledger),
+                    }
+                    save_agent_state(agent_state_path, agent.state)
+                    _write_json(self.state_path, state)
+                    stop_reason = _reference_stop_reason(
+                        state,
+                        promotions_this_run=len(state.get("rounds") or []) - starting_rounds,
+                        attempts_this_run=len(state.get("attempts") or []) - starting_attempts,
+                        round_limit=self.config.round_limit,
+                        patience=self.config.patience,
+                        max_attempts=self.config.max_attempts,
+                        target_score=self.config.target_score,
+                    )
+                    if stop_reason:
+                        terminating_reason = stop_reason
+                        payload["termination_required"] = True
+                        payload["termination_reason"] = stop_reason
+                        agent.react_config.max_iters = agent.state.cur_iter + 1
+                    result_block = ToolResultBlock(
+                        id=tool_call.id,
+                        name=tool_call.name,
+                        output=[TextBlock(text=json.dumps(payload, ensure_ascii=False, indent=2))],
+                        state=ToolResultState.SUCCESS,
+                        metadata=payload,
+                    )
+                    pending_input = ExternalExecutionResultEvent(
+                        reply_id=external_event.reply_id,
+                        execution_results=[result_block],
+                    )
+                    if terminating_reason:
+                        async for event in agent.reply_stream(pending_input):
+                            if isinstance(event, ModelCallStartEvent):
+                                model_calls += 1
+                        save_agent_state(agent_state_path, agent.state)
+                        break
+                    continue
+
+                if exceeded or model_calls >= self.config.max_iters:
+                    terminating_reason = "max_iters"
+                    break
+                pending_input = make_user_msg(
+                    name="user",
+                    content=(
+                        "流程尚未达到宿主停止条件。检查当前 Task 和 rule_ledger，继续修改累计 Pipeline；"
+                        "候选必须先通过 ValidateDraft，再调用 SubmitCandidate。"
+                    ),
+                )
+
+            if not terminating_reason:
+                terminating_reason = "max_iters"
+            state["validation_model_calls_this_run"] = model_calls
+            state["validation_agent_state"] = str(agent_state_path)
+            state["validation_agent_session_id"] = agent.state.session_id
+            state["status"] = "validation_stopped"
+            state["termination_reason"] = terminating_reason
+            _write_json(self.state_path, state)
+        finally:
+            save_agent_state(agent_state_path, agent.state)
+            await workspace.close()
+            clear_phase_context()
+
+        try:
+            return self._checkpoint_and_test(terminating_reason, state)
+        except KeyboardInterrupt:
+            return self._mark_interrupted("second_interrupt")
+
+    def _restore_workspace_from_best(
+        self,
+        workspace: Path,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        """Reset editable business artifacts to the latest atomically committed best."""
+        workspace.mkdir(parents=True, exist_ok=True)
+        for relative in ("pipeline", "result_package"):
+            target = workspace / relative
+            if target.exists():
+                shutil.rmtree(target)
+        active_pipeline = self.active_dir / "script_bundle" / "pipeline"
+        active_package = self.active_dir / "results" / "result_package"
+        if active_pipeline.is_dir():
+            shutil.copytree(active_pipeline, workspace / "pipeline")
+        if active_package.is_dir():
+            shutil.copytree(active_package, workspace / "result_package")
+        feedback_target = workspace / "current_best_feedback.json"
+        feedback_target.unlink(missing_ok=True)
+        feedback_text = str((state or {}).get("best_feedback") or "")
+        feedback_source = Path(feedback_text).expanduser().resolve() if feedback_text else None
+        if feedback_source is not None and feedback_source.is_file():
+            shutil.copy2(feedback_source, feedback_target)
+
+    def _validation_tool_services(
+        self,
+        context: EngineerToolContext,
+        train_reference_root: Path,
+        train_keys: Path,
+        validation_keys: Path,
+    ) -> ValidationToolServices:
+        paths = self.contract["paths"]
+        workspace = context.workspace_dir
+
+        def current_pipeline_hash() -> str:
+            pipeline = workspace / "pipeline"
+            return pipeline_directory_sha256(pipeline) if pipeline.is_dir() else ""
+
+        def run_pipeline(split_mode: str) -> dict[str, Any]:
+            if split_mode not in {"train", "validation"}:
+                return {
+                    "returncode": 1,
+                    "status": "NEEDS_REPAIR",
+                    "summary": f"Unsupported validation split_mode: {split_mode}",
+                }
+            output = (
+                workspace / "result_package"
+                if split_mode == "validation"
+                else workspace / "runs" / "train" / "result_package"
+            )
+            log = workspace / "runs" / split_mode / "pipeline_run.log"
+            try:
+                result = run_pipeline_isolated(
+                    pipeline_dir=workspace / "pipeline",
+                    raw_root=paths[f"{split_mode}_raw"],
+                    output_dir=output,
+                    split_mode=split_mode,
+                    log_path=log,
+                )
+            except Exception as exc:
+                result = {
+                    "schema_version": 1,
+                    "returncode": 1,
+                    "status": "NEEDS_REPAIR",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            result["output_dir"] = str(output)
+            result["log_path"] = str(log)
+            result["summary"] = (
+                f"{split_mode} Pipeline completed at {output}."
+                if int(result.get("returncode", 1)) == 0
+                else f"{split_mode} Pipeline failed; inspect {log}."
+            )
+            return result
+
+        def validate_draft() -> dict[str, Any]:
+            pipeline = workspace / "pipeline"
+            package = workspace / "result_package"
+            report_root = workspace / "draft_validation"
+            active_pipeline = self.active_dir / "script_bundle" / "pipeline"
+            report = validate_and_replay_candidate_pipeline(
+                pipeline_dir=pipeline,
+                previous_pipeline_dir=active_pipeline if active_pipeline.is_dir() else None,
+                candidate_result_package=package,
+                train_raw=paths["train_raw"],
+                train_reference_root=train_reference_root,
+                train_keys=train_keys,
+                validation_raw=paths["validation_raw"],
+                validation_keys=validation_keys,
+                key_column=str(self.contract.get("key_column") or self.contract.get("record_grain") or ""),
+                report_root=report_root,
+                required_file_count=(
+                    MIMIC_EXPECTED_BUSINESS_FILE_COUNT
+                    if infer_dataset_profile(Path(self.config.dataset_split)) == "mimic_iv_3_1"
+                    else None
+                ),
+                require_train_value_match=False,
+            )
+            report["attempt_created"] = False
+            report["hidden_reference_used"] = False
+            report["score_computed"] = False
+            _write_json(workspace / "validate_draft_report.json", report)
+            return report
+
+        return ValidationToolServices(
+            run_pipeline=run_pipeline,
+            validate_draft=validate_draft,
+            current_pipeline_hash=current_pipeline_hash,
+        )
+
+    def _submit_workspace_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        context: EngineerToolContext,
+        services: ValidationToolServices,
+        tool_input: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Snapshot one validated workspace draft and return public host feedback."""
+        try:
+            submission = json.loads(tool_input or "{}")
+        except json.JSONDecodeError:
+            submission = {"summary": str(tool_input or "")}
+        current_hash = services.current_pipeline_hash()
+        if (
+            not services.last_draft_valid
+            or not current_hash
+            or current_hash != services.last_draft_hash
+        ):
+            raise RuntimeError(
+                "SubmitCandidate host check rejected a draft that was not validated or changed after ValidateDraft"
+            )
+        attempt_index = len(state.get("attempts") or []) + 1
+        candidate = self._begin_attempt(attempt_index)
+        self._pending_attempt_index = attempt_index
+        self._pending_candidate = candidate
+        workspace_pipeline = context.workspace_dir / "pipeline"
+        workspace_package = context.workspace_dir / "result_package"
+        if not workspace_pipeline.is_dir() or not workspace_package.is_dir():
+            raise RuntimeError("SubmitCandidate requires workspace/pipeline and workspace/result_package")
+
+        candidate_pipeline = candidate / "script_bundle" / "pipeline"
+        candidate_package = candidate / "results" / "result_package"
+        shutil.rmtree(candidate_pipeline, ignore_errors=True)
+        shutil.rmtree(candidate_package, ignore_errors=True)
+        candidate_pipeline.parent.mkdir(parents=True, exist_ok=True)
+        candidate_package.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(workspace_pipeline, candidate_pipeline)
+        shutil.copytree(workspace_package, candidate_package)
+        _write_json(
+            candidate / "submission.json",
+            {
+                "schema_version": 1,
+                "attempt": attempt_index,
+                "summary": str(submission.get("summary") or ""),
+                "changed_files": [str(item) for item in submission.get("changed_files") or []],
+                "pipeline_sha256": services.current_pipeline_hash(),
+                "validate_draft_report": str(context.workspace_dir / "validate_draft_report.json"),
+            },
+        )
+        draft_report = context.workspace_dir / "draft_validation" / "pipeline_replay_report.json"
+        if draft_report.is_file():
+            replay_root = candidate / "host_replay"
+            replay_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(draft_report, replay_root / "validate_draft_report.json")
+
+        public_feedback_text = str(state.get("best_feedback") or "")
+        public_feedback = Path(public_feedback_text) if public_feedback_text else None
+        if public_feedback is not None and not public_feedback.is_file():
+            public_feedback = None
+        repair_targets: Path | None = None
+        feedback_response: Path | None = None
+        if public_feedback is not None:
+            repair_targets = candidate / "repair_targets.json"
+            _compile_reference_repair_targets(public_feedback, repair_targets)
+            feedback_response = _stage_reference_feedback_response(
+                phase_root=context.engineer_phase_root,
+                candidate=candidate,
+                repair_targets_path=repair_targets,
+            )
+        _write_reference_candidate_delta(
+            active=self.active_dir,
+            candidate=candidate,
+            public_feedback=public_feedback,
+            repair_targets=repair_targets,
+            feedback_response=feedback_response,
+        )
+        package = {
+            "result_package": str(candidate_package),
+            "pipeline": str(candidate_pipeline),
+            "producer": "persistent_data_cleaning_agent",
+            "engineer_phase_root": str(context.engineer_phase_root),
+        }
+        state, improved = self._evaluate_prepared_candidate(
+            state=state,
+            candidate=candidate,
+            attempt_index=attempt_index,
+            package=package,
+        )
+        self._pending_attempt_index = 0
+        self._pending_candidate = None
+        latest = (state.get("attempts") or [{}])[-1]
+        self._restore_workspace_from_best(context.workspace_dir, state)
+        services.last_draft_valid = False
+        services.last_draft_hash = ""
+        feedback_path = context.workspace_dir / "current_best_feedback.json"
+        feedback_payload = _load_json(feedback_path) if feedback_path.is_file() else {}
+        payload = {
+            "schema_version": 1,
+            "attempt": attempt_index,
+            "valid": bool(latest.get("valid")),
+            "score": latest.get("score"),
+            "improved": bool(improved),
+            "best_score": state.get("best_score", 0.0),
+            "best_round": state.get("best_round", 0),
+            "candidate_dir": str(candidate),
+            "gate_issues": list((latest.get("gate") or {}).get("issues") or []),
+            "best_feedback": feedback_payload,
+            "current_best_pipeline_sha256": (
+                pipeline_directory_sha256(context.workspace_dir / "pipeline")
+                if (context.workspace_dir / "pipeline").is_dir()
+                else ""
+            ),
+            "instruction": (
+                "Candidate promoted. Continue from this new current best."
+                if improved
+                else "Candidate was not promoted. The workspace has been restored to current best; keep the failure as negative evidence."
+            ),
+        }
+        return state, payload
+
+    def _evaluate_prepared_candidate(
         self,
         *,
         state: dict[str, Any],
         candidate: Path,
         attempt_index: int,
+        package: dict[str, Any],
     ) -> tuple[dict[str, Any], bool]:
-        public_feedback_text = str(state.get("best_feedback") or "")
-        public_feedback = Path(public_feedback_text) if public_feedback_text else None
-        if public_feedback is not None and not public_feedback.is_file():
-            public_feedback = None
-        previous_outcome = self._latest_attempt_outcome(state)
-        test_rule_feedback_text = str(state.get("pending_test_rule_feedback", "") or "")
-        test_rule_feedback = Path(test_rule_feedback_text) if test_rule_feedback_text else None
-        if test_rule_feedback is not None and not test_rule_feedback.is_file():
-            test_rule_feedback = None
-        package: dict[str, Any] = {}
-        try:
-            package = asyncio.run(
-                self._run_attempt(
-                    candidate=candidate,
-                    attempt_index=attempt_index,
-                    public_feedback=public_feedback,
-                    previous_outcome=previous_outcome,
-                    test_rule_feedback=test_rule_feedback,
-                )
-            )
-        except Exception as exc:
-            gate = {
-                "schema_version": 1,
-                "valid": False,
-                "status": "NEEDS_REPAIR",
-                "issues": [f"agent attempt failed: {type(exc).__name__}: {exc}"],
-            }
-            state, _ = _finish_reference_attempt_state(
-                state,
-                attempt_index=attempt_index,
-                score=None,
-                candidate_dir=str(candidate),
-                result=package,
-                evaluation={},
-                gate=gate,
-            )
-            self._persist_attempt_state(state, candidate, gate)
-            return state, False
-
         gate = _reference_candidate_quality_gate(
             active=self.active_dir,
             candidate=candidate,
@@ -1326,7 +1725,10 @@ class DataCleaningAgentRuntime:
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
         for directory in (self.active_dir, self.candidates_dir, self.evaluations_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self.contract_path, self.active_dir / "reference_contract.json")
+        _write_json(
+            self.active_dir / "reference_contract.json",
+            _sanitized_validation_contract(self.contract),
+        )
         _write_json(
             self.active_dir / "manifest.json",
             {
@@ -1435,259 +1837,6 @@ class DataCleaningAgentRuntime:
         _write_json(self.state_path, state)
         return state
 
-    async def _run_attempt(
-        self,
-        *,
-        candidate: Path,
-        attempt_index: int,
-        public_feedback: Path | None,
-        previous_outcome: Path | None = None,
-        test_rule_feedback: Path | None = None,
-    ) -> dict[str, Any]:
-        attempt_root = candidate / "agent_runs"
-        phase = init_phase_session(attempt_root, "data_cleaning_agent")
-        run_id = f"reference_code_attempt_{attempt_index:04d}"
-        set_phase_context(run_id, attempt_root, "data_cleaning_agent", phase["phase_root"])
-        phase_root = Path(phase["phase_root"])
-        paths = self.contract["paths"]
-        train_reference_root = Path(
-            paths.get("train_reference_root") or Path(paths["train_reference"]).expanduser().resolve().parent
-        ).expanduser().resolve()
-        validation_keys = Path(paths.get("validation_keys") or "")
-        report_paths = {
-            "reference_contract": str(self.contract_path),
-            "train_reference_root": str(train_reference_root),
-        }
-        active_result_package = self.active_dir / "results" / "result_package"
-        if active_result_package.is_dir():
-            report_paths["active_result_package"] = str(active_result_package)
-        active_pipeline = self.active_dir / "script_bundle" / "pipeline"
-        parent_pipeline_sha256 = (
-            pipeline_directory_sha256(active_pipeline) if active_pipeline.is_dir() else ""
-        )
-        if active_pipeline.is_dir():
-            report_paths["current_best_pipeline"] = str(active_pipeline)
-        pipeline_contract_path = candidate / "canonical_pipeline_contract.json"
-        _write_json(
-            pipeline_contract_path,
-            {
-                "schema_version": 1,
-                "entrypoint": "pipeline/run.py",
-                "modules": [
-                    "cohort.py",
-                    "labels.py",
-                    "chart.py",
-                    "diag.py",
-                    "med.py",
-                    "out.py",
-                    "proc.py",
-                    "summary.py",
-                ],
-                "expected_files": sorted(
-                    path.relative_to(train_reference_root).as_posix()
-                    for path in _structured_package_files(train_reference_root)
-                    if path.name not in IGNORED_PACKAGE_FILES
-                ),
-                "parent_pipeline_sha256": parent_pipeline_sha256,
-                "forbidden_source_markers": [
-                    "active_bundle",
-                    "validation_result",
-                    "reference_private",
-                    "test_evaluation",
-                    "private_report",
-                ],
-            },
-        )
-        report_paths["canonical_pipeline_contract"] = str(pipeline_contract_path)
-        if paths.get("train_reference"):
-            report_paths["train_reference_sample"] = str(Path(paths["train_reference"]).expanduser().resolve())
-        package_manifest = train_reference_root / "package_manifest.json"
-        if package_manifest.is_file():
-            report_paths["train_reference_manifest"] = str(package_manifest)
-        repair_targets_path: Path | None = None
-        if public_feedback is not None:
-            report_paths["public_feedback"] = str(public_feedback)
-            repair_targets_path = candidate / "repair_targets.json"
-            _compile_reference_repair_targets(public_feedback, repair_targets_path)
-            report_paths["repair_targets"] = str(repair_targets_path)
-        if previous_outcome is not None:
-            report_paths["previous_attempt_outcome"] = str(previous_outcome)
-            previous_payload = _load_json(previous_outcome)
-            previous_feedback_text = str(
-                ((previous_payload.get("evaluation") or {}).get("public_feedback") or "")
-            )
-            previous_feedback = Path(previous_feedback_text) if previous_feedback_text else None
-            if previous_feedback is not None and previous_feedback.is_file():
-                report_paths["previous_attempt_feedback_negative_evidence"] = str(previous_feedback)
-        if test_rule_feedback is not None:
-            report_paths["test_pipeline_rule_failure"] = str(test_rule_feedback)
-            repair_targets_path = repair_targets_path or candidate / "repair_targets.json"
-            _merge_test_rule_feedback_into_repair_targets(
-                test_rule_feedback,
-                repair_targets_path,
-            )
-            report_paths["repair_targets"] = str(repair_targets_path)
-        read_roots = [
-            *ENGINEER_CODE_READ_ROOTS,
-            paths["train_raw"],
-            train_reference_root,
-            paths["validation_raw"],
-            candidate,
-            self.active_dir,
-        ]
-        if validation_keys.is_file():
-            read_roots.append(validation_keys)
-        if previous_outcome is not None:
-            read_roots.append(previous_outcome)
-        if test_rule_feedback is not None:
-            read_roots.append(test_rule_feedback)
-        previous_feedback_path = report_paths.get("previous_attempt_feedback_negative_evidence", "")
-        if previous_feedback_path:
-            read_roots.append(previous_feedback_path)
-        task_text = self._task_text(candidate, phase_root, report_paths, public_feedback)
-        try:
-            context = EngineerToolContext.from_task(
-                task_text=task_text,
-                engineer_phase_root=phase_root,
-                explorer_phase_root=str(candidate),
-                additional_read_roots=read_roots,
-                require_skill_plan=False,
-                split_mode="validation",
-                required_report_paths=report_paths,
-            )
-            inherited_parent = _inherit_pipeline_to_workspace(
-                self.active_dir,
-                context.workspace_dir,
-            )
-            if inherited_parent != parent_pipeline_sha256:
-                raise RuntimeError("inherited pipeline hash changed before Agent execution")
-            toolkit, manifest = create_reference_toolkit(context)
-            _remove_fixed_reference_incompatible_tools(toolkit)
-            agent_skill_prompt = toolkit.get_agent_skill_prompt()
-            if agent_skill_prompt:
-                (phase_root / "agentscope_skill_prompt.txt").write_text(agent_skill_prompt, encoding="utf-8")
-            restore_bundle_variants(self.active_dir, context.variant_root)
-            _restore_claude_style_capabilities(self.active_dir, context.workspace_dir / "capabilities")
-            self._write_context_summary(phase_root, attempt_index, "started")
-            _append_runtime_event(
-                phase_root,
-                {
-                    "event": "attempt_started",
-                    "attempt": attempt_index,
-                    "candidate": str(candidate),
-                    "read_roots": [str(Path(root).expanduser().resolve()) for root in read_roots],
-                },
-            )
-            model, formatter = make_reference_model()
-            agent = ReActAgent(
-                name="Data Cleaning Agent",
-                sys_prompt=_data_cleaning_agent_system_prompt("", context),
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "data_cleaning_agent",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(attempt_root),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
-                max_iters=self.config.max_iters,
-                print_hint_msg=False,
-            )
-            response = await agent(make_user_msg(name="user", content=task_text))
-            response_text = format_message_content(getattr(response, "content", "")).strip()
-            (phase_root / "agent_response.txt").write_text(response_text, encoding="utf-8")
-            _append_manifest_steps_to_runtime_trace(phase_root)
-            pipeline_check = _write_pipeline_skill_usage_check(phase_root)
-            if not pipeline_check["has_pipeline_skill_exposure"]:
-                self._write_context_summary(phase_root, attempt_index, "needs_repair")
-                raise RuntimeError(
-                    "Data Cleaning Agent did not expose any pipeline AgentScope skills; "
-                    f"see {phase_root / 'pipeline_skill_usage_check.json'}"
-                )
-            package = _complete_reference_package_paths(phase_root, self.contract)
-            if package is None:
-                check = _write_reference_completion_check(phase_root, self.contract)
-                self._write_context_summary(phase_root, attempt_index, "needs_repair")
-                raise RuntimeError(
-                    "Data Cleaning Agent did not produce a complete reference result package; "
-                    f"see {check}"
-                )
-            staged_pipeline = _stage_workspace_pipeline(context.workspace_dir, candidate)
-            persisted = persist_validated_variants(context.variant_root, candidate)
-            packaged_skills = _stage_claude_style_agent_skills(
-                phase_root=phase_root,
-                candidate=candidate,
-                package=package,
-                contract=self.contract,
-            )
-            adapter_bundle = _write_adapter_bundle_manifest(candidate, persisted, packaged_skills)
-            staged = _stage_reference_agent_package(package, candidate)
-            staged["producer"] = "data_cleaning_agent"
-            staged["engineer_phase_root"] = str(phase_root)
-            staged["adapter_bundle"] = str(adapter_bundle)
-            staged["pipeline"] = str(staged_pipeline) if staged_pipeline is not None else ""
-            feedback_response_path = None
-            if repair_targets_path is not None:
-                if _latest_named_file(phase_root, "feedback_response.json") is None:
-                    _append_runtime_event(
-                        phase_root,
-                        {
-                            "event": "feedback_response_continuation_requested",
-                            "attempt": attempt_index,
-                            "repair_targets": str(repair_targets_path),
-                        },
-                    )
-                    continuation = _feedback_response_continuation_prompt(
-                        repair_targets_path=repair_targets_path,
-                        candidate=candidate,
-                    )
-                    continuation_response = await agent(make_user_msg(name="user", content=continuation))
-                    continuation_text = format_message_content(
-                        getattr(continuation_response, "content", "")
-                    ).strip()
-                    (phase_root / "feedback_response_agent_response.txt").write_text(
-                        continuation_text,
-                        encoding="utf-8",
-                    )
-                    _append_manifest_steps_to_runtime_trace(phase_root)
-                feedback_response_path = _stage_reference_feedback_response(
-                    phase_root=phase_root,
-                    candidate=candidate,
-                    repair_targets_path=repair_targets_path,
-                )
-            self._write_context_summary(phase_root, attempt_index, "success")
-            _append_runtime_event(
-                phase_root,
-                {
-                    "event": "attempt_completed",
-                    "attempt": attempt_index,
-                    "package_manifest": staged.get("package_manifest", ""),
-                    "adapter_bundle": str(adapter_bundle),
-                },
-            )
-            _copy_runtime_reports_to_candidate(phase_root, candidate)
-            delta = _write_reference_candidate_delta(
-                active=self.active_dir,
-                candidate=candidate,
-                public_feedback=public_feedback,
-                repair_targets=repair_targets_path,
-                feedback_response=feedback_response_path,
-            )
-            if public_feedback is not None and not delta["has_material_delta"]:
-                raise RuntimeError(
-                    "Data Cleaning Agent produced no feedback-linked material delta; "
-                    f"see {candidate / 'candidate_delta.json'}"
-                )
-            return staged
-        finally:
-            clear_phase_context()
-
     def _task_text(
         self,
         candidate: Path,
@@ -1709,19 +1858,18 @@ class DataCleaningAgentRuntime:
             _task_text_with_reference_contract(self.config.task_text, self.contract),
             "",
             "【Data Cleaning Agent 目标】",
-            "你是一个 Codex-style 本地代码智能体。不要调用固定 workflow/executor 兜底。",
+            "你是一个持续运行的 Data Cleaning Agent。整个 validation 生命周期只有当前这一个 Agent 上下文。",
             "你需要自己读取 train/raw 与 train/reference，学习 raw -> reference package 的转换关系，",
-            "写 experiment 内 adapter/fork，在 train 上回归验证，再处理 validation raw。",
+            "维护 workspace/pipeline 下的累计可执行 Pipeline，并在 validation raw 上反复提交候选。",
             "",
             "【路径】",
             f"train raw: {paths['train_raw']}",
             f"train reference root: {train_reference_root}",
             f"validation raw: {paths['validation_raw']}",
             f"validation keys: {validation_keys if validation_keys.is_file() else ''}",
-            f"candidate bundle: {candidate}",
             f"workspace: {phase_root / 'workspace'}",
-            f"current best result_package (read-only baseline): {self.active_dir / 'results' / 'result_package' if (self.active_dir / 'results' / 'result_package').is_dir() else ''}",
-            f"current best canonical pipeline (inherited into workspace/pipeline): {report_paths.get('current_best_pipeline', '')}",
+            f"current best result_package baseline: {report_paths.get('current_best_result_package', '')}",
+            f"current best canonical pipeline: {report_paths.get('current_best_pipeline', '')}",
             f"required parent_pipeline_sha256: {expected_parent_pipeline_sha256 or '<root>'}",
             "",
             "【必须先读取】",
@@ -1730,38 +1878,33 @@ class DataCleaningAgentRuntime:
             "【固定策略，不固定实现】",
             "1. 用 Read/Glob/InspectDataFile 理解 train/raw 和 train/reference 目录；package_manifest 如存在仅作可选索引，不是必须产物。",
             "2. 分析 raw 到 reference 的文件、字段、key、join、filter、derive、clean 关系。",
-            "3. 处理 cohort、diagnosis、procedure、lab、medication、ICU event、clean/package 时，优先阅读或调用对应 pipeline_* skill；如果接口不匹配，记录原因后在 experiment 内创建 adapter/fork。",
-            "4. 如果 train/reference 是 `preproc_*_icu.csv` 这类事件明细长表，而对应 pipeline skill 默认输出宽表或列名不匹配，说明这是接口/输出契约差异，不是逻辑不可用。",
-            "5. 对接口/输出契约差异，先 inspect_skill，再创建 experiment 内 adapter/fork，复用原 pipeline skill 或其 source_pipeline_files 的核心逻辑；不要新增全局 skill，也不要直接写一个匿名大脚本绕过。",
-            "6. 如果某个相关 pipeline skill 的核心逻辑确实不适用，写 no_applicable_skill_reason.json 说明缺口，再创建 adapter/fork 或 standalone 草稿。",
-            "7. 创建或更新 workspace/pipeline 下的累计 Pipeline；唯一入口必须是 workspace/pipeline/run.py。",
-            "7a. 本轮不强制包装 Skill。只有当你已经自然整理好稳定能力时，才可选写 workspace/skill_packaging_plan.json 和 workspace/capabilities/<skill_name>/；缺失或格式不完整不得阻塞 result_package 进入评估。",
-            "8. 必须用 workspace/pipeline/run.py 在 train raw 上生成预测 reference package，并与 train/reference 做回归检查；Agent 报告只作参考，宿主会在隔离进程重新生成机器报告。",
-            "9. train 回归通过或明确 blocked 后，才处理 validation raw。",
-            "10. validation 阶段不能读取 hidden validation reference/private report。",
-            "11. ExecutePython 只能写本步骤 OUTPUT_DIR，绝不能直接写 workspace/result_package。候选完整 result_package 必须由 workspace/pipeline/run.py 生成，不得执行后手工修改任何业务 CSV。",
-            "12. 每轮结束前必须用 PublishDirectoryArtifact 将 OUTPUT_DIR/result_package 发布为 workspace/result_package；宿主只会评估这个已发布的完整候选包。",
-            "13. 一个 attempt 内可做多次局部修改和 train 检查；未涉及 repair target 的现有业务文件必须与 current best 保持字节一致。只有门禁通过的候选才会隐藏评估，且 composite_score 严格提升才算完成正式 loop。",
-            "14. workspace/pipeline 必须包含 pipeline_manifest.json、run.py、cohort.py、labels.py、chart.py、diag.py、med.py、out.py、proc.py、summary.py、config.yaml。manifest 必须声明完整业务文件、固定模块以及本轮 required parent_pipeline_sha256。",
-            "14a. summary 的实现方式由你自主决定。若 raw 无法稳定推导 train/reference 中的 summary，你可以把从公开 train/reference 学到的 summary 层信息沉淀到 workspace/pipeline/summary_assets/*.csv，并在 manifest 的 learned_summary_assets 中逐项声明 source、path、sha256；宿主会验证它与 train/reference 对应 summary 文件完全一致。不要为了使用该能力机械复制 summary，能够从 raw 稳定计算时仍可直接计算。",
-            "15. 后续正式 Round 必须继承 workspace 中已有 Pipeline，只修改反馈涉及模块；入口仍必须生成全部17个业务文件。缺入口、manifest、lineage 或宿主可重放能力时不得返回 SUCCESS。",
-            "16. Pipeline 源文件不得引用或写入 active bundle、validation result、private reference、test evaluation 或 private report；这些禁用来源标记也不要出现在 Pipeline 代码、配置和注释中。除已声明且经宿主核验的 summary_assets 外，严禁沉淀 stay_id、subject_id、hadm_id、label、患者级业务行或其他结果数据。",
+            "3. Skill 是按需读取的操作说明，不是可调用函数。需要某类规则时先用 AgentScope Skill Viewer 阅读对应 pipeline_* Skill，再使用当前 Toolkit 中的工具执行。",
+            "4. 使用 TaskCreate/TaskUpdate 维护3到5个短期任务，同时只保留一个主要任务 in_progress；已验证结论写入 workspace/rule_ledger.json。",
+            "5. 创建或更新 workspace/pipeline 下的累计 Pipeline；唯一入口必须是 workspace/pipeline/run.py。不要创建 Skill variant、run-local adapter 或另一套业务入口。",
+            "6. 可以调用 RunPipeline(split_mode=train) 做公开诊断并用 CompareArtifact 对照 train/reference；train 值匹配不是隐藏评分前硬门禁，不要因未达到100%而拒绝处理 validation。",
+            "7. 调用 RunPipeline(split_mode=validation) 生成 workspace/result_package。不得在执行后手工修改业务 CSV。",
+            "8. validation 阶段不能读取 hidden validation reference、private report、test raw 或历史实验。",
+            "9. Pipeline 必须包含 pipeline_manifest.json、run.py、cohort.py、labels.py、chart.py、diag.py、med.py、out.py、proc.py、summary.py、config.yaml，并声明完整业务文件和父 Pipeline hash。",
+            "10. 后续候选继承 current best Pipeline，只修改当前反馈涉及模块；入口仍生成完整17个业务文件。",
+            "11. Pipeline 源文件不得引用 active bundle、validation result、private reference、test evaluation 或其他实验目录；不得沉淀患者级业务行。",
+            "12. 准备候选后必须先调用 ValidateDraft。它不创建 attempt、不计算分数；失败时根据工具返回继续修复。",
+            "13. 只有 ValidateDraft 通过且之后 Pipeline hash 未变化，才能调用 SubmitCandidate。SubmitCandidate 会暂停你，宿主完成门禁、隐藏评分和严格提升晋升后把结果返回当前上下文。",
+            "14. 候选未晋升时 workspace/pipeline 会恢复 current best；保留失败反馈作为负面经验，但不要继续基于失败代码修改。",
             "",
             "【最终必须生成的核心结果】",
             "- result_package/ 目录",
             "- result_package 下与 train/reference 同构的 cohort/、features/ 等子文件",
             "- pipeline/ 目录及唯一入口 pipeline/run.py；调用接口固定为 python pipeline/run.py --raw-root <raw> --output-dir <output> --split-mode train|validation|test",
-            "- train_regression_report.json，格式必须包含 schema_version=2、status=SUCCESS、files 列表；files 每项必须包含 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、布尔值 passed 和 failure_reason，并覆盖本轮修改的每个业务文件",
+            "- rule_ledger.json，持续记录已验证规则、反例和未解决问题",
             "- 不要求生成 reference.csv；不要为了凑 reference.csv 把多文件 reference 强行合成一张表",
             "",
             "【可选运行记录】",
             "- package_manifest.json 可作为目录索引/审计文件生成，但不是成功的必要条件。",
             "- reference_shape_contract.json、skill_usage_report.json 可生成，但不要为了补这些可选文件阻塞核心 result_package。",
-            "- 如需修改 pipeline skill 行为，只能落实到 workspace/pipeline 对应模块；散落在 workspace 其他位置的临时脚本不会成为 canonical Pipeline。",
-            "- Skill 包装是验证 loop 收敛后的独立冻结步骤；本轮如创建了 workspace/capabilities 或 skill_packaging_plan.json，只作为可选记录，不作为成功条件。",
+            "- Skill 仅提供说明；所有实验规则必须落实到 workspace/pipeline 或 rule_ledger.json。",
             "- 如果生成 package_manifest，不要把 source/source_reference_root/primary_reference 外部路径写入最终结果包。",
             "",
-            f"ValidateResultPackage 的 expected_key_count 应使用 {expected_count}。",
+            f"validation cohort 的预期 key 数为 {expected_count}；最终以 ValidateDraft 的统一业务门禁为准。",
         ]
         if public_feedback is not None:
             repair_targets = report_paths.get("repair_targets", "")
@@ -2308,27 +2451,22 @@ summary 的实现方式由你自主判断。若 raw 无法稳定推导公开 tra
             paths["train_raw"],
             paths["train_reference_root"],
             paths["validation_raw"],
-            consolidation_root,
         ]
         try:
             context = EngineerToolContext.from_task(
                 task_text=task_text,
                 engineer_phase_root=phase_root,
-                explorer_phase_root=str(consolidation_root),
+                explorer_phase_root=None,
                 additional_read_roots=read_roots,
                 require_skill_plan=False,
                 split_mode="validation",
                 required_report_paths=reports,
             )
             toolkit, _ = create_reference_toolkit(context)
-            _remove_fixed_reference_incompatible_tools(toolkit)
-            model, formatter = make_reference_model()
             read_roots_text = "\n".join(
                 f"- {Path(root).expanduser().resolve()}" for root in read_roots
             )
-            agent = ReActAgent(
-                name="Data Cleaning Agent",
-                sys_prompt=f"""\
+            system_prompt = f"""\
 你是 Data Cleaning Agent 的一次性 pipeline consolidation 上下文。
 只整理本次实验已晋升脚本，不创建新业务规则，不读取隐藏结果。
 
@@ -2339,28 +2477,27 @@ workspace: {context.workspace_dir}
 
 工具规则：
 1. Read/Glob/Grep 只能访问授权只读根或 workspace，并使用提示中的真实绝对路径。
-2. Write/Edit 只能写 workspace；ExecutePython 只能执行 workspace 内已存在的 .py 文件。
+2. Write/Edit 只能写 workspace；RunAnalysisPython 只能执行 workspace 内已存在的 .py 文件。
 3. 不得搜索项目根、experiments 总目录、active_bundle、validation_result 或 private reference。
 4. 最终必须生成 {context.workspace_dir / 'pipeline'}；是否可复现由宿主机器验收。
-""",
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "pipeline_consolidation",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(consolidation_root / "agent_runs"),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
-                max_iters=self.config.max_iters,
-                print_hint_msg=False,
-            )
-            response = asyncio.run(agent(make_user_msg(name="user", content=task_text)))
+"""
+
+            async def run_agent() -> Any:
+                agent, local_workspace = await create_reference_agent(
+                    name="Data Cleaning Agent",
+                    system_prompt=system_prompt,
+                    toolkit=toolkit,
+                    workspace_dir=context.workspace_dir,
+                    max_iters=self.config.max_iters,
+                )
+                try:
+                    response = await agent.reply(make_user_msg(name="user", content=task_text))
+                    save_agent_state(phase_root / "agent_state.json", agent.state)
+                    return response
+                finally:
+                    await local_workspace.close()
+
+            response = asyncio.run(run_agent())
             (phase_root / "agent_response.txt").write_text(
                 format_message_content(getattr(response, "content", "")).strip(),
                 encoding="utf-8",
@@ -2404,23 +2541,25 @@ def _data_cleaning_agent_system_prompt(skill_manifest_text: str, context: Engine
     read_roots = "\n".join(f"- {path}" for path in context.read_roots)
     reports = "\n".join(f"- {name}: {path}" for name, path in sorted(context.required_report_paths.items()))
     return f"""\
-你是 Data Cleaning Agent，一个 Codex-style 本地代码智能体。
+你是 Data Cleaning Agent。当前 validation 生命周期只有你这一个持续存在的 Agent 上下文。
 
 # Skill 策略
 
 当前训练/验证 loop 必须维护 workspace/pipeline 下的累计 canonical Pipeline。
-你可以读取授权的 skills/lib/workflow 代码作为参考，但候选 result_package 必须由 workspace/pipeline/run.py 生成。
-Prompt 只负责指导；宿主会隔离重放 Pipeline，并逐文件比较业务 CSV 的 SHA-256。
+Skill 是操作说明，不是可调用函数。需要某类能力时先用 AgentScope Skill Viewer 读取对应 SKILL.md，
+再使用当前 Toolkit 修改并运行 workspace/pipeline。实验规则只写入 rule_ledger.json 和累计 Pipeline。
 
 # 原子工具
 
 - Read / Glob / Grep：发现和读取授权文件。
 - InspectDataFile：检查结构化文件 schema、样本、行数和缺失率。
-- Write / Edit：只在当前 workspace 写脚本、adapter 和报告。
-- ExecutePython：只执行 workspace 内 Python，OUTPUT_DIR 是本次 step 唯一输出目录。
+- TaskCreate / TaskGet / TaskList / TaskUpdate：维护3到5个短期任务，同时只保留一个主要任务 in_progress。
+- Write / Edit：只在当前 workspace 修改累计 Pipeline、rule ledger 和诊断脚本。
+- RunAnalysisPython：运行受限诊断脚本，不得访问网络或启动子进程。
+- RunPipeline：由宿主选择 raw 和输出路径，固定执行 workspace/pipeline/run.py。
 - CompareArtifact：只用于公开 train reference 回归对比。
-- ValidateResultPackage：只做 validation 结果包自洽检查，不读取 hidden reference。
-- PublishDirectoryArtifact：把 step OUTPUT_DIR 中的 result_package 目录发布到 workspace。
+- ValidateDraft：进行无隐藏答案的结构、隔离重放和哈希检查，不创建 attempt。
+- SubmitCandidate：暂停当前 Agent，由宿主门禁、隐藏评分和晋升后把结果返回当前上下文。
 
 # 工作区
 
@@ -2440,34 +2579,18 @@ Prompt 只负责指导；宿主会隔离重放 Pipeline，并逐文件比较业�
 1. 必须先读取 reference_contract，并用 Glob/InspectDataFile 探索 train/reference 目录；package_manifest 如存在只能作为可选结构索引，不是必须产物。
 2. 分析 raw 到 reference 的文件、字段、key、join、filter、derive、clean 关系。
 3. 如果 train/reference 中出现 `preproc_chart_icu.csv`、`preproc_med_icu.csv`、`preproc_out_icu.csv`、`preproc_proc_icu.csv`、`preproc_diag_icu.csv`、cohort 明细文件，直接学习并生成同构目录包；不要强行合并成宽表。
-4. 如果现有 pipeline skill 或其接口不匹配 train/reference 形态，允许在当前 experiment 内创建 adapter/fork；不要新增全局 skill。
-5. Round 1 创建完整 Pipeline；后续 Round 继承上一正式 best Pipeline，只修改反馈涉及模块。不得以 build_package.py、standalone 脚本或手工 CSV 替代 canonical Pipeline。
-6. 原始 skills/、lib/、workflow/ 和 teacher pipeline 始终只读；需要实现时只在 workspace 写脚本或 adapter。
-7. 不要调用 execute_current_extraction_task；不要调用 finalize_result_package；不要把固定 workflow 当兜底。
-8. train reference 是公开示例，可用 CompareArtifact 回归；validation reference/private report 禁止读取。
-9. 最终核心产物是完整 result_package、workspace/pipeline 和可选的 Agent train_regression_report.json；最终 train regression 由宿主重放生成，不信任文字总结。
-10. ExecutePython 绝不能直接写回 workspace/result_package。必须调用 workspace/pipeline/run.py 在 step OUTPUT_DIR 生成完整包，然后用 PublishDirectoryArtifact 发布整个目录；发布后不得手工修改业务 CSV。
-11. validation result_package 必须通过 ValidateResultPackage，或至少生成可由宿主基础校验的同构目录文件；不要求 reference.csv 或 package_manifest.json。
+4. 不创建 Skill variant、adapter bundle、capability 包或另一套业务入口；所有可执行规则落实到 workspace/pipeline。
+5. 首个候选创建完整 Pipeline；后续候选继承 current best，只修改反馈涉及模块。不得以临时脚本或手工 CSV 替代 canonical Pipeline。
+6. 原始 skills/、lib/、workflow 始终只读；只在 workspace 写入。
+7. train reference 是公开示例，可用 RunPipeline(train) 和 CompareArtifact 诊断；train 值匹配不是隐藏评分前硬门禁。
+8. validation reference/private report、test raw 和其他实验目录禁止读取。
+9. 用 RunPipeline(validation) 生成 workspace/result_package；运行后不得手工修改业务 CSV。
+10. 每次候选必须依次调用 ValidateDraft 和 SubmitCandidate；ValidateDraft 失败时继续修复，不产生 attempt。
+11. SubmitCandidate 返回未晋升时，宿主会恢复 current best Pipeline；保留失败经验，但不要继续使用失败代码。
 12. 未涉及本轮 repair target 的 current best 业务文件不得改变；只改 manifest、报告或 adapter 而不改反馈相关业务文件的候选不会进入隐藏评估。
-13. pipeline_manifest.json 必须声明唯一入口 run.py、固定模块、完整17文件和宿主给出的 parent_pipeline_sha256。没有完整 result_package、manifest、唯一入口或可重放 Pipeline 时不得返回 SUCCESS。
+13. pipeline_manifest.json 必须声明唯一入口 run.py、固定模块、完整17文件和父 Pipeline hash。没有完整 result_package、manifest、唯一入口或可重放 Pipeline 时不得提交。
 14. summary 的实现方式由你自主决定；若必须沉淀公开 train/reference 的 summary 层学习结果，只能使用 manifest 已声明的 summary_assets/*.csv。严禁沉淀患者标识、label、患者级业务行或任何 validation/test private 信息。
 """
-
-
-def _remove_fixed_reference_incompatible_tools(toolkit) -> None:
-    for name in (
-        "execute_current_extraction_task",
-        "finalize_result_package",
-        "record_current_extraction_task",
-        "record_extraction_task",
-        "get_extraction_progress",
-        "initialize_skill_usage_plan",
-        "plan_skill_usage",
-        "revise_skill_usage",
-    ):
-        toolkit.tools.pop(name, None)
-
-
 def _append_runtime_event(phase_root: Path, payload: dict[str, Any]) -> None:
     path = phase_root / "runtime_trace.jsonl"
     record = {
@@ -2535,322 +2658,11 @@ def _write_pipeline_skill_usage_check(phase_root: Path) -> dict[str, Any]:
     return payload
 
 
-def _write_adapter_bundle_manifest(
-    candidate: Path,
-    persisted_variants: list[str],
-    packaged_skills: list[str] | None = None,
-) -> Path:
-    bundle = candidate / "adapter_bundle"
-    bundle.mkdir(parents=True, exist_ok=True)
-    capabilities = candidate / "capabilities"
-    copied: list[str] = []
-    if capabilities.is_dir():
-        target = bundle / "capabilities"
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(capabilities, target)
-        copied = [path.name for path in target.iterdir() if path.is_dir()]
-    manifest = {
-        "schema_version": 1,
-        "status": "SUCCESS",
-        "adapter_count": len(copied),
-        "adapters": copied,
-        "persisted_variants": persisted_variants,
-        "packaged_skills": packaged_skills or [],
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    _write_json(bundle / "manifest.json", manifest)
-    return bundle
-
-
-def _restore_claude_style_capabilities(active: Path, workspace_capabilities: Path) -> list[str]:
-    source = active / "capabilities"
-    restored: list[str] = []
-    if not source.is_dir():
-        return restored
-    workspace_capabilities.mkdir(parents=True, exist_ok=True)
-    for capability in sorted(path for path in source.iterdir() if path.is_dir()):
-        if not (capability / "SKILL.md").is_file() or (capability / "variant.json").is_file():
-            continue
-        target = workspace_capabilities / capability.name
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(capability, target)
-        restored.append(capability.name)
-    return restored
-
-
-def _stage_claude_style_agent_skills(
-    *,
-    phase_root: Path,
-    candidate: Path,
-    package: dict[str, Path],
-    contract: dict[str, Any],
-) -> list[str]:
-    workspace = phase_root / "workspace"
-    capabilities_root = workspace / "capabilities"
-    plan_path = _latest_named_file(phase_root, "skill_packaging_plan.json")
-    if plan_path is None:
-        return []
-    plan = _load_json(plan_path)
-    skills = (
-        plan.get("skills")
-        or plan.get("skills_to_package")
-        or plan.get("experiment_local_skills")
-        or plan.get("capabilities")
-        or plan.get("variants")
-        or []
-    )
-    if not isinstance(skills, list) or not skills:
-        check_path = phase_root / "skill_packaging_completion_check.json"
-        _write_json(
-            check_path,
-            {
-                "schema_version": 1,
-                "status": "SKIPPED",
-                "reason": "skill_packaging_plan.json did not contain a non-empty skills list; packaging is optional during validation loop",
-                "packaging_plan": str(plan_path),
-                "workspace": str(workspace),
-                "capabilities_root": str(capabilities_root),
-                "written_at": datetime.now().isoformat(timespec="seconds"),
-            },
-        )
-        return []
-    package_dir = package.get("result_package")
-    if not isinstance(package_dir, Path) or not package_dir.is_dir():
-        check_path = phase_root / "skill_packaging_completion_check.json"
-        _write_json(
-            check_path,
-            {
-                "schema_version": 1,
-                "status": "SKIPPED",
-                "reason": "Cannot stage optional packaged Skills without a result_package directory",
-                "packaging_plan": str(plan_path),
-                "workspace": str(workspace),
-                "capabilities_root": str(capabilities_root),
-                "written_at": datetime.now().isoformat(timespec="seconds"),
-            },
-        )
-        return []
-    candidate_capabilities = candidate / "capabilities"
-    candidate_capabilities.mkdir(parents=True, exist_ok=True)
-    registry_entries: list[dict[str, Any]] = []
-    bindings: list[dict[str, Any]] = []
-    receipts_dir = candidate / "execution_receipts"
-    receipts_dir.mkdir(parents=True, exist_ok=True)
-    packaged: list[str] = []
-    for raw_entry in skills:
-        if not isinstance(raw_entry, dict):
-            check_path = phase_root / "skill_packaging_completion_check.json"
-            _write_json(
-                check_path,
-                {
-                    "schema_version": 1,
-                    "status": "SKIPPED",
-                    "reason": "Each skill_packaging_plan skill must be an object; packaging is optional during validation loop",
-                    "packaging_plan": str(plan_path),
-                    "workspace": str(workspace),
-                    "capabilities_root": str(capabilities_root),
-                    "written_at": datetime.now().isoformat(timespec="seconds"),
-                },
-            )
-            return []
-        try:
-            entry = _validate_claude_style_skill_entry(raw_entry, capabilities_root, package_dir)
-        except RuntimeError as exc:
-            check_path = phase_root / "skill_packaging_completion_check.json"
-            _write_json(
-                check_path,
-                {
-                    "schema_version": 1,
-                    "status": "SKIPPED",
-                    "reason": str(exc),
-                    "packaging_plan": str(plan_path),
-                    "workspace": str(workspace),
-                    "capabilities_root": str(capabilities_root),
-                    "written_at": datetime.now().isoformat(timespec="seconds"),
-                },
-            )
-            return []
-        source_dir = entry["source_dir"]
-        target_dir = candidate_capabilities / entry["name"]
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(source_dir, target_dir)
-        file_hashes = _relative_file_hashes(target_dir)
-        output_hashes = {
-            output: hashlib.sha256((package_dir / output).read_bytes()).hexdigest()
-            for output in entry["outputs"]
-            if output not in {".", "result_package"} and (package_dir / output).is_file()
-        }
-        receipt_path = receipts_dir / f"{entry['name']}.json"
-        receipt = {
-            "schema_version": 1,
-            "status": "SUCCESS",
-            "skill_name": entry["name"],
-            "result_package": str(package_dir),
-            "outputs": entry["outputs"],
-            "output_hashes": output_hashes,
-            "skill_hashes": file_hashes,
-            "validation_key_count": _validation_key_count(contract),
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        _write_json(receipt_path, receipt)
-        registry_entries.append(
-            {
-                "name": entry["name"],
-                "description": entry["description"],
-                "capability_path": f"capabilities/{entry['name']}",
-                "source_scripts": entry["source_scripts"],
-                "outputs": entry["outputs"],
-                "base_skills": entry["base_skills"],
-                "skill_hashes": file_hashes,
-                "execution_receipt": str(receipt_path),
-                "created_at": receipt["created_at"],
-            }
-        )
-        bindings.append(
-            {
-                "binding_type": "claude_style_skill",
-                "skill_name": entry["name"],
-                "status": "validated",
-                "capability_path": f"capabilities/{entry['name']}",
-                "reference_artifacts": entry["outputs"],
-                "source_scripts": entry["source_scripts"],
-                "base_skills": entry["base_skills"],
-                "execution_receipt": str(receipt_path),
-                "updated_at": receipt["created_at"],
-            }
-        )
-        packaged.append(entry["name"])
-    registry = {
-        "schema_version": 1,
-        "status": "SUCCESS",
-        "packaging_plan": str(plan_path),
-        "strategy": str(plan.get("strategy") or ""),
-        "skill_count": len(registry_entries),
-        "skills": registry_entries,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    _write_json(candidate / "skill_registry.json", registry)
-    shutil.copy2(plan_path, candidate / "skill_packaging_plan.json")
-    _merge_reference_skill_bindings(candidate / "skill_bindings.json", bindings)
-    return packaged
-
-
-def _workspace_has_reference_adapter_scripts(workspace: Path) -> bool:
-    candidates = [
-        workspace / "build_package.py",
-        workspace / "adapter",
-    ]
-    if any(path.is_file() for path in candidates):
-        return True
-    adapter_dir = workspace / "adapter"
-    return adapter_dir.is_dir() and any(path.suffix == ".py" for path in adapter_dir.rglob("*.py"))
-
-
-def _validate_claude_style_skill_entry(
-    entry: dict[str, Any],
-    capabilities_root: Path,
-    package_dir: Path,
-) -> dict[str, Any]:
-    name = str(entry.get("name") or entry.get("skill_name") or "").strip()
-    if not re.fullmatch(r"[a-z][a-z0-9_]{2,80}", name):
-        raise RuntimeError(f"Invalid packaged Skill name: {name!r}")
-    source_dir = (capabilities_root / name).resolve()
-    if not source_dir.is_dir() or capabilities_root.resolve() not in source_dir.parents:
-        raise RuntimeError(f"Packaged Skill directory is missing: {source_dir}")
-    skill_md = source_dir / "SKILL.md"
-    if not skill_md.is_file() or not skill_md.read_text(encoding="utf-8").strip():
-        raise RuntimeError(f"Packaged Skill must include a non-empty SKILL.md: {source_dir}")
-    scripts_dir = source_dir / "scripts"
-    script_files = (
-        sorted(
-            path
-            for path in scripts_dir.rglob("*")
-            if path.is_file() and not path.name.startswith(".")
-        )
-        if scripts_dir.is_dir()
-        else []
-    )
-    if not script_files:
-        raise RuntimeError(f"Packaged Skill must include at least one script under scripts/: {source_dir}")
-    outputs = [
-        str(value).strip().lstrip("/")
-        for value in (
-            entry.get("outputs")
-            or entry.get("reference_artifacts")
-            or entry.get("reference_artifacts_owned")
-            or entry.get("responsible_reference_artifacts")
-            or []
-        )
-    ]
-    outputs = [value.removeprefix("result_package/") for value in outputs if value]
-    if not outputs:
-        outputs = _infer_reference_artifacts_from_skill_md(skill_md.read_text(encoding="utf-8"), package_dir)
-    if not outputs:
-        raise RuntimeError(f"Packaged Skill must declare outputs/reference_artifacts: {name}")
-    missing_outputs = [
-        output for output in outputs
-        if output not in {".", "result_package"} and not (package_dir / output).exists()
-    ]
-    if missing_outputs:
-        raise RuntimeError(f"Packaged Skill {name} declares missing outputs: {missing_outputs}")
-    source_scripts = [
-        path.relative_to(source_dir).as_posix()
-        for path in script_files
-    ]
-    base_skills = [str(value) for value in entry.get("base_skills") or entry.get("base_skill_names") or []]
-    return {
-        "name": name,
-        "description": str(entry.get("description") or "").strip(),
-        "source_dir": source_dir,
-        "source_scripts": source_scripts,
-        "outputs": outputs,
-        "base_skills": base_skills,
-    }
-
-
-def _infer_reference_artifacts_from_skill_md(text: str, package_dir: Path) -> list[str]:
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for match in re.finditer(r"(?:result_package/)?((?:cohort|features)/[A-Za-z0-9_.\-/]+\.csv)", text):
-        artifact = match.group(1).strip().lstrip("/")
-        if artifact in seen:
-            continue
-        if (package_dir / artifact).exists():
-            candidates.append(artifact)
-            seen.add(artifact)
-    return candidates
-
-
 def _relative_file_hashes(root: Path) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         hashes[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return hashes
-
-
-def _merge_reference_skill_bindings(path: Path, new_bindings: list[dict[str, Any]]) -> None:
-    payload: dict[str, Any] = {"schema_version": 1, "bindings": []}
-    if path.is_file():
-        try:
-            loaded = _load_json(path)
-            if isinstance(loaded.get("bindings"), list):
-                payload = loaded
-        except Exception:
-            pass
-    existing = [item for item in payload.get("bindings") or [] if isinstance(item, dict)]
-    by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in existing:
-        key = (str(item.get("binding_type") or ""), str(item.get("skill_name") or item.get("variant_name") or ""))
-        if key[1]:
-            by_key[key] = item
-    for item in new_bindings:
-        key = (str(item.get("binding_type") or ""), str(item.get("skill_name") or ""))
-        by_key[key] = item
-    payload["bindings"] = [by_key[key] for key in sorted(by_key)]
-    _write_json(path, payload)
 
 
 def _copy_runtime_reports_to_candidate(phase_root: Path, candidate: Path) -> None:
@@ -2907,14 +2719,7 @@ def _write_reference_candidate_delta(
         "feedback_targets_unaddressed": feedback_audit["unaddressed_target_ids"],
         "feedback_linked_changed_files": feedback_audit["linked_changed_files"],
         "feedback_response_issues": feedback_audit["issues"],
-        "checked_scopes": [
-            "adapter_bundle",
-            "capabilities",
-            "reference_shape_contract.json",
-            "results/result_manifest.json",
-            "results/target_field_mapping.json",
-            "results/result_package",
-        ],
+        "checked_scopes": ["script_bundle/pipeline", "results/result_package"],
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
     _write_json(candidate / "candidate_delta.json", payload)
@@ -3286,21 +3091,9 @@ def _material_file_hashes(root: Path) -> dict[str, str]:
     if not root.exists():
         return {}
     candidates: list[Path] = []
-    for relative in (
-        "adapter_bundle",
-        "capabilities",
-    ):
-        directory = root / relative
-        if directory.is_dir():
-            candidates.extend(path for path in directory.rglob("*") if path.is_file())
-    for relative in (
-        "reference_shape_contract.json",
-        "results/result_manifest.json",
-        "results/target_field_mapping.json",
-    ):
-        path = root / relative
-        if path.is_file():
-            candidates.append(path)
+    pipeline = root / "script_bundle" / "pipeline"
+    if pipeline.is_dir():
+        candidates.extend(path for path in pipeline.rglob("*") if path.is_file())
     result_package = root / "results" / "result_package"
     if result_package.is_dir():
         candidates.extend(path for path in result_package.rglob("*") if path.is_file())

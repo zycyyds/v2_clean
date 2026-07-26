@@ -6,7 +6,7 @@
 
 ```bash
 conda env create -f environment.yml
-conda activate py310
+conda activate py3102
 ```
 
 Validation Agent 和自动 Test Agent 需要在 `model_config.local.yaml` 配置模型访问凭据；该文件只在本机保存，不能提交。数据划分、评分器和手工兼容测试入口本身不调用模型。
@@ -35,14 +35,16 @@ python main.py \
 ```bash
 python main.py \
   --workflow reference-guided-train-validate \
-  --dataset-split datasets/mimic_icu_mortality_summary_labels_split_10train_4000val_5000test_materialized \
-  --experiment-dir experiments/mimic_icu_mortality_summary_labels_10train_4000val_template_v4 \
-  --round-limit 3 \
-  --max-iters 400 \
+  --dataset-split /absolute/path/to/10train_4000val_5000test \
+  --experiment-dir experiments/mimic_icu_mortality_agentscope2_v1 \
+  --round-limit 2 \
+  --patience 2 \
+  --max-attempts 30 \
+  --max-iters 10000 \
   "<reference-guided task prompt>"
 ```
 
-`--round-limit` 只统计分数严格提升的正式 loop。下降、持平和门禁失败只记录为 attempt；默认连续两个有效但未提升的 attempt 才停止，无效 attempt 不占 patience。每个正式 loop 会归档累计 `script_bundle`、validation 结果、评分和 provenance。
+`--round-limit` 只统计分数严格提升的正式 loop。`--max-iters` 是整个持续 validation Agent 生命周期的 ReAct 总上限，并不要求必须执行满。下降、持平和门禁失败只记录为 attempt；默认连续两个有效但未提升的 attempt 才停止，无效 attempt 不占 patience。每个正式 loop 会归档累计 `script_bundle`、validation 结果、评分和 provenance。
 
 Validation 因 `round-limit`、patience、`max-attempts`、`target-score` 自然停止后，会自动从最新正式 best 创建 checkpoint，并在同一 Python 进程中用全新 memory/toolkit/workspace 的 `Data Cleaning Agent` 处理 test。Validation 阶段第一次按 `Ctrl+C` 也会取消当前未提交 attempt 并进入该流程；Test 阶段再次按 `Ctrl+C` 才终止整个程序。
 
@@ -87,11 +89,10 @@ Data Cleaning Agent 只注册以下 9 个 MIMIC Pipeline Skills：
 - `pipeline_clean_feature_table`
 - `pipeline_assemble_reference_package`
 
-它们是 Agent 创建 experiment-local adapter 时的可检查基线。最佳 0.9603 adapter 保持为独立脚本，只依赖 Python、pandas 和 numpy。
+它们只提供按需读取的业务说明，不能直接执行。实验规则只沉淀到当前实验的 `rule_ledger.json` 和累计 Pipeline。
 
 ## 验证
 
 ```bash
-conda run -n py310 python -m pytest -q
-conda run -n py310 python -m compileall -q main.py agent agent_tools workflow skills lib
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. conda run -n py3102 python -m pytest -p no:cacheprovider -q tests
 ```

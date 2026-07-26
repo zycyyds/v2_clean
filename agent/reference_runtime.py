@@ -2,25 +2,32 @@
 from __future__ import annotations
 
 import os
+from importlib.metadata import version
 from pathlib import Path
+from typing import Any
 
-from agentscope.agent import ReActAgent
+import yaml
+from agentscope.agent import Agent, ContextConfig, ReActConfig
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.model import OpenAIChatModel
-from agentscope.token import OpenAITokenCounter
-from agentscope.tool import Toolkit
+from agentscope.skill import LocalSkillLoader
+from agentscope.state import AgentState
+from agentscope.tool import TaskCreate, TaskGet, TaskList, TaskUpdate, Toolkit
+from agentscope.workspace import LocalWorkspace
 from pydantic import BaseModel, Field
 
-from agent.bounded_memory import (
-    BoundedInMemoryMemory,
-    _compact_threshold,
-    _context_window_tokens,
+from agent_tools.agentscope2_tools import (
+    RunPipelineTool,
+    SubmitCandidateTool,
+    ToolAuditMiddleware,
+    TestRunnerSpecServices,
+    ValidateDraftTool,
+    ValidationToolServices,
+    build_scoped_atomic_tools,
+    build_test_tools,
 )
 from agent_tools.context import EngineerToolContext
-from agent_tools.reference_variants import register_reference_variant_tools
-from agent_tools.tools import register_engineer_atomic_tools
-from config_loader import get_agent_config
-from skills._registry import load_skills
+from lib.agent_runtime import create_openai_model_and_formatter
 
 
 V2_DIR = Path(__file__).resolve().parent.parent
@@ -36,6 +43,7 @@ DATA_CLEANING_AGENT_PIPELINE_SKILLS = {
     "pipeline_assemble_reference_package",
 }
 ENGINEER_CODE_READ_ROOTS = (V2_DIR / "skills", V2_DIR / "workflow", V2_DIR / "lib")
+AGENTSCOPE_VERSION = "2.0.4.post1"
 
 
 class ReferenceCompressionSummary(BaseModel):
@@ -106,98 +114,158 @@ REFERENCE_COMPRESSION_TEMPLATE = """\
 
 
 def make_reference_model() -> tuple[OpenAIChatModel, OpenAIChatFormatter]:
-    cfg = get_agent_config("react_planner")
-    api_key = os.environ.get("OPENAI_API_KEY") or cfg.get("api_key") or None
-    base_url = (
-        os.environ.get("OPENAI_API_BASE")
-        or cfg.get("base_url")
-        or cfg.get("api_base")
-        or "https://api.openai.com/v1"
-    )
-    model_name = (
-        os.environ.get("MODEL_NAME")
-        or cfg.get("model_name")
-        or cfg.get("model")
-        or "gpt-4.1-mini"
-    )
-    generation = {key: cfg[key] for key in ("temperature", "seed") if key in cfg}
-    return (
-        OpenAIChatModel(
-            model_name=model_name,
-            api_key=api_key,
-            stream=False,
-            client_kwargs={"base_url": base_url},
-            generate_kwargs=generation or None,
-        ),
-        OpenAIChatFormatter(),
-    )
+    require_agentscope_version()
+    return create_openai_model_and_formatter("react_planner", "gpt-4.1-mini")
 
 
-def create_reference_memory(
-    phase_context: dict[str, str],
-    model: OpenAIChatModel,
-) -> BoundedInMemoryMemory:
-    workflow_hint = (
-        phase_context.get("workflow")
-        or phase_context.get("run_id")
-        or phase_context.get("run_root")
-        or phase_context.get("phase_root")
-        or ""
-    )
-    model_name = str(
-        getattr(model, "model_name", "")
-        or getattr(model, "model", "")
-        or os.environ.get("MODEL_NAME")
-        or ""
-    )
-    return BoundedInMemoryMemory(
-        model_name=model_name,
-        report_dir=Path(phase_context["phase_root"]) / "context",
-        workflow_hint=workflow_hint,
-    )
+def require_agentscope_version() -> None:
+    installed = version("agentscope")
+    if installed != AGENTSCOPE_VERSION:
+        raise RuntimeError(
+            f"Data Cleaning Agent requires agentscope=={AGENTSCOPE_VERSION}; installed={installed}"
+        )
 
 
-def create_reference_compression_config(
-    model: OpenAIChatModel,
-) -> ReActAgent.CompressionConfig:
-    """Build token-triggered semantic compression for Data Cleaning Agent."""
-    model_name = str(
-        getattr(model, "model_name", "")
-        or getattr(model, "model", "")
-        or os.environ.get("MODEL_NAME")
-        or ""
-    )
-    context_window = _context_window_tokens(model_name)
-    trigger_threshold = int(context_window * _compact_threshold(None))
-    return ReActAgent.CompressionConfig(
-        enable=True,
-        agent_token_counter=OpenAITokenCounter(model_name),
-        trigger_threshold=trigger_threshold,
-        keep_recent=14,
+def create_reference_context_config() -> ContextConfig:
+    """Use AgentScope 2.x semantic compression and workspace offload."""
+    return ContextConfig(
+        trigger_ratio=0.8,
+        reserve_ratio=0.1,
         compression_prompt=REFERENCE_COMPRESSION_PROMPT,
         summary_template=REFERENCE_COMPRESSION_TEMPLATE,
-        summary_schema=ReferenceCompressionSummary,
+        summary_schema=ReferenceCompressionSummary.model_json_schema(),
+        tool_result_limit=50_000,
     )
 
 
-def create_reference_toolkit(context: EngineerToolContext) -> tuple[Toolkit, list[dict]]:
-    """Expose only the pipeline Skills and local-code tools used by this workflow."""
-    toolkit = Toolkit()
-    manifest = load_skills(toolkit, allowed_names=DATA_CLEANING_AGENT_PIPELINE_SKILLS)
-    for item in manifest:
-        for tool_name in item.get("tool_names") or []:
-            toolkit.tools.pop(tool_name, None)
-        item["tool_names"] = []
-        skill_dir = V2_DIR / "skills" / str(item.get("dir") or item.get("name") or "")
-        if (skill_dir / "SKILL.md").is_file():
-            toolkit.register_agent_skill(str(skill_dir))
-            item["agentscope_agent_skill"] = True
-    context.register_executable_skills(str(item.get("name")) for item in manifest)
-    register_engineer_atomic_tools(toolkit, context)
-    register_reference_variant_tools(
-        toolkit,
-        context,
-        skill_names={str(item.get("name")) for item in manifest},
-        skills_root=V2_DIR / "skills",
+def create_reference_react_config(max_iters: int) -> ReActConfig:
+    return ReActConfig(
+        max_iters=max_iters,
+        stop_on_reject=False,
+        interruption_raise_cancelled_error=True,
     )
+
+
+def _skill_manifest() -> list[dict[str, Any]]:
+    manifest: list[dict[str, Any]] = []
+    for name in sorted(DATA_CLEANING_AGENT_PIPELINE_SKILLS):
+        skill_dir = V2_DIR / "skills" / name
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.is_file():
+            raise RuntimeError(f"Missing retained Skill instructions: {skill_md}")
+        text = skill_md.read_text(encoding="utf-8")
+        if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+            raise RuntimeError(f"Skill frontmatter is invalid: {skill_md}")
+        frontmatter = text.split("\n---\n", 1)[0][4:]
+        metadata = yaml.safe_load(frontmatter) or {}
+        if metadata.get("name") != name or not str(metadata.get("description") or "").strip():
+            raise RuntimeError(f"Skill name/description is invalid: {skill_md}")
+        manifest.append(
+            {
+                "name": name,
+                "description": str(metadata["description"]).strip(),
+                "dir": name,
+                "skill_path": str(skill_dir),
+                "agentscope_agent_skill": True,
+                "tool_names": [],
+            }
+        )
+    return manifest
+
+
+def create_reference_toolkit(
+    context: EngineerToolContext,
+    services: ValidationToolServices | None = None,
+) -> tuple[Toolkit, list[dict]]:
+    """Build one always-visible validation toolkit using AgentScope 2.x APIs."""
+    require_agentscope_version()
+    audit_path = context.workspace_dir / "tool_audit.jsonl"
+    tools = [
+        TaskCreate(),
+        TaskGet(),
+        TaskList(),
+        TaskUpdate(),
+        *build_scoped_atomic_tools(context, audit_path=audit_path),
+    ]
+    if services is not None:
+        boundary_audit = [ToolAuditMiddleware(audit_path)]
+        tools.extend(
+            [
+                RunPipelineTool(services, middlewares=boundary_audit),
+                ValidateDraftTool(services, middlewares=boundary_audit),
+                SubmitCandidateTool(services, middlewares=boundary_audit),
+            ]
+        )
+    toolkit = Toolkit(
+        tools=tools,
+        skills_or_loaders=[
+            LocalSkillLoader(directory=str(V2_DIR / "skills"), scan_subdir=True)
+        ],
+    )
+    manifest = _skill_manifest()
     return toolkit, manifest
+
+
+def create_test_toolkit(
+    context: EngineerToolContext,
+    services: TestRunnerSpecServices,
+) -> Toolkit:
+    """Build the isolated Test Agent toolkit without edit, Python or Skill tools."""
+    require_agentscope_version()
+    return Toolkit(
+        tools=build_test_tools(
+            context,
+            services,
+            audit_path=context.workspace_dir / "tool_audit.jsonl",
+        )
+    )
+
+
+async def create_reference_agent(
+    *,
+    name: str,
+    system_prompt: str,
+    toolkit: Toolkit,
+    workspace_dir: str | Path,
+    max_iters: int,
+    state: AgentState | None = None,
+) -> tuple[Agent, LocalWorkspace]:
+    require_agentscope_version()
+    model, _ = make_reference_model()
+    workspace = LocalWorkspace(
+        workdir=str(Path(workspace_dir).expanduser().resolve()),
+        instructions=(
+            "<workspace>All persistent files for this experiment are under {workdir}. "
+            "Use only the provided scoped tools; do not assume shell or network access.</workspace>"
+        ),
+    )
+    await workspace.initialize()
+    agent = Agent(
+        name=name,
+        system_prompt=system_prompt,
+        model=model,
+        toolkit=toolkit,
+        state=state,
+        offloader=workspace,
+        context_config=create_reference_context_config(),
+        react_config=create_reference_react_config(max_iters),
+    )
+    return agent, workspace
+
+
+def load_agent_state(path: str | Path) -> AgentState | None:
+    state_path = Path(path).expanduser().resolve()
+    if not state_path.is_file():
+        return None
+    return AgentState.model_validate_json(state_path.read_text(encoding="utf-8"))
+
+
+def save_agent_state(path: str | Path, state: AgentState) -> None:
+    state_path = Path(path).expanduser().resolve()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(f".{state_path.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(state.model_dump_json(indent=2))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, state_path)

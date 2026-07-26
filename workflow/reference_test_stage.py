@@ -11,15 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agentscope.agent import ReActAgent
-
 from agent.reference_runtime import (
-    ENGINEER_CODE_READ_ROOTS,
-    create_reference_compression_config,
-    create_reference_memory,
-    create_reference_toolkit,
-    make_reference_model,
+    create_reference_agent,
+    create_test_toolkit,
+    save_agent_state,
 )
+from agent_tools.agentscope2_tools import TestRunnerSpecServices
 from agent_tools.context import EngineerToolContext
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
 from lib.agent_runtime import format_message_content, make_user_msg
@@ -32,7 +29,6 @@ from workflow.reference_package_gate import (
 )
 from workflow.reference_guided import (
     _directory_sha256,
-    _remove_fixed_reference_incompatible_tools,
     _write_json,
     evaluate_reference_directory_package,
     infer_reference_contract,
@@ -204,6 +200,9 @@ class ReferenceCheckpointTestRuntime:
             )
 
     def _run_agent_session(self) -> Path:
+        return asyncio.run(self._run_agent_session_async())
+
+    async def _run_agent_session_async(self) -> Path:
         phase = init_phase_session(self.agent_runs_dir, "data_cleaning_agent")
         phase_root = Path(phase["phase_root"])
         run_id = f"reference_code_test_checkpoint_{self.config.best_round:04d}"
@@ -227,40 +226,19 @@ class ReferenceCheckpointTestRuntime:
                 split_mode="test",
                 required_report_paths=reports,
             )
-            toolkit, _ = create_reference_toolkit(context)
-            _remove_fixed_reference_incompatible_tools(toolkit)
-            model, formatter = make_reference_model()
-            agent = ReActAgent(
-                name="Data Cleaning Agent",
-                sys_prompt=_checkpoint_test_system_prompt(context),
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "data_cleaning_agent",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(self.agent_runs_dir),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
-                max_iters=self.config.max_iters,
-                print_hint_msg=False,
-            )
-            prompt = task_text
-            runner_spec: Path | None = None
-            for repair_index in range(3):
-                response = asyncio.run(agent(make_user_msg(name="user", content=prompt)))
-                response_text = format_message_content(getattr(response, "content", "")).strip()
-                (phase_root / f"agent_response_{repair_index + 1}.txt").write_text(
-                    response_text,
-                    encoding="utf-8",
-                )
-                runner_spec = context.workspace_dir / "runner_spec.json"
-                gate = _runner_spec_quality_gate(
+            runner_spec = context.workspace_dir / "runner_spec.json"
+            pipeline = self.bundle / "pipeline"
+            expected_spec = {
+                "schema_version": 1,
+                "entrypoint": str((pipeline / "run.py").resolve()),
+                "pipeline_sha256": pipeline_directory_sha256(pipeline),
+                "raw_root": str(Path(self.sanitized_contract["paths"]["test_raw"]).resolve()),
+                "output_dir": str((self.test_run_dir / "result_package").resolve()),
+                "split_mode": "test",
+            }
+
+            def validate_runner_spec() -> dict[str, Any]:
+                return _runner_spec_quality_gate(
                     runner_spec=runner_spec,
                     workspace=context.workspace_dir,
                     frozen_script_bundle=self.bundle,
@@ -270,21 +248,49 @@ class ReferenceCheckpointTestRuntime:
                         self.sanitized_contract["paths"]["train_reference_root"]
                     ),
                 )
-                self._last_gate = gate
-                _write_json(phase_root / f"runner_spec_gate_{repair_index + 1}.json", gate)
-                if gate.get("valid") or repair_index == 2:
-                    break
-                prompt = _test_repair_prompt(gate, context.workspace_dir)
-            if runner_spec is None or not runner_spec.is_file():
-                raise RuntimeError("Data Cleaning Agent produced no runner_spec.json")
-            return runner_spec
+
+            toolkit = create_test_toolkit(
+                context,
+                TestRunnerSpecServices(
+                    runner_spec_path=runner_spec,
+                    expected_spec=expected_spec,
+                    validate_runner_spec=validate_runner_spec,
+                ),
+            )
+            agent, workspace = await create_reference_agent(
+                name="Data Cleaning Agent",
+                system_prompt=_checkpoint_test_system_prompt(context),
+                toolkit=toolkit,
+                workspace_dir=context.workspace_dir,
+                max_iters=self.config.max_iters,
+            )
+            prompt = task_text
+            try:
+                for repair_index in range(3):
+                    response = await agent.reply(make_user_msg(name="user", content=prompt))
+                    response_text = format_message_content(getattr(response, "content", "")).strip()
+                    (phase_root / f"agent_response_{repair_index + 1}.txt").write_text(
+                        response_text,
+                        encoding="utf-8",
+                    )
+                    gate = validate_runner_spec()
+                    self._last_gate = gate
+                    _write_json(phase_root / f"runner_spec_gate_{repair_index + 1}.json", gate)
+                    if gate.get("valid") or repair_index == 2:
+                        break
+                    prompt = _test_repair_prompt(gate, context.workspace_dir)
+                if not runner_spec.is_file():
+                    raise RuntimeError("Data Cleaning Agent produced no runner_spec.json")
+                save_agent_state(phase_root / "agent_state.json", agent.state)
+                return runner_spec
+            finally:
+                await workspace.close()
         finally:
             clear_phase_context()
 
     def _read_roots(self, sanitized_contract_path: Path) -> list[str | Path]:
         paths = self.sanitized_contract["paths"]
         roots: list[str | Path] = [
-            *ENGINEER_CODE_READ_ROOTS,
             self.bundle,
             paths["train_raw"],
             paths["train_reference_root"],
@@ -314,12 +320,12 @@ class ReferenceCheckpointTestRuntime:
 
 【执行要求】
 1. 冻结入口唯一固定为：{self.bundle / 'pipeline/run.py'}。
-2. 你只能在 workspace 写 runner_spec.json，字段必须包含 schema_version、entrypoint、pipeline_sha256、raw_root、output_dir、split_mode。
+2. 你只能调用 WriteRunnerSpec 写 runner_spec.json；固定字段由宿主注入，你只能提供 notes。
 3. raw_root 固定为 {paths['test_raw']}；output_dir 固定为 {self.test_run_dir / 'result_package'}；split_mode 固定为 test。
 4. 不得创建 build_test.py、runner.py、shell 脚本、adapter 或任何业务转换代码，也不得生成或修改业务 CSV。
 5. 不得执行清洗规则；runner_spec 通过后由宿主隔离执行冻结 Pipeline。
 6. 不得修改冻结脚本包，不得搜索历史实验、validation 数据、private reference 或评分报告。
-7. 如果你确认冻结 Pipeline 的业务规则本身不足，只能在 runner_spec.json 的 notes 中记录；宿主执行失败后会标记 pipeline_rule_failure 并返回 Validation。
+7. 写完后调用 ValidateRunnerSpec；如果冻结 Pipeline 的业务规则本身不足，只能在 notes 中记录，宿主执行失败后会标记 pipeline_rule_failure 并返回 Validation。
 """
 
     def _quality_gate(self, result_package: Path, bundle_hash_before: str) -> dict[str, Any]:
@@ -406,7 +412,7 @@ def _checkpoint_test_system_prompt(context: EngineerToolContext) -> str:
 你只能读取以下授权路径：
 {read_roots}
 
-你只负责提交 runner_spec.json，不得编写或改写任何业务转换代码，也不得生成 result_package。宿主会执行冻结的唯一入口。任何 validation/test 金标准和评分结果都不可见。
+你只负责调用 WriteRunnerSpec 和 ValidateRunnerSpec，不得编写或改写任何业务转换代码，也不得生成 result_package。宿主会执行冻结的唯一入口。任何 validation/test 金标准和评分结果都不可见。
 """
 
 

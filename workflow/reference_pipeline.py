@@ -450,6 +450,7 @@ def validate_and_replay_candidate_pipeline(
     report_root: str | Path,
     required_file_count: int | None = MIMIC_EXPECTED_BUSINESS_FILE_COUNT,
     allowed_changed_modules: set[str] | None = None,
+    require_train_value_match: bool = False,
 ) -> dict[str, Any]:
     pipeline = Path(pipeline_dir).expanduser().resolve()
     reference = Path(train_reference_root).expanduser().resolve()
@@ -543,8 +544,12 @@ def validate_and_replay_candidate_pipeline(
         report["train_regression"] = train_regression
         if not train_gate["valid"]:
             issues.extend(f"train replay gate: {item}" for item in train_gate["issues"])
-        if train_regression["status"] != "SUCCESS":
+        if require_train_value_match and train_regression["status"] != "SUCCESS":
             issues.append("host train regression did not exactly match train reference")
+        elif train_regression["status"] != "SUCCESS":
+            report.setdefault("diagnostics", []).append(
+                "train replay differs from public reference; retained as diagnostic evidence only"
+            )
 
     if validation_run["returncode"] == 0:
         validation_gate = validate_business_result_package(

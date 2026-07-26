@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from agentscope.credential import OpenAICredential
 from agentscope.formatter import OpenAIChatFormatter
-from agentscope.message import Msg, TextBlock
+from agentscope.message import Msg, TextBlock, UserMsg
 from agentscope.model import OpenAIChatModel
 from agentscope.tool import ToolResponse
 
@@ -41,6 +42,10 @@ def format_message_content(content: Any) -> str:
                     continue
                 else:
                     parts.append(str(block))
+            elif hasattr(block, "text"):
+                parts.append(str(getattr(block, "text") or ""))
+            elif hasattr(block, "output"):
+                parts.append(format_message_content(getattr(block, "output")))
             else:
                 parts.append(str(block))
         return "\n".join(part for part in parts if part).strip()
@@ -97,29 +102,29 @@ def create_openai_model_and_formatter(agent_key: str, default_model: str):
         or cfg.get("api_base")
         or "https://api.openai.com/v1"
     )
-    generate_kwargs: dict[str, Any] = {}
+    parameters: dict[str, Any] = {"parallel_tool_calls": False}
     if "temperature" in cfg:
-        generate_kwargs["temperature"] = cfg.get("temperature")
-    if "seed" in cfg:
-        generate_kwargs["seed"] = cfg.get("seed")
+        parameters["temperature"] = cfg.get("temperature")
+    formatter = OpenAIChatFormatter()
     model = OpenAIChatModel(
-        model_name=resolve_model_name(agent_key, default_model),
-        api_key=api_key,
+        credential=OpenAICredential(
+            api_key=api_key or "",
+            base_url=base_url,
+        ),
+        model=resolve_model_name(agent_key, default_model),
+        parameters=OpenAIChatModel.Parameters(**parameters),
         stream=False,
-        client_kwargs={"base_url": base_url},
-        generate_kwargs=generate_kwargs or None,
+        formatter=formatter,
     )
-    return model, OpenAIChatFormatter()
+    return model, formatter
 
 
 async def collect_tool_results(agent: Any) -> dict[str, list[dict[str, Any]]]:
     collected: dict[str, list[dict[str, Any]]] = {}
-    memory = getattr(agent, "memory", None)
-    if memory is None or not hasattr(memory, "get_memory"):
+    state = getattr(agent, "state", None)
+    if state is None:
         return collected
-
-    memory_msgs = await memory.get_memory()
-    for msg in memory_msgs:
+    for msg in getattr(state, "context", []) or []:
         content = getattr(msg, "content", None)
         if not isinstance(content, list):
             continue
@@ -144,4 +149,4 @@ def make_user_msg(name: str, content: str, metadata: dict[str, Any] | None = Non
     # when user-role messages carry different `name` values across turns.
     # Keep the protocol-level name stable and preserve the logical sender in
     # metadata for debugging.
-    return Msg(name="user", content=content, role="user", metadata=msg_metadata or None)
+    return UserMsg(name="user", content=content, metadata=msg_metadata or None)

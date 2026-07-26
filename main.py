@@ -101,7 +101,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
         help="要运行的主链路阶段。",
     )
-    parser.add_argument("--max-iters", type=int, default=60, help="每轮 Agent 的最大迭代次数。")
+    parser.add_argument(
+        "--max-iters",
+        type=int,
+        default=60,
+        help="整个 validation Agent 生命周期的 ReAct 迭代上限。",
+    )
     parser.add_argument("--round-limit", type=int, default=None, help="本次最多完成的成功晋升 loop 数。")
     parser.add_argument("--patience", type=int, default=2, help="连续有效但未提升的候选上限。")
     parser.add_argument("--max-attempts", type=int, default=100, help="本次候选尝试的安全上限。")

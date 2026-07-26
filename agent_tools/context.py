@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import json
 from dataclasses import dataclass, field
@@ -70,7 +69,6 @@ class EngineerToolContext:
         roots: list[str | Path] = list(additional_read_roots)
         if explorer_phase_root:
             roots.append(explorer_phase_root)
-        roots.extend(_existing_absolute_paths(task_text))
         return cls(
             engineer_phase_root=engineer_phase_root,
             read_roots=roots,
@@ -265,19 +263,3 @@ class EngineerToolContext:
         if root.is_file():
             return path == root
         return _is_within(path, root)
-
-
-
-_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.-])(/[^\s，。；;：:'\"<>]+)")
-
-
-def _existing_absolute_paths(text: str) -> list[Path]:
-    paths: list[Path] = []
-    for match in _ABSOLUTE_PATH_RE.finditer(str(text or "")):
-        raw = match.group(1).rstrip(")]}>,.，。")
-        path = Path(os.path.expanduser(raw))
-        if path.exists():
-            resolved = path.resolve()
-            if resolved not in paths:
-                paths.append(resolved)
-    return paths

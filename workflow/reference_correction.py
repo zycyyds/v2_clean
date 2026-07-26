@@ -11,14 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agentscope.agent import ReActAgent
-
 from agent.reference_runtime import (
     ENGINEER_CODE_READ_ROOTS,
-    create_reference_compression_config,
-    create_reference_memory,
+    create_reference_agent,
     create_reference_toolkit,
-    make_reference_model,
+    load_agent_state,
+    save_agent_state,
 )
 from agent_tools.context import EngineerToolContext
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
@@ -26,7 +24,6 @@ from lib.agent_runtime import format_message_content, make_user_msg
 from workflow.correction_evaluation import evaluate_correction_package
 from workflow.reference_guided import (
     _latest_result_package_dir,
-    _remove_fixed_reference_incompatible_tools,
 )
 
 
@@ -285,7 +282,7 @@ class ReferenceCorrectionWorkflow:
 【结果包主键契约】
 - 本任务的样本主键是 `{key_column}`，correction 共 {correction_count} 个主键。
 - cohort 中同一 `hadm_id` 可以合法对应多个不同的 ICU `stay_id`，不得按 `hadm_id` 去重或删除合法 stay。
-- 调用 ValidateResultPackage 时必须显式传入 key_column="{key_column}"、expected_key_count={correction_count}；不得使用工具的自动推断键。
+- 生成前后必须自行检查 `{key_column}` 覆盖和重复情况；宿主最终会按 {correction_count} 个 correction key 执行统一门禁。
 
 【可读输入】
 - train dirty examples: {paths['train_raw']}
@@ -298,11 +295,14 @@ class ReferenceCorrectionWorkflow:
 3. 只在有证据时修改；必须尽量保持正常数据、目录结构、文件名、schema 和 gzip 格式不变。
 4. correction 的完整输出必须包含输入中的全部业务文件，不能只输出发生修改的文件。
 5. 允许在当前 workspace 编写并执行纠错脚本，但不得修改任何输入目录。
-6. 最终必须使用 PublishDirectoryArtifact 发布完整结果目录到 {phase_root / 'workspace/result_package'}。
+6. 最后一次 RunAnalysisPython 必须在该工具分配的 OUTPUT_DIR/result_package 生成完整结果包；宿主会接管最新的完整输出目录。
 7. 不要在最终回答中声称读取了不可见答案；宿主会在会话完全结束后独立评分。
 """
 
     def _run_agent_session(self) -> Path:
+        return asyncio.run(self._run_agent_session_async())
+
+    async def _run_agent_session_async(self) -> Path:
         agent_runs = self.experiment / "agent_runs"
         phase = init_phase_session(agent_runs, "data_cleaning_agent")
         phase_root = Path(phase["phase_root"])
@@ -333,35 +333,29 @@ class ReferenceCorrectionWorkflow:
                 },
             )
             toolkit, _ = create_reference_toolkit(context)
-            _remove_fixed_reference_incompatible_tools(toolkit)
-            model, formatter = make_reference_model()
-            agent = ReActAgent(
+            state_path = phase_root / "agent_state.json"
+            agent, workspace = await create_reference_agent(
                 name="Data Cleaning Agent",
-                sys_prompt=_correction_system_prompt(context),
-                model=model,
-                formatter=formatter,
+                system_prompt=_correction_system_prompt(context),
                 toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "data_cleaning_agent",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(agent_runs),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
+                workspace_dir=context.workspace_dir,
                 max_iters=self.config.max_iters,
-                print_hint_msg=False,
+                state=load_agent_state(state_path),
             )
-            response = asyncio.run(agent(make_user_msg(name="user", content=task_text)))
-            response_text = format_message_content(getattr(response, "content", "")).strip()
-            (phase_root / "agent_response.txt").write_text(response_text, encoding="utf-8")
-            package = _latest_result_package_dir(phase_root)
-            if package is None:
-                raise RuntimeError("Data Cleaning Agent did not publish workspace/result_package")
-            return package
+            try:
+                response = await agent.reply(make_user_msg(name="user", content=task_text))
+                response_text = format_message_content(getattr(response, "content", "")).strip()
+                (phase_root / "agent_response.txt").write_text(response_text, encoding="utf-8")
+                save_agent_state(state_path, agent.state)
+                package = _latest_result_package_dir(phase_root)
+                if package is None:
+                    raise RuntimeError(
+                        "Data Cleaning Agent did not generate OUTPUT_DIR/result_package"
+                    )
+                return package
+            finally:
+                save_agent_state(state_path, agent.state)
+                await workspace.close()
         finally:
             clear_phase_context()
 
@@ -451,7 +445,7 @@ def _correction_system_prompt(context: EngineerToolContext) -> str:
 你只能读取：
 {roots}
 
-你必须从成对训练示例中自主发现纠错规则。禁止猜测或搜索未授权路径。ExecutePython 只能写当前步骤 OUTPUT_DIR；最终通过 PublishDirectoryArtifact 发布完整结果包。
+你必须从成对训练示例中自主发现纠错规则。禁止猜测或搜索未授权路径。RunAnalysisPython 只能写当前步骤 OUTPUT_DIR；最终在 OUTPUT_DIR/result_package 生成完整结果包，由宿主接管。
 """
 
 

@@ -2,24 +2,42 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
-import hashlib
-import importlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 from agentscope.message import TextBlock
-from agentscope.tool import Toolkit, ToolResponse
+from agentscope.tool import ToolResponse
 
 from lib.agent_artifacts import begin_step, record_step
-from workflow.skill_adapter import parse_variant_result, write_variant_execution_receipt
 
 from .context import EngineerToolContext
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Atomically replace a UTF-8 text file and sync its directory entry."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            descriptor = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _response(
@@ -880,96 +898,10 @@ class EngineerTools:
         except Exception as exc:
             return _response("NEEDS_REPAIR", "Result package validation failed.", issues=[str(exc)])
 
-    def RunSkill(self, skill_name: str, spec_json: str = "{}") -> ToolResponse:
-        """Execute an allowed experiment Skill by name using its spec_json contract."""
-        try:
-            name = str(skill_name or "").strip()
-            if not re.fullmatch(r"[a-z][a-z0-9_]{1,80}", name):
-                raise ValueError("skill_name must be a local snake_case skill name")
-            if name not in self.context.executable_skill_names:
-                allowed = ", ".join(sorted(self.context.executable_skill_names)) or "(none)"
-                raise ValueError(f"Skill is not executable in this agent: {name}. Allowed: {allowed}")
-            spec = json.loads(spec_json or "{}")
-            if not isinstance(spec, dict):
-                raise ValueError("spec_json must be a JSON object")
-            self._validate_skill_spec_paths(spec)
-
-            module = importlib.import_module(f"skills.{name}.skill")
-            function_name = f"{name}_tool"
-            tool = getattr(module, function_name, None)
-            if tool is None or not callable(tool):
-                raise ValueError(f"Skill {name} does not expose callable {function_name}(spec_json)")
-
-            response = tool(json.dumps(spec, ensure_ascii=False))
-            if not isinstance(response, ToolResponse):
-                raise ValueError(f"Skill {name} returned {type(response).__name__}, expected ToolResponse")
-            payload = _tool_payload(response)
-            status = str(payload.get("status") or "UNKNOWN")
-            artifacts = _collect_phase_artifact_paths(payload, Path(self.context.engineer_phase_root))
-            self.context.record_skill_call(name, function_name, status, artifacts=artifacts)
-            return response
-        except Exception as exc:
-            self.context.record_skill_call(str(skill_name or ""), "RunSkill", "NEEDS_REPAIR")
-            return _response("NEEDS_REPAIR", "RunSkill failed.", issues=[str(exc)])
-
-    def PublishDirectoryArtifact(
-        self,
-        directory_path: str,
-        alias: str = "result_package",
-        target_name: str = "",
-    ) -> ToolResponse:
-        """Copy a phase-local output directory into workspace for package staging and validation."""
-        try:
-            if not alias or not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", alias):
-                raise ValueError("alias must be a lowercase snake_case identifier")
-            if target_name and not re.fullmatch(r"[a-zA-Z0-9_.-]{1,80}", target_name):
-                raise ValueError("target_name must be a simple directory name")
-            source = self.context.resolve_write_path(directory_path)
-            if not source.exists() or not source.is_dir():
-                raise ValueError(f"Directory artifact does not exist: {source}")
-            target = (self.context.workspace_dir / (target_name or alias)).resolve()
-            workspace = self.context.workspace_dir.resolve()
-            if target != workspace and workspace not in target.parents:
-                raise ValueError(f"Publish target is outside workspace: {target}")
-            if source.resolve() != target:
-                if source.resolve() in target.parents:
-                    raise ValueError("Refusing to publish a directory into itself")
-                if target.exists():
-                    shutil.rmtree(target)
-                shutil.copytree(source, target)
-            file_paths = sorted(path for path in target.rglob("*") if path.is_file())
-            record = record_step(
-                "PublishDirectoryArtifact",
-                f"Published directory {source.name} as {alias}.",
-                [target, *file_paths[:50]],
-                metadata={
-                    "alias": alias,
-                    "source_path": str(source),
-                    "target_path": str(target),
-                    "file_count": len(file_paths),
-                    "files_truncated": len(file_paths) > 50,
-                },
-            )
-            return _response(
-                "SUCCESS",
-                f"Published directory {source.name} as {alias}.",
-                {
-                    "alias": alias,
-                    "source_path": str(source),
-                    "target_path": str(target),
-                    "file_count": len(file_paths),
-                    "sample_files": [str(path) for path in file_paths[:20]],
-                    "manifest_path": (record or {}).get("manifest_path", ""),
-                },
-            )
-        except Exception as exc:
-            return _response("NEEDS_REPAIR", "Directory artifact publication failed.", issues=[str(exc)])
-
     def Write(self, file_path: str, content: str) -> ToolResponse:
         """Create or overwrite a UTF-8 file inside the Engineer phase."""
         try:
             path = self.context.resolve_write_path(file_path)
-            self._guard_variant_metadata(path)
             if path.suffix.lower() == ".py":
                 self.context.require_python_plan(path)
                 self.context.validate_python_rule_ids(content)
@@ -982,9 +914,7 @@ class EngineerTools:
                     raise ValueError("Refusing to overwrite: call Read first and keep the file unchanged")
                 before = path.read_text(encoding="utf-8", errors="replace")
                 operation = "update"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-            self._invalidate_variant_after_source_change(path)
+            atomic_write_text(path, content)
             self.context.forget_read(path)
             full_diff = _diff(before, content, path)
             response_diff, diff_truncated = _truncate(full_diff)
@@ -1018,7 +948,6 @@ class EngineerTools:
         """Replace an exact string in a previously read Engineer file."""
         try:
             path = self.context.resolve_write_path(file_path)
-            self._guard_variant_metadata(path)
             if not path.exists() or not path.is_file():
                 raise ValueError(f"Edit target does not exist: {path}")
             if not self.context.was_read_and_unchanged(path):
@@ -1032,8 +961,7 @@ class EngineerTools:
             after = before.replace(old_string, new_string, -1 if replace_all else 1)
             if path.suffix.lower() == ".py":
                 self.context.validate_python_rule_ids(after)
-            path.write_text(after, encoding="utf-8")
-            self._invalidate_variant_after_source_change(path)
+            atomic_write_text(path, after)
             self.context.forget_read(path)
             replacements = count if replace_all else 1
             full_diff = _diff(before, after, path)
@@ -1076,8 +1004,7 @@ class EngineerTools:
             self.context.require_python_plan(script)
             script_content = script.read_text(encoding="utf-8", errors="replace")
             self.context.validate_python_rule_ids(script_content)
-            variant_metadata = self._validate_variant_execution(script, args or [])
-            if variant_metadata is None and task_id:
+            if task_id:
                 self.context.validate_standalone_task(task_id, script_content)
             step_ctx = begin_step("ExecutePython")
             if step_ctx is None:
@@ -1138,7 +1065,6 @@ class EngineerTools:
             status = "SUCCESS" if returncode == 0 and not timed_out else "NEEDS_REPAIR"
             if (
                 status == "SUCCESS"
-                and variant_metadata is None
                 and output_files
                 and self.context.require_skill_plan
                 and self.context.required_report_paths.get("extraction_task_plan")
@@ -1149,29 +1075,6 @@ class EngineerTools:
                     "\nStandalone Python produced data artifacts without task_id. "
                     "Bind the execution to a canonical capability-gap task or call the planned domain Skill."
                 )
-            if variant_metadata is not None and status == "SUCCESS":
-                self._verify_variant_source_hashes(variant_metadata)
-                try:
-                    variant_result = parse_variant_result(stdout)
-                except Exception as exc:
-                    status = "NEEDS_REPAIR"
-                    stderr += f"\nVariant protocol error: {exc}"
-                else:
-                    if variant_result["status"] != "SUCCESS":
-                        status = "NEEDS_REPAIR"
-                        stderr += "\nVariant reported NEEDS_REPAIR: " + "; ".join(variant_result["issues"])
-                if status == "SUCCESS" and variant_result is not None:
-                    try:
-                        receipt_path = write_variant_execution_receipt(
-                            script.parent,
-                            variant_result,
-                            output_files=[Path(path) for path in output_files],
-                        )
-                    except Exception as exc:
-                        status = "NEEDS_REPAIR"
-                        stderr += f"\nVariant receipt error: {exc}"
-                    else:
-                        output_files.append(str(receipt_path))
             stdout, stdout_truncated = _truncate(stdout)
             stderr, stderr_truncated = _truncate(stderr)
             issues = [] if status == "SUCCESS" else [stderr or f"Python exited with {returncode}"]
@@ -1186,7 +1089,6 @@ class EngineerTools:
                     "timed_out": timed_out,
                     "script_path": str(script),
                     "task_id": task_id,
-                    "variant_name": variant_metadata.get("variant_name", "") if variant_metadata else "",
                 },
                 status=status,
                 issues=issues,
@@ -1222,150 +1124,6 @@ class EngineerTools:
                     _step_ctx=step_ctx,
                 )
             return _response("NEEDS_REPAIR", "ExecutePython failed.", issues=[str(exc)])
-
-    def publish_artifact(self, file_path: str, alias: str) -> ToolResponse:
-        """Publish an Engineer output through the existing phase handoff system."""
-        try:
-            if not alias or not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", alias):
-                raise ValueError("alias must be a lowercase snake_case identifier")
-            path = self.context.resolve_write_path(file_path)
-            if not path.exists() or not path.is_file():
-                raise ValueError(f"Artifact does not exist: {path}")
-            if self.context.require_skill_plan and not self.context.was_read_and_unchanged(path):
-                raise ValueError("Read and inspect the final artifact before publish_artifact")
-            record = record_step(
-                "publish_artifact",
-                f"Published {path.name} as {alias}.",
-                [path],
-                handoffs={alias: path},
-            )
-            handoffs = (record or {}).get("handoffs", {})
-            return _response(
-                "SUCCESS",
-                f"Published {path.name} as {alias}.",
-                {
-                    "file_path": str(path),
-                    "alias": alias,
-                    "handoff": handoffs.get(alias, {}),
-                    "manifest_path": (record or {}).get("manifest_path", ""),
-                },
-            )
-        except Exception as exc:
-            return _response("NEEDS_REPAIR", "Artifact publication failed.", issues=[str(exc)])
-
-    def _validate_skill_spec_paths(self, spec: dict[str, Any]) -> None:
-        def visit(value: Any) -> None:
-            if isinstance(value, dict):
-                for nested in value.values():
-                    visit(nested)
-                return
-            if isinstance(value, list):
-                for nested in value:
-                    visit(nested)
-                return
-            if not isinstance(value, str) or "/" not in value:
-                return
-            candidate = Path(value).expanduser()
-            if not candidate.is_absolute():
-                return
-            resolved = candidate.resolve()
-            if resolved.exists():
-                self.context.resolve_read_path(resolved)
-            elif not (
-                resolved == self.context.engineer_phase_root
-                or self.context.engineer_phase_root in resolved.parents
-            ):
-                raise ValueError(f"Skill spec references an unauthorized path: {resolved}")
-
-        visit(spec)
-
-    def _validate_variant_execution(
-        self,
-        script: Path,
-        args: list[str],
-    ) -> dict[str, Any] | None:
-        variant_root = self.context.variant_root.resolve()
-        if script != variant_root and variant_root not in script.parents:
-            return None
-        if script.name != "variant.py" or script.parent.parent != variant_root:
-            raise ValueError("Derived Skill execution requires skill_variants/<name>/variant.py")
-        metadata_path = script.parent / "variant.json"
-        request_path = script.parent / "request.json"
-        if not metadata_path.is_file() or not request_path.is_file():
-            raise ValueError("Derived Skill is missing variant.json or request.json")
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if metadata.get("status") not in {"ready", "validated"}:
-            raise ValueError("Derived Skill must be ready before ExecutePython")
-        if len(args) != 1 or Path(args[0]).expanduser().resolve() != request_path.resolve():
-            raise ValueError("Derived Skill must run with args=[request.json]")
-        metadata["variant_name"] = script.parent.name
-        self._verify_variant_source_hashes(metadata)
-        return metadata
-
-    def _guard_variant_metadata(self, path: Path) -> None:
-        variant_root = self.context.variant_root.resolve()
-        if path.name == "variant.json" and path.parent.parent == variant_root:
-            raise ValueError("variant.json is lifecycle-managed and cannot be changed with Write/Edit")
-
-    def _invalidate_variant_after_source_change(self, path: Path) -> None:
-        variant_root = self.context.variant_root.resolve()
-        if path.name != "variant.py" or path.parent.parent != variant_root:
-            return
-        metadata_path = path.parent / "variant.json"
-        if not metadata_path.is_file():
-            return
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-        if not isinstance(metadata, dict):
-            return
-        metadata["status"] = "draft"
-        metadata.pop("validated_at", None)
-        metadata.pop("validated_artifact", None)
-        metadata_path.write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    @staticmethod
-    def _verify_variant_source_hashes(metadata: dict[str, Any]) -> None:
-        expected = metadata.get("base_source_hashes")
-        if not isinstance(expected, dict) or not expected:
-            raise ValueError("Derived Skill is missing base_source_hashes")
-        current: dict[str, str] = {}
-        for raw_path in expected:
-            path = Path(raw_path).resolve()
-            if not path.is_file():
-                raise ValueError(f"Base Skill source disappeared: {path}")
-            current[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
-        if current != expected:
-            raise ValueError("Base Skill source changed after derived Skill creation")
-
-
-def register_engineer_atomic_tools(
-    toolkit: Toolkit,
-    context: EngineerToolContext,
-) -> EngineerTools:
-    """Register Engineer-only atomic tools directly on an AgentScope toolkit."""
-    tools = EngineerTools(context)
-    for tool in (
-        tools.Read,
-        tools.Glob,
-        tools.Grep,
-        tools.InspectDataFile,
-        tools.CompareArtifact,
-        tools.ValidateResultPackage,
-        tools.RunSkill,
-        tools.Write,
-        tools.Edit,
-        tools.ExecutePython,
-        tools.PublishDirectoryArtifact,
-        tools.publish_artifact,
-    ):
-        toolkit.register_tool_function(tool)
-    return tools
-
 
 def _runner_source(
     output_dir: Path,

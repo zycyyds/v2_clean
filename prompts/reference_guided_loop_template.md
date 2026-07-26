@@ -1,123 +1,108 @@
-# Reference-Guided Codex-Style Loop Prompt Template
+# Data Cleaning Agent Validation Prompt Template
 
-这个模板用于 `--workflow reference-guided-train-validate` 的 Codex-style Agent 运行。
+该模板用于 AgentScope 2.x 工作树中的：
 
-适用场景：
+```text
+--workflow reference-guided-train-validate
+```
 
-- `train/raw` 是原始数据。
-- `train/reference` 是处理后的示例结果包。
-- `validation/raw` 是需要 Agent 处理的验证原始数据。
-- `validation/reference` 只允许 Evaluator 读取。
-- 目标是让 Agent 学习 `raw -> reference package` 的转换关系，并通过 validation loop 迭代 adapter/rule。
+宿主程序会提供真实路径、受限工具、隐藏评分、best 晋升和自动 test。用户 prompt 只描述本次数据任务和必须保持的业务约束。
 
-需要替换的占位符：
+需要替换：
 
-- `<DATASET_SPLIT>`：包含 `train/validation/test` 的 split 目录。
-- `<EXPERIMENT_DIR>`：本次实验输出目录。
-- `<VALIDATION_KEY_COUNT>`：验证集 key 数量，例如 `4000`。
-- `<KEY_COLUMN>`：主键列，例如 `stay_id`。
-- `<REFERENCE_FILES>`：`train/reference` 中真实业务文件列表。
+- `<VALIDATION_KEY_COUNT>`：validation key 数，例如 `4000`。
+- `<KEY_COLUMN>`：业务主键，例如 `stay_id`。
+- `<REFERENCE_FILES>`：`train/reference` 下全部业务文件。
 
 ## Prompt
 
 ```text
-请执行 reference-guided Codex-style 数据整理任务。
+请执行 MIMIC-IV ICU mortality reference-guided 数据清洗任务。
 
-【目标】
-这个 dataset-split 里：
-- train/raw 是原始数据。
-- train/reference 是处理后的参考结果包。
-- validation/raw 是需要处理的验证原始数据。
-- validation/reference 不能由 Agent 读取，只能由 Evaluator 读取。
+【任务目标】
+1. train/raw 是公开原始示例，train/reference 是对应标准结果包。
+2. 自主学习 raw 到 reference package 的文件结构、字段、业务 key、join、筛选、时间窗、派生、去重、排序、缺失值和序列化规则。
+3. 使用同一套累计 Pipeline 处理 validation/raw，生成与 train/reference 同构的完整 result_package。
+4. validation 停止后，宿主会冻结历史 best Pipeline，并在全新 Test Agent 上处理 test；不要提前读取或处理 test。
 
-请分析 train/raw 到 train/reference 的数据关系，学习它的文件结构、字段、key、join、筛选、时间窗、派生逻辑和输出形态，然后用同一套规则处理 validation/raw，生成和 train/reference 同构的 result_package。
+【数据隔离】
+1. 只能读取宿主明确授权的当前实验 train/raw、train/reference、train/keys、validation/raw、validation/keys 和通用项目代码。
+2. 禁止读取 validation/test private reference、隐藏评分报告、其他实验目录或历史脚本和结果包。
+3. 不得把患者级数据、stay_id、label、validation 结果或 private 信息硬编码进脚本或静态资产。
+4. 不修改全局 skills/、workflow/、lib/；只写当前 workspace。
 
-【严格限制】
-1. 只能读取当前 dataset-split 目录内部文件和实验目录内部文件。
-2. 不要读取 validation/reference 或任何 private reference。
-3. 不要修改原始 skills/、lib/ 或 teacher pipeline 项目。
-4. 如果现有 skill 接口和 train/reference 输出形态不匹配，允许在当前 experiment 内创建 adapter/fork。
-5. standalone Python 只能作为实验内 adapter 草稿或 glue code，不能污染全局代码。
+【累计 Pipeline】
+1. 唯一业务实现位于 workspace/pipeline，唯一入口是 pipeline/run.py。
+2. 首个候选建立完整 Pipeline；后续候选必须继承 current best，只修改当前反馈涉及的模块。
+3. 不创建 adapter、Skill variant、capability 包、build_test.py 或第二套业务入口。
+4. Skill 只是按需阅读的业务说明；规则必须落实到累计 Pipeline 或 rule_ledger.json。
+5. Pipeline 每次都必须生成全部业务文件，不得只生成本次修改的文件，不得在运行后手工修改 CSV。
+6. 固定入口必须支持：
+   python pipeline/run.py --raw-root <raw> --output-dir <output> --split-mode train|validation|test
 
-【Reference 形态要求】
-1. 不要把 package_manifest.json、reference.csv 当作必须业务结果；如果存在，只作为索引或辅助信息。
-2. 业务结果以 train/reference 下真实存在的文件为准。
-3. validation result_package 必须尽量保持和 train/reference 同构。
-4. 本次需要复现的业务文件是：
+【需要复现的17个业务文件】
 <REFERENCE_FILES>
-5. 如果某个文件在 train/reference 中不存在，不要凭空生成。
-6. 如果 reference 是事件明细表，不要强行合并成 features_wide。
 
-【Agent 执行策略】
-1. 先读取 reference_contract.json、train/reference 文件清单、train/reference 每个 CSV 的 schema 和样例。
-2. 再读取 train/raw 和 validation/raw 的文件清单、schema、关键列和样例。
-3. 优先使用已注册的 pipeline_* skills；如果 skill 输出接口不满足 reference 形态，创建 experiment-local adapter。
-4. adapter 必须先在 train/raw 上生成 train result package，并和 train/reference 做回归比较。
-5. train 回归达标后，必须立即用同一 adapter/rule 处理 validation/raw。
-6. validation 阶段不得读取 validation/reference。
-7. 最终必须发布 canonical result_package，并运行 ValidateResultPackage。
-8. 本轮不强制包装 Skill。loop 阶段优先允许脚本、adapter 或 fork 持续迭代；只有当你已经自然整理好稳定能力时，才可选写 `skill_packaging_plan.json` 和 `workspace/capabilities/<skill_name>/`。缺失或格式不完整不得阻塞 result_package 进入评估。
+【Agent 工作方式】
+1. 先用 Glob、InspectDataFile、Read 检查 train/reference 全部文件及 train/raw 来源，再建立3到5个短期 Task，只保留一个主要任务 in_progress。
+2. 已验证规则、反例和未解决问题持续写入 workspace/rule_ledger.json。
+3. 可以用 RunPipeline(train) 和 CompareArtifact 做公开诊断，但 train 不要求逐值100%复现，也不能因少量 train 差异无限停留。
+4. 用 RunPipeline(validation) 生成 workspace/result_package。
+5. 候选提交前必须调用 ValidateDraft；失败时根据机器报告继续修复，失败不会产生 attempt。
+6. 只有 ValidateDraft 通过且 Pipeline hash 未变化，才调用 SubmitCandidate。
+7. SubmitCandidate 后由宿主执行正式门禁、隐藏评分和严格提升晋升，并把结果返回当前同一个 Agent 上下文。
+8. 未晋升时从恢复后的 current best 继续；失败候选仅作为负面经验，不继续使用失败代码。
 
-【Train 回归门禁规则】
-1. train/reference 只用于学习转换关系和做回归检查，不是最终优化目标。
-2. 不要求 train/reference 100% exact match。
-3. 当 train 结果满足以下任一条件时，必须停止继续诊断 train 差异，并立即处理 validation/raw：
-   - 每个 reference 文件的行数误差 <= 1%，且关键列存在；
-   - 或 cell-level recall >= 0.98；
-   - 或只剩少量可解释的边界差异，并已写入 train_regression_report.json。
-4. 不允许为了少量边界差异无限写诊断脚本。
-5. 如果已经做过 3 轮 train 差异诊断，且差异只剩时间窗、格式化或少量边界差异，必须停止 train 诊断并进入 validation。
-6. train 达标后必须把当前最新结果包发布为 canonical result_package。
-7. 发布后必须立即用同一套规则处理 validation/raw。
-8. 真正决定是否保留本轮修改的是 validation evaluator 的 composite_score，而不是 train 分数。
+【输出契约】
+1. validation cohort 必须覆盖全部 <VALIDATION_KEY_COUNT> 个 <KEY_COLUMN>，主键唯一且无未知 key。
+2. 其他业务文件不得包含未知 key；事件/特征/summary 的业务粒度、重复规则和 schema 以 train/reference 证据为准。
+3. 输出文件名、目录层级、列顺序、值格式、gzip 形式和确定性排序必须与 train/reference 契约一致。
+4. 每次候选包含完整 result_package、pipeline_manifest.json、run.py、固定模块和可重放的父 Pipeline lineage。
+5. 不要求生成 reference.csv；package_manifest.json 仅可作为索引，不能代替17个业务文件。
 
-【Validation Loop 规则】
-1. 从第 2 轮开始，必须先读取上一轮 public_feedback.json。
-2. 本轮修改必须对应 public_feedback 里的具体缺口。
-3. 不能重新从 train/reference 学一套全新的逻辑。
-4. train 回归只用于确认本轮修改没有破坏基础结构。
-5. 只有 validation composite_score 严格高于历史 best，当前 candidate 才会成为正式 loop 并晋升。
-6. 如果 validation 分数没有提升，保留上一轮 best，不要用本轮结果覆盖 active bundle。
-7. 下降或持平只记录为有效 attempt；连续两个有效但未提升的 attempt 才停止。门禁失败的无效 attempt 不计入 patience。
-
-【Validation 输出要求】
-1. 必须处理 validation keys 中全部 <VALIDATION_KEY_COUNT> 个 <KEY_COLUMN>。
-2. result_package 中主结果文件必须覆盖 <VALIDATION_KEY_COUNT> 个唯一 <KEY_COLUMN>。
-3. result_package 必须生成和 train/reference 同名、同目录层级的业务文件。
-4. 结果必须运行 ValidateResultPackage，expected_key_count=<VALIDATION_KEY_COUNT>，key_column=<KEY_COLUMN>。
-5. 成功前必须真实读取或验证最终 result_package。
-
-【报告要求】
-1. train_regression_report.json 必须使用 schema_version=2；每个修改文件至少包含 relative_path、train_rows、reference_rows、column_coverage、key_coverage、value_recall、passed、failure_reason。通过时 failure_reason 可以为空，失败时必须写明原因。
-2. skill_usage_report.json 需要说明调用、跳过、适配或派生 skill 的理由。
-3. result_package_validation_report.json 需要记录 result_package 结构、文件、行数、key 覆盖率。
-4. 如果创建或修改 adapter/fork，必须记录到当前 experiment bundle，不得写入全局 skills/。
-5. 如果本轮可选生成 skill_packaging_plan.json，它需要说明每个 Skill 的名称、负责的 reference artifact、来源脚本、base skills 和拆分理由；未生成不算失败。
-
-任何零产出、缺少 result_package、未处理 validation/raw、未覆盖 <VALIDATION_KEY_COUNT> 个 <KEY_COLUMN>、未发布结果包、未验证真实产物，都不得返回 SUCCESS。
+不要返回文字上的 SUCCESS 来代替工具执行。持续观察、修改、运行和验收，直到调用 SubmitCandidate 或宿主停止流程。
 ```
 
-## Command Skeleton
+## 真实目录 Smoke Command
 
 ```bash
-cd /Users/mkbk/PycharmProjects/v2_clean
-conda activate py310
+cd /Users/mac/PycharmProjects/v2_clean-agentscope2
+conda activate py3102
+
+DATASET="/Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_reproduced_random_10train_4000val_5000test_seed_1759733077"
+EXPERIMENT="/Users/mac/PycharmProjects/v2_clean-agentscope2/experiments/mimic_icu_mortality_agentscope2_smoke_v1"
 
 PROMPT="$(python - <<'PY'
 from pathlib import Path
 
-template = Path('prompts/reference_guided_loop_template.md').read_text()
-prompt = template.split('```text', 1)[1].split('```', 1)[0].strip()
-prompt = prompt.replace('<VALIDATION_KEY_COUNT>', '4000')
-prompt = prompt.replace('<KEY_COLUMN>', 'stay_id')
+template = Path("prompts/reference_guided_loop_template.md").read_text(encoding="utf-8")
+prompt = template.split("```text", 2)[2].split("```", 1)[0].strip()
+prompt = prompt.replace("<VALIDATION_KEY_COUNT>", "4000")
+prompt = prompt.replace("<KEY_COLUMN>", "stay_id")
 prompt = prompt.replace(
-    '<REFERENCE_FILES>',
-    '- cohort/cohort_icu_mortality_0__.csv\n'
-    '- features/preproc_chart_icu.csv\n'
-    '- features/preproc_diag_icu.csv\n'
-    '- features/preproc_med_icu.csv\n'
-    '- features/preproc_out_icu.csv\n'
-    '- features/preproc_proc_icu.csv'
+    "<REFERENCE_FILES>",
+    "\n".join(
+        f"- {path}"
+        for path in (
+            "cohort/cohort_icu_mortality_0__.csv",
+            "csv/labels.csv",
+            "features/preproc_chart_icu.csv",
+            "features/preproc_diag_icu.csv",
+            "features/preproc_med_icu.csv",
+            "features/preproc_out_icu.csv",
+            "features/preproc_proc_icu.csv",
+            "summary/chart_features.csv",
+            "summary/chart_summary.csv",
+            "summary/diag_features.csv",
+            "summary/diag_summary.csv",
+            "summary/med_features.csv",
+            "summary/med_summary.csv",
+            "summary/out_features.csv",
+            "summary/out_summary.csv",
+            "summary/proc_features.csv",
+            "summary/proc_summary.csv",
+        )
+    ),
 )
 print(prompt)
 PY
@@ -125,16 +110,13 @@ PY
 
 python main.py \
   --workflow reference-guided-train-validate \
-  --dataset-split <DATASET_SPLIT> \
-  --experiment-dir <EXPERIMENT_DIR> \
-  --round-limit 4 \
-  --max-iters 400 \
+  --dataset-split "$DATASET" \
+  --experiment-dir "$EXPERIMENT" \
+  --round-limit 2 \
+  --patience 2 \
+  --max-attempts 30 \
+  --max-iters 10000 \
   "$PROMPT"
 ```
 
-## Notes From Successful Run
-
-- 这类任务里 `train/reference` 是公开示例，允许 Agent 用它回归；`validation/reference` 必须隐藏给 Evaluator。
-- `train` 内部自修是有价值的，但只能作为回归门禁；真正优化目标是 validation 分数。
-- 如果 reference 是目录包，就不要强行合成 `reference.csv` 或 `features_wide.csv`。
-- 对 MIMIC ICU mortality 这次实验，效果好的核心是：先修 schema 和过抽取，再通过 validation feedback 逐轮修字段边界。
+`--max-iters` 是整个 validation Agent 生命周期的模型 ReAct 上限，不是要求必须执行10000次。达到2个正式晋升、patience、attempt 上限或第一次 `Ctrl+C` 后，宿主都会从正式 best 自动进入 test。
