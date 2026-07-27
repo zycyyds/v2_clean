@@ -1,26 +1,47 @@
 """Runtime construction for the retained reference-guided code agent."""
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
+import logging
 import os
+import sys
+import time
+from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
+from typing import Any, TextIO
 
-from agentscope.agent import ReActAgent
+import yaml
+from agentscope.agent import Agent, ContextConfig, ReActConfig
+from agentscope.event import (
+    ExceedMaxItersEvent,
+    ModelCallEndEvent,
+    ModelCallStartEvent,
+    ReplyEndEvent,
+    ReplyStartEvent,
+    TextBlockDeltaEvent,
+    ToolCallDeltaEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
+    ToolResultEndEvent,
+    ToolResultStartEvent,
+    ToolResultTextDeltaEvent,
+)
 from agentscope.formatter import OpenAIChatFormatter
+from agentscope.message import AssistantMsg, Msg
 from agentscope.model import OpenAIChatModel
-from agentscope.token import OpenAITokenCounter
-from agentscope.tool import Toolkit
+from agentscope.permission import PermissionContext, PermissionMode
+from agentscope.skill import LocalSkillLoader
+from agentscope.state import AgentState
+from agentscope.tool import ToolBase, Toolkit
+from agentscope.workspace import LocalWorkspace
 from pydantic import BaseModel, Field
 
-from agent.bounded_memory import (
-    BoundedInMemoryMemory,
-    _compact_threshold,
-    _context_window_tokens,
-)
 from agent_tools.context import EngineerToolContext
-from agent_tools.reference_variants import register_reference_variant_tools
-from agent_tools.tools import register_engineer_atomic_tools
-from config_loader import get_agent_config
-from skills._registry import load_skills
+from agent_tools.agentscope2_tools import build_reference_tools
+from lib.agent_runtime import create_openai_model_and_formatter
 
 
 V2_DIR = Path(__file__).resolve().parent.parent
@@ -35,7 +56,14 @@ DATA_CLEANING_AGENT_PIPELINE_SKILLS = {
     "pipeline_clean_feature_table",
     "pipeline_assemble_reference_package",
 }
-ENGINEER_CODE_READ_ROOTS = (V2_DIR / "skills", V2_DIR / "workflow", V2_DIR / "lib")
+DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS = {
+    "correction_intra_table_errors",
+    "correction_entity_alignment_errors",
+    "correction_cross_table_errors",
+    "correction_task_oriented_errors",
+}
+AGENTSCOPE_VERSION = "2.0.4.post1"
+LOGGER = logging.getLogger(__name__)
 
 
 class ReferenceCompressionSummary(BaseModel):
@@ -106,98 +134,388 @@ REFERENCE_COMPRESSION_TEMPLATE = """\
 
 
 def make_reference_model() -> tuple[OpenAIChatModel, OpenAIChatFormatter]:
-    cfg = get_agent_config("react_planner")
-    api_key = os.environ.get("OPENAI_API_KEY") or cfg.get("api_key") or None
-    base_url = (
-        os.environ.get("OPENAI_API_BASE")
-        or cfg.get("base_url")
-        or cfg.get("api_base")
-        or "https://api.openai.com/v1"
-    )
-    model_name = (
-        os.environ.get("MODEL_NAME")
-        or cfg.get("model_name")
-        or cfg.get("model")
-        or "gpt-4.1-mini"
-    )
-    generation = {key: cfg[key] for key in ("temperature", "seed") if key in cfg}
-    return (
-        OpenAIChatModel(
-            model_name=model_name,
-            api_key=api_key,
-            stream=False,
-            client_kwargs={"base_url": base_url},
-            generate_kwargs=generation or None,
-        ),
-        OpenAIChatFormatter(),
-    )
+    require_agentscope_version()
+    return create_openai_model_and_formatter("react_planner", "gpt-4.1-mini")
 
 
-def create_reference_memory(
-    phase_context: dict[str, str],
-    model: OpenAIChatModel,
-) -> BoundedInMemoryMemory:
-    workflow_hint = (
-        phase_context.get("workflow")
-        or phase_context.get("run_id")
-        or phase_context.get("run_root")
-        or phase_context.get("phase_root")
-        or ""
-    )
-    model_name = str(
-        getattr(model, "model_name", "")
-        or getattr(model, "model", "")
-        or os.environ.get("MODEL_NAME")
-        or ""
-    )
-    return BoundedInMemoryMemory(
-        model_name=model_name,
-        report_dir=Path(phase_context["phase_root"]) / "context",
-        workflow_hint=workflow_hint,
-    )
+def require_agentscope_version() -> None:
+    installed = version("agentscope")
+    if installed != AGENTSCOPE_VERSION:
+        raise RuntimeError(
+            f"Data Cleaning Agent requires agentscope=={AGENTSCOPE_VERSION}; installed={installed}",
+        )
 
 
-def create_reference_compression_config(
-    model: OpenAIChatModel,
-) -> ReActAgent.CompressionConfig:
-    """Build token-triggered semantic compression for Data Cleaning Agent."""
-    model_name = str(
-        getattr(model, "model_name", "")
-        or getattr(model, "model", "")
-        or os.environ.get("MODEL_NAME")
-        or ""
-    )
-    context_window = _context_window_tokens(model_name)
-    trigger_threshold = int(context_window * _compact_threshold(None))
-    return ReActAgent.CompressionConfig(
-        enable=True,
-        agent_token_counter=OpenAITokenCounter(model_name),
-        trigger_threshold=trigger_threshold,
-        keep_recent=14,
+def create_reference_context_config(model_name: str = "") -> ContextConfig:
+    trigger_ratio = 0.8999 if "minimax" in model_name.lower() or "m3" in model_name.lower() else 0.8
+    return ContextConfig(
+        trigger_ratio=trigger_ratio,
+        reserve_ratio=0.1,
         compression_prompt=REFERENCE_COMPRESSION_PROMPT,
         summary_template=REFERENCE_COMPRESSION_TEMPLATE,
-        summary_schema=ReferenceCompressionSummary,
+        summary_schema=ReferenceCompressionSummary.model_json_schema(),
+        tool_result_limit=4_000,
     )
 
 
-def create_reference_toolkit(context: EngineerToolContext) -> tuple[Toolkit, list[dict]]:
-    """Expose only the pipeline Skills and local-code tools used by this workflow."""
-    toolkit = Toolkit()
-    manifest = load_skills(toolkit, allowed_names=DATA_CLEANING_AGENT_PIPELINE_SKILLS)
-    for item in manifest:
-        for tool_name in item.get("tool_names") or []:
-            toolkit.tools.pop(tool_name, None)
-        item["tool_names"] = []
-        skill_dir = V2_DIR / "skills" / str(item.get("dir") or item.get("name") or "")
-        if (skill_dir / "SKILL.md").is_file():
-            toolkit.register_agent_skill(str(skill_dir))
-            item["agentscope_agent_skill"] = True
-    context.register_executable_skills(str(item.get("name")) for item in manifest)
-    register_engineer_atomic_tools(toolkit, context)
-    register_reference_variant_tools(
-        toolkit,
+def create_reference_react_config(max_iters: int) -> ReActConfig:
+    return ReActConfig(
+        max_iters=max_iters,
+        stop_on_reject=False,
+        interruption_raise_cancelled_error=True,
+    )
+
+
+def _skill_manifest(names: set[str]) -> list[dict[str, Any]]:
+    manifest: list[dict[str, Any]] = []
+    for name in sorted(names):
+        skill_dir = V2_DIR / "skills" / name
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+            raise RuntimeError(f"Skill frontmatter is invalid: {skill_dir / 'SKILL.md'}")
+        metadata = yaml.safe_load(text.split("\n---\n", 1)[0][4:]) or {}
+        if metadata.get("name") != name:
+            raise RuntimeError(f"Skill name is invalid: {skill_dir / 'SKILL.md'}")
+        manifest.append(
+            {
+                "name": name,
+                "dir": name,
+                "description": str(metadata.get("description") or "").strip(),
+                "tool_names": [],
+                "agentscope_agent_skill": True,
+            },
+        )
+    return manifest
+
+
+def reference_code_read_roots(
+    *,
+    include_pipeline_skills: bool = True,
+    include_error_view_skills: bool = False,
+) -> tuple[Path, ...]:
+    names: set[str] = set()
+    if include_pipeline_skills:
+        names.update(DATA_CLEANING_AGENT_PIPELINE_SKILLS)
+    if include_error_view_skills:
+        names.update(DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS)
+    return (
+        V2_DIR / "workflow",
+        V2_DIR / "lib",
+        *(V2_DIR / "skills" / name for name in sorted(names)),
+    )
+
+
+def reference_code_denied_read_roots(
+    *,
+    include_pipeline_skills: bool = True,
+    include_error_view_skills: bool = False,
+) -> tuple[Path, ...]:
+    included: set[str] = set()
+    if include_pipeline_skills:
+        included.update(DATA_CLEANING_AGENT_PIPELINE_SKILLS)
+    if include_error_view_skills:
+        included.update(DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS)
+    excluded = (
+        DATA_CLEANING_AGENT_PIPELINE_SKILLS
+        | DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS
+    ) - included
+    return tuple(V2_DIR / "skills" / name for name in sorted(excluded))
+
+
+def error_view_skill_bundle_sha256() -> str:
+    digest = hashlib.sha256()
+    for name in sorted(DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS):
+        path = V2_DIR / "skills" / name / "SKILL.md"
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def create_reference_toolkit(
+    context: EngineerToolContext,
+    *,
+    include_pipeline_skills: bool = True,
+    include_error_view_skills: bool = False,
+    include_quality_tools: bool = False,
+    codegraph_tool: ToolBase | None = None,
+) -> tuple[Toolkit, list[dict]]:
+    """Build the per-attempt native AgentScope 2.x Toolkit."""
+    require_agentscope_version()
+    pipeline_manifest = (
+        _skill_manifest(DATA_CLEANING_AGENT_PIPELINE_SKILLS)
+        if include_pipeline_skills
+        else []
+    )
+    error_view_manifest = (
+        _skill_manifest(DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS)
+        if include_error_view_skills
+        else []
+    )
+    manifest = [*pipeline_manifest, *error_view_manifest]
+    context.register_executable_skills(
+        str(item.get("name")) for item in pipeline_manifest
+    )
+    tools = build_reference_tools(
         context,
-        skill_names={str(item.get("name")) for item in manifest},
-        skills_root=V2_DIR / "skills",
+        include_quality_tools=include_quality_tools,
     )
+    if codegraph_tool is not None:
+        tools.append(codegraph_tool)
+    options: dict[str, Any] = {"tools": tools}
+    if manifest:
+        options["skills_or_loaders"] = [
+            LocalSkillLoader(
+                directory=str(V2_DIR / "skills" / str(item["name"])),
+                scan_subdir=False,
+            )
+            for item in manifest
+        ]
+    toolkit = Toolkit(**options)
     return toolkit, manifest
+
+
+async def create_reference_agent(
+    *,
+    name: str,
+    system_prompt: str,
+    toolkit: Toolkit,
+    workspace_dir: str | Path,
+    max_iters: int,
+) -> tuple[Agent, LocalWorkspace]:
+    model, _ = make_reference_model()
+    workspace = LocalWorkspace(
+        workdir=str(Path(workspace_dir).expanduser().resolve()),
+        instructions=(
+            "<workspace>Persistent context and oversized tool results are stored under {workdir}. "
+            "Filesystem permissions are enforced by the provided tools.</workspace>"
+        ),
+    )
+    await workspace.initialize()
+    state = AgentState(
+        permission_context=PermissionContext(mode=PermissionMode.BYPASS),
+    )
+    agent = Agent(
+        name=name,
+        system_prompt=system_prompt,
+        model=model,
+        toolkit=toolkit,
+        state=state,
+        offloader=workspace,
+        context_config=create_reference_context_config(str(model.model)),
+        react_config=create_reference_react_config(max_iters),
+    )
+    return agent, workspace
+
+
+async def close_reference_agent(
+    agent: Agent | None,
+    workspace: LocalWorkspace | None,
+) -> None:
+    """Release attempt resources before the owning event loop is closed."""
+    try:
+        if workspace is not None:
+            await workspace.close()
+    finally:
+        model = getattr(agent, "model", None) if agent is not None else None
+        closer = getattr(model, "aclose", None) or getattr(model, "close", None)
+        if closer is None:
+            return
+        try:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # pragma: no cover - defensive cleanup path
+            LOGGER.warning("Failed to close Data Cleaning Agent model client: %s", exc)
+
+
+async def stream_reference_agent_reply(
+    agent: Agent,
+    inputs: Any,
+    *,
+    output: TextIO | None = None,
+    skill_usage_report_path: str | Path | None = None,
+    exposed_pipeline_skills: set[str] | frozenset[str] = frozenset(),
+    exposed_error_view_skills: set[str] | frozenset[str] = frozenset(),
+) -> Msg:
+    """Run one native reply while rendering observable events to the terminal."""
+    stream = output or sys.stdout
+    text_blocks: dict[str, str] = {}
+    text_block_order: list[str] = []
+    skill_calls: list[dict[str, str]] = []
+    pending_skill_calls: dict[str, dict[str, str]] = {}
+    stream_status = "RUNNING"
+    started_monotonic = time.monotonic()
+    model_calls = 0
+    input_tokens = 0
+    output_tokens = 0
+
+    def line(text: str = "") -> None:
+        print(text, file=stream, flush=True)
+
+    def value(item: Any) -> str:
+        return str(getattr(item, "value", item))
+
+    try:
+        async for event in agent.reply_stream(inputs):
+            if isinstance(event, ReplyStartEvent):
+                line(f"[Reply Start] {event.name}")
+            elif isinstance(event, ModelCallStartEvent):
+                line(f"[Model] {event.model_name}")
+            elif isinstance(event, ModelCallEndEvent):
+                model_calls += 1
+                input_tokens += int(event.input_tokens or 0)
+                output_tokens += int(event.output_tokens or 0)
+                line(
+                    f"[Model Usage] input={event.input_tokens} "
+                    f"output={event.output_tokens} reason={value(event.finished_reason)}",
+                )
+            elif isinstance(event, ToolCallStartEvent):
+                line(f"[Tool Call] {event.tool_call_name}")
+                if event.tool_call_name == "Skill":
+                    pending_skill_calls[event.tool_call_id] = {
+                        "arguments": "",
+                        "started_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+            elif isinstance(event, ToolCallDeltaEvent):
+                stream.write(event.delta)
+                stream.flush()
+                if event.tool_call_id in pending_skill_calls:
+                    pending_skill_calls[event.tool_call_id]["arguments"] += event.delta
+            elif isinstance(event, ToolCallEndEvent):
+                line()
+            elif isinstance(event, ToolResultStartEvent):
+                line(f"[Tool Result] {event.tool_call_name}")
+            elif isinstance(event, ToolResultTextDeltaEvent):
+                stream.write(event.delta)
+                stream.flush()
+            elif isinstance(event, ToolResultEndEvent):
+                line()
+                line(f"[Tool Result End] {value(event.state)}")
+                pending = pending_skill_calls.pop(event.tool_call_id, None)
+                if pending is not None:
+                    try:
+                        arguments = json.loads(pending["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    raw_status = value(event.state)
+                    skill_calls.append(
+                        {
+                            "tool_call_id": event.tool_call_id,
+                            "skill_name": str(arguments.get("skill") or ""),
+                            "status": raw_status.rsplit(".", 1)[-1].upper(),
+                            "started_at": pending["started_at"],
+                            "finished_at": datetime.now().isoformat(timespec="seconds"),
+                        }
+                    )
+            elif isinstance(event, TextBlockDeltaEvent):
+                if event.block_id not in text_blocks:
+                    text_blocks[event.block_id] = ""
+                    text_block_order.append(event.block_id)
+                text_blocks[event.block_id] += event.delta
+                stream.write(event.delta)
+                stream.flush()
+            elif isinstance(event, ExceedMaxItersEvent):
+                line()
+                line(f"[Max Iters] {event.name}")
+            elif isinstance(event, ReplyEndEvent):
+                line()
+                line(f"[Reply End] {value(event.finished_reason)}")
+        stream_status = "SUCCESS"
+    except BaseException:
+        stream_status = "ERROR"
+        raise
+    finally:
+        if skill_usage_report_path is not None:
+            for tool_call_id, pending in pending_skill_calls.items():
+                skill_calls.append(
+                    {
+                        "tool_call_id": tool_call_id,
+                        "skill_name": "",
+                        "status": "INTERRUPTED",
+                        "started_at": pending["started_at"],
+                        "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                )
+            _write_skill_usage_report(
+                Path(skill_usage_report_path),
+                status=stream_status,
+                calls=skill_calls,
+                pipeline_skills=set(exposed_pipeline_skills),
+                error_view_skills=set(exposed_error_view_skills),
+                agent_usage={
+                    "model_calls": model_calls,
+                    "react_iterations": int(getattr(agent.state, "cur_iter", 0) or 0),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "duration_seconds": round(time.monotonic() - started_monotonic, 6),
+                },
+            )
+
+    if text_block_order:
+        return AssistantMsg(
+            name=agent.name,
+            content=text_blocks[text_block_order[-1]],
+        )
+    for message in reversed(agent.state.context):
+        if message.role == "assistant" and message.name == agent.name:
+            return message
+    raise RuntimeError("Data Cleaning Agent produced no final assistant message.")
+
+
+def _write_skill_usage_report(
+    path: Path,
+    *,
+    status: str,
+    calls: list[dict[str, str]],
+    pipeline_skills: set[str],
+    error_view_skills: set[str],
+    agent_usage: dict[str, int | float],
+) -> None:
+    successful = {
+        call["skill_name"]
+        for call in calls
+        if call.get("status") == "SUCCESS" and call.get("skill_name")
+    }
+    loaded_pipeline = sorted(successful & pipeline_skills)
+    loaded_error_views = sorted(successful & error_view_skills)
+
+    def call_counts(names: set[str]) -> dict[str, int]:
+        return {
+            name: sum(1 for call in calls if call.get("skill_name") == name)
+            for name in sorted(names)
+        }
+
+    payload = {
+        "schema_version": 1,
+        "status": status,
+        "exposed": {
+            "pipeline": sorted(pipeline_skills),
+            "error_view": sorted(error_view_skills),
+        },
+        "loaded": {
+            "pipeline": loaded_pipeline,
+            "error_view": loaded_error_views,
+        },
+        "not_loaded": {
+            "pipeline": sorted(pipeline_skills - set(loaded_pipeline)),
+            "error_view": sorted(error_view_skills - set(loaded_error_views)),
+        },
+        "call_counts": {
+            "pipeline": call_counts(pipeline_skills),
+            "error_view": call_counts(error_view_skills),
+        },
+        "calls": calls,
+        "agent_usage": agent_usage,
+    }
+    path = path.expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)

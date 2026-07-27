@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -26,6 +27,7 @@ from workflow.reference_guided import (
     _migrate_reference_experiment_state,
     _reference_candidate_quality_gate,
     _reference_stop_reason,
+    _run_public_gate_repair_loop,
     _complete_reference_package_paths,
     _inherit_pipeline_to_workspace,
     _audit_reference_feedback_response,
@@ -309,6 +311,42 @@ def test_reference_toolkit_registers_only_retained_skills(tmp_path: Path) -> Non
     context = EngineerToolContext.from_task(task_text="MIMIC ICU mortality", engineer_phase_root=tmp_path)
     _, manifest = create_reference_toolkit(context)
     assert {item["name"] for item in manifest} == DATA_CLEANING_AGENT_PIPELINE_SKILLS
+
+
+def test_reference_run_manifest_records_pipeline_skill_ablation(tmp_path: Path) -> None:
+    split = _build_split(tmp_path / "split")
+    experiment = tmp_path / "experiment"
+    config = ReferenceGuidedConfig(
+        split,
+        experiment,
+        "task",
+        pipeline_skills_enabled=False,
+    ).normalized()
+
+    _ensure_run_manifest(config, infer_reference_contract(split), experiment)
+
+    manifest = json.loads((experiment / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["pipeline_skills_enabled"] is False
+
+
+def test_reference_run_manifest_records_codegraph_identity(tmp_path: Path) -> None:
+    split = _build_split(tmp_path / "split")
+    experiment = tmp_path / "experiment"
+    config = ReferenceGuidedConfig(
+        split,
+        experiment,
+        "task",
+        codegraph_enabled=True,
+    ).normalized()
+
+    _ensure_run_manifest(config, infer_reference_contract(split), experiment)
+
+    manifest = json.loads((experiment / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["codegraph_enabled"] is True
+    assert manifest["codegraph_version"] == "1.5.0"
+    assert manifest["codegraph_tool"] == "codegraph_explore"
+    assert manifest["codegraph_scope_version"] == "reference_code_roots_v1"
+    assert len(manifest["codegraph_source_bundle_sha256"]) == 64
 
 
 def test_reference_test_stage_runs_adapter_against_hidden_test_reference(tmp_path: Path) -> None:
@@ -2156,6 +2194,78 @@ def test_reference_config_validates_attempt_controls(tmp_path: Path) -> None:
         ReferenceGuidedConfig(split, tmp_path / "experiment", "task", max_attempts=0).normalized()
     with pytest.raises(ValueError, match="target_score"):
         ReferenceGuidedConfig(split, tmp_path / "experiment", "task", target_score=1.1).normalized()
+
+
+def test_public_gate_repair_loop_rechecks_same_attempt_until_valid(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    phase_root = candidate / "agent_runs/data_cleaning_agent"
+    gates = iter(
+        (
+            {"valid": False, "status": "NEEDS_REPAIR", "issues": ["manifest entrypoint must be run.py"]},
+            {"valid": True, "status": "SUCCESS", "issues": []},
+        )
+    )
+    staged_versions: list[int] = []
+    repair_prompts: list[str] = []
+
+    def stage_and_gate(check_index: int) -> tuple[dict[str, str], dict]:
+        staged_versions.append(check_index)
+        return {"result_package": f"version-{check_index}"}, next(gates)
+
+    async def request_repair(prompt: str, repair_index: int) -> None:
+        repair_prompts.append(prompt)
+        assert repair_index == 1
+
+    staged, gate = asyncio.run(
+        _run_public_gate_repair_loop(
+            candidate=candidate,
+            phase_root=phase_root,
+            attempt_index=7,
+            max_repairs=2,
+            stage_and_gate=stage_and_gate,
+            request_repair=request_repair,
+        )
+    )
+
+    assert gate["valid"] is True
+    assert staged == {"result_package": "version-1"}
+    assert staged_versions == [0, 1]
+    assert len(repair_prompts) == 1
+    assert "manifest entrypoint must be run.py" in repair_prompts[0]
+    assert "隐藏评分" not in repair_prompts[0]
+    assert (candidate / "draft_gates/draft_gate_01.json").is_file()
+    assert (candidate / "draft_gates/draft_gate_02.json").is_file()
+
+
+def test_public_gate_repair_loop_stops_after_bounded_repairs(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    repair_indexes: list[int] = []
+
+    def stage_and_gate(check_index: int) -> tuple[dict[str, int], dict]:
+        return {"version": check_index}, {
+            "valid": False,
+            "status": "NEEDS_REPAIR",
+            "issues": [f"failure-{check_index}"],
+        }
+
+    async def request_repair(prompt: str, repair_index: int) -> None:
+        repair_indexes.append(repair_index)
+
+    staged, gate = asyncio.run(
+        _run_public_gate_repair_loop(
+            candidate=candidate,
+            phase_root=candidate / "agent_runs/data_cleaning_agent",
+            attempt_index=3,
+            max_repairs=2,
+            stage_and_gate=stage_and_gate,
+            request_repair=request_repair,
+        )
+    )
+
+    assert staged == {"version": 2}
+    assert gate["issues"] == ["failure-2"]
+    assert repair_indexes == [1, 2]
+    assert len(list((candidate / "draft_gates").glob("draft_gate_*.json"))) == 3
 
 
 def test_runtime_counts_only_promotions_and_reuses_best_feedback(tmp_path: Path, monkeypatch) -> None:

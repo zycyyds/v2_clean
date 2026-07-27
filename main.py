@@ -106,6 +106,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=2, help="连续有效但未提升的候选上限。")
     parser.add_argument("--max-attempts", type=int, default=100, help="本次候选尝试的安全上限。")
     parser.add_argument("--target-score", type=float, default=None, help="达到该综合分后提前冻结最佳包。")
+    parser.add_argument(
+        "--disable-pipeline-skills",
+        action="store_true",
+        help="消融模式：不向 validation Agent 注册或暴露 pipeline Skills。",
+    )
+    parser.add_argument(
+        "--disable-error-view-skills",
+        action="store_true",
+        help="消融模式：不向 correction Agent 注册或暴露四类错误 View Skills。",
+    )
+    parser.add_argument(
+        "--enable-codegraph",
+        action="store_true",
+        help="显式向 validation/correction Agent 暴露受限 CodeGraph MCP 源码查询。",
+    )
     parser.add_argument("--dataset-split", default="", help="含 train/validation/test 的物理 split 目录。")
     parser.add_argument("--experiment-dir", default="", help="实验输出目录。")
     parser.add_argument("--adapter-script", default="", help="测试阶段要执行的已冻结 adapter 脚本。")
@@ -181,6 +196,8 @@ def run_reference_guided_train_validate(args: argparse.Namespace) -> None:
             max_attempts=args.max_attempts,
             target_score=args.target_score,
             max_iters=args.max_iters,
+            pipeline_skills_enabled=not args.disable_pipeline_skills,
+            codegraph_enabled=args.enable_codegraph,
         )
     ).run_sync()
     _print_result(result)
@@ -215,6 +232,8 @@ def run_reference_guided_correct(args: argparse.Namespace) -> None:
             task_text=args.input,
             max_iters=args.max_iters,
             resume=args.resume,
+            error_view_skills_enabled=not args.disable_error_view_skills,
+            codegraph_enabled=args.enable_codegraph,
         )
     ).run_sync()
     _print_result(result)

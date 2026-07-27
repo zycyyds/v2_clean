@@ -1090,6 +1090,7 @@ class EngineerTools:
                 _runner_source(
                     output_dir,
                     read_roots=self.context.read_roots,
+                    denied_read_roots=self.context.denied_read_roots,
                 ),
                 encoding="utf-8",
             )
@@ -1371,6 +1372,7 @@ def _runner_source(
     output_dir: Path,
     *,
     read_roots: Iterable[Path],
+    denied_read_roots: Iterable[Path] = (),
 ) -> str:
     output_literal = repr(str(output_dir.resolve()))
     allowed_dirs = [
@@ -1392,6 +1394,9 @@ def _runner_source(
             allowed_files.append(str(runtime_file.resolve()))
     allowed_dirs_literal = repr(allowed_dirs)
     allowed_files_literal = repr(allowed_files)
+    denied_dirs_literal = repr(
+        [str(path.resolve()) for path in denied_read_roots],
+    )
     return f'''from __future__ import annotations
 
 import os
@@ -1403,11 +1408,14 @@ from pathlib import Path
 WRITE_ROOT = Path({output_literal}).resolve()
 READ_DIRS = tuple(Path(value).resolve() for value in {allowed_dirs_literal})
 READ_FILES = frozenset(Path(value).resolve() for value in {allowed_files_literal})
+DENIED_DIRS = tuple(Path(value).resolve() for value in {denied_dirs_literal})
 
 
 def _resolve_path(value):
     if isinstance(value, int):
         return None
+    if value is None:
+        return Path.cwd().resolve()
     if isinstance(value, bytes):
         value = os.fsdecode(value)
     path = Path(os.fspath(value)).expanduser()
@@ -1428,9 +1436,23 @@ def _ensure_read_path(value):
     path = _resolve_path(value)
     if path is None:
         return
+    if any(path == root or root in path.parents for root in DENIED_DIRS):
+        raise PermissionError(f"read is within a denied read root: {{path}}")
     if path in READ_FILES or any(path == root or root in path.parents for root in READ_DIRS):
         return
     raise PermissionError(f"read outside authorized read roots is forbidden: {{path}}")
+
+
+def _ensure_directory_listing_path(value):
+    path = _resolve_path(value)
+    if path is None:
+        raise PermissionError("directory descriptor enumeration is forbidden")
+    if any(
+        path == root or root in path.parents or path in root.parents
+        for root in DENIED_DIRS
+    ):
+        raise PermissionError(f"directory enumeration would expose a denied read root: {{path}}")
+    _ensure_read_path(path)
 
 
 def _audit(event, args):
@@ -1449,6 +1471,8 @@ def _audit(event, args):
     elif event in {{"os.rename", "os.replace"}}:
         _ensure_write_path(args[0])
         _ensure_write_path(args[1])
+    elif event in {{"os.listdir", "os.scandir"}}:
+        _ensure_directory_listing_path(args[0])
     elif event in {{"subprocess.Popen", "os.system", "pty.spawn"}}:
         raise PermissionError(f"child processes and shell execution are forbidden: {{event}}")
     elif event.startswith("socket.") and event not in {{"socket.__new__"}}:

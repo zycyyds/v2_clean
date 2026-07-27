@@ -6,16 +6,97 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
+from agentscope.credential import OpenAICredential
 from agentscope.formatter import OpenAIChatFormatter
-from agentscope.message import Msg, TextBlock
+from agentscope.message import Msg, TextBlock, ToolResultBlock, UserMsg
 from agentscope.model import OpenAIChatModel
 from agentscope.tool import ToolResponse
+from pydantic import PrivateAttr
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config_loader import get_agent_config  # noqa: E402
+
+
+class ManagedOpenAIChatModel(OpenAIChatModel):
+    """OpenAI model with an HTTP client whose lifecycle is owned by this process.
+
+    AgentScope 2.0.4.post1 creates an ``openai.AsyncClient`` for every API
+    call but does not close it. Supplying and later closing one shared HTTPX
+    client prevents its transport cleanup from running after ``asyncio.run``
+    has already closed the event loop.
+    """
+
+    _managed_http_client: httpx.AsyncClient | None = PrivateAttr(default=None)
+
+    def __init__(self, **kwargs: Any) -> None:
+        client_kwargs = dict(kwargs.pop("client_kwargs", {}) or {})
+        if "http_client" in client_kwargs:
+            raise ValueError("ManagedOpenAIChatModel owns client_kwargs.http_client")
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout=600.0, connect=5.0),
+            limits=httpx.Limits(max_connections=1000, max_keepalive_connections=100),
+            follow_redirects=True,
+        )
+        client_kwargs["http_client"] = http_client
+        super().__init__(client_kwargs=client_kwargs, **kwargs)
+        self._managed_http_client = http_client
+
+    async def aclose(self) -> None:
+        if self._managed_http_client is not None:
+            await self._managed_http_client.aclose()
+            self._managed_http_client = None
+
+
+class AllApiKeysRateLimitedError(RuntimeError):
+    """Every configured OpenAI-compatible credential returned HTTP 429."""
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    return (
+        getattr(exc, "status_code", None) == 429
+        or type(exc).__name__ == "RateLimitError"
+    )
+
+
+class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
+    """Retry one request with the next local credential after an HTTP 429."""
+
+    def __init__(self, *, api_keys: list[str], base_url: str, **kwargs: Any) -> None:
+        if not api_keys:
+            raise ValueError("RotatingOpenAIChatModel requires at least one API key")
+        self._api_keys = tuple(api_keys)
+        self._base_url = base_url
+        self._active_key_index = 0
+        super().__init__(
+            credential=OpenAICredential(api_key=self._api_keys[0], base_url=base_url),
+            max_retries=0,
+            **kwargs,
+        )
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        last_error: Exception | None = None
+        for offset in range(len(self._api_keys)):
+            key_index = (self._active_key_index + offset) % len(self._api_keys)
+            self.credential = OpenAICredential(
+                api_key=self._api_keys[key_index],
+                base_url=self._base_url,
+            )
+            try:
+                response = await super().__call__(*args, **kwargs)
+            except Exception as exc:
+                if not _is_rate_limit_error(exc):
+                    raise
+                last_error = exc
+                continue
+            self._active_key_index = key_index
+            return response
+        raise AllApiKeysRateLimitedError(
+            f"all {len(self._api_keys)} configured API keys are rate limited",
+        ) from last_error
 
 
 def effective_agent_config(agent_key: str) -> dict[str, Any]:
@@ -42,7 +123,12 @@ def format_message_content(content: Any) -> str:
                 else:
                     parts.append(str(block))
             else:
-                parts.append(str(block))
+                if hasattr(block, "text"):
+                    parts.append(str(getattr(block, "text") or ""))
+                elif hasattr(block, "output"):
+                    parts.append(format_message_content(getattr(block, "output")))
+                else:
+                    parts.append(str(block))
         return "\n".join(part for part in parts if part).strip()
     return str(content or "").strip()
 
@@ -85,51 +171,91 @@ def resolve_model_name(agent_key: str, default: str) -> str:
 
 def has_model_credentials(agent_key: str) -> bool:
     cfg = effective_agent_config(agent_key)
-    return bool(os.environ.get("OPENAI_API_KEY") or cfg.get("api_key"))
+    return bool(os.environ.get("OPENAI_API_KEY") or _configured_api_keys(cfg))
+
+
+def _configured_api_keys(cfg: dict[str, Any]) -> list[str]:
+    configured = cfg.get("api_keys")
+    values = configured if isinstance(configured, list) else []
+    if not values and cfg.get("api_key"):
+        values = [cfg["api_key"]]
+    keys: list[str] = []
+    for value in values:
+        key = str(value or "").strip()
+        if key and key not in keys and key != "YOUR_API_KEY_HERE":
+            keys.append(key)
+    return keys
 
 
 def create_openai_model_and_formatter(agent_key: str, default_model: str):
     cfg = effective_agent_config(agent_key)
-    api_key = os.environ.get("OPENAI_API_KEY") or cfg.get("api_key") or None
+    api_keys = [os.environ["OPENAI_API_KEY"]] if os.environ.get("OPENAI_API_KEY") else _configured_api_keys(cfg)
     base_url = (
         os.environ.get("OPENAI_API_BASE")
         or cfg.get("base_url")
         or cfg.get("api_base")
         or "https://api.openai.com/v1"
     )
-    generate_kwargs: dict[str, Any] = {}
+    parameters: dict[str, Any] = {"parallel_tool_calls": False}
     if "temperature" in cfg:
-        generate_kwargs["temperature"] = cfg.get("temperature")
-    if "seed" in cfg:
-        generate_kwargs["seed"] = cfg.get("seed")
-    model = OpenAIChatModel(
-        model_name=resolve_model_name(agent_key, default_model),
-        api_key=api_key,
+        parameters["temperature"] = cfg.get("temperature")
+    model_name = resolve_model_name(agent_key, default_model)
+    context_size = _model_context_size(model_name)
+    extra_body = {"seed": cfg["seed"]} if "seed" in cfg else None
+    model = RotatingOpenAIChatModel(
+        api_keys=api_keys or [""],
+        base_url=base_url,
+        model=model_name,
+        parameters=OpenAIChatModel.Parameters(**parameters),
         stream=False,
-        client_kwargs={"base_url": base_url},
-        generate_kwargs=generate_kwargs or None,
+        context_size=context_size,
+        extra_body=extra_body,
+        formatter=OpenAIChatFormatter(),
     )
-    return model, OpenAIChatFormatter()
+    return model, model.formatter
+
+
+def _model_context_size(model_name: str) -> int:
+    for env_key in ("AGENT_CONTEXT_WINDOW_TOKENS", "MODEL_CONTEXT_TOKENS"):
+        raw = os.environ.get(env_key)
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if value > 0:
+                return value
+    normalized = str(model_name or "").lower()
+    if "minimax" in normalized or "m3" in normalized:
+        return 204_800
+    if "gpt-4.1" in normalized:
+        return 1_000_000
+    if "claude" in normalized:
+        return 200_000
+    return 128_000
 
 
 async def collect_tool_results(agent: Any) -> dict[str, list[dict[str, Any]]]:
     collected: dict[str, list[dict[str, Any]]] = {}
-    memory = getattr(agent, "memory", None)
-    if memory is None or not hasattr(memory, "get_memory"):
+    state = getattr(agent, "state", None)
+    if state is None:
         return collected
-
-    memory_msgs = await memory.get_memory()
-    for msg in memory_msgs:
+    for msg in getattr(state, "context", []) or []:
         content = getattr(msg, "content", None)
         if not isinstance(content, list):
             continue
         for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
+            if isinstance(block, ToolResultBlock):
+                tool_name = str(block.name or "").strip()
+                output = block.output
+            elif isinstance(block, dict) and block.get("type") == "tool_result":
+                tool_name = str(block.get("name") or "").strip()
+                output = block.get("output")
+            else:
                 continue
-            tool_name = str(block.get("name") or "").strip()
             if not tool_name:
                 continue
-            output_text = format_message_content(block.get("output"))
+            output_text = format_message_content(output)
             parsed = parse_agent_text_json(output_text)
             if parsed is not None:
                 collected.setdefault(tool_name, []).append(parsed)
@@ -144,4 +270,4 @@ def make_user_msg(name: str, content: str, metadata: dict[str, Any] | None = Non
     # when user-role messages carry different `name` values across turns.
     # Keep the protocol-level name stable and preserve the logical sender in
     # metadata for debugging.
-    return Msg(name="user", content=content, role="user", metadata=msg_metadata or None)
+    return UserMsg(name="user", content=content, metadata=msg_metadata or None)

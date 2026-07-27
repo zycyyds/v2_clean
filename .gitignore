@@ -14,8 +14,12 @@ model_config.local.yaml
 
 # v2 运行产物（中间 CSV、日志、agent_runs、code_outputs）
 output/
+outputs/
 program/output/
 experiments/
+datasets/
+**/host_private/
+**/reference_private/
 
 # 本地数据集与验证/示例数据，不上传 GitHub
 mimic*/
@@ -31,3 +35,4 @@ Icon?
 .idea/
 .vscode/
 .claude/
+.codex_tmp/

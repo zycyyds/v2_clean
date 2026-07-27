@@ -6,7 +6,7 @@
 
 ```bash
 conda env create -f environment.yml
-conda activate py310
+conda activate py3102
 ```
 
 Validation Agent 和自动 Test Agent 需要在 `model_config.local.yaml` 配置模型访问凭据；该文件只在本机保存，不能提交。数据划分、评分器和手工兼容测试入口本身不调用模型。
@@ -41,6 +41,17 @@ python main.py \
   --max-iters 400 \
   "<reference-guided task prompt>"
 ```
+
+可选实验开关：
+
+```text
+--disable-pipeline-skills    不向 Validation Agent 暴露 Pipeline Skills
+--disable-error-view-skills  不向 Correction Agent 暴露四类错误 View Skills
+--enable-codegraph           启用受限 CodeGraph MCP 源码查询
+```
+
+CodeGraph索引属于本机生成数据，不进入Git。启用前在当前项目根目录执行一次
+`codegraph init`；运行时只共享MCP适配代码，不共享`.codegraph`数据库。
 
 `--round-limit` 只统计分数严格提升的正式 loop。下降、持平和门禁失败只记录为 attempt；默认连续两个有效但未提升的 attempt 才停止，无效 attempt 不占 patience。每个正式 loop 会归档累计 `script_bundle`、validation 结果、评分和 provenance。
 
@@ -92,6 +103,6 @@ Data Cleaning Agent 只注册以下 9 个 MIMIC Pipeline Skills：
 ## 验证
 
 ```bash
-conda run -n py310 python -m pytest -q
-conda run -n py310 python -m compileall -q main.py agent agent_tools workflow skills lib
+conda run -n py3102 python -m pytest -q
+conda run -n py3102 python -m compileall -q main.py agent agent_tools workflow skills lib
 ```

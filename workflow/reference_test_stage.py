@@ -11,14 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agentscope.agent import ReActAgent
-
 from agent.reference_runtime import (
-    ENGINEER_CODE_READ_ROOTS,
-    create_reference_compression_config,
-    create_reference_memory,
+    close_reference_agent,
+    create_reference_agent,
     create_reference_toolkit,
-    make_reference_model,
+    reference_code_denied_read_roots,
+    reference_code_read_roots,
+    stream_reference_agent_reply,
 )
 from agent_tools.context import EngineerToolContext
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
@@ -223,58 +222,64 @@ class ReferenceCheckpointTestRuntime:
                 engineer_phase_root=phase_root,
                 explorer_phase_root=str(self.bundle),
                 additional_read_roots=read_roots,
+                denied_read_roots=reference_code_denied_read_roots(
+                    include_pipeline_skills=True,
+                    include_error_view_skills=False,
+                ),
                 require_skill_plan=False,
                 split_mode="test",
                 required_report_paths=reports,
             )
             toolkit, _ = create_reference_toolkit(context)
             _remove_fixed_reference_incompatible_tools(toolkit)
-            model, formatter = make_reference_model()
-            agent = ReActAgent(
-                name="Data Cleaning Agent",
-                sys_prompt=_checkpoint_test_system_prompt(context),
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "data_cleaning_agent",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(self.agent_runs_dir),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
-                max_iters=self.config.max_iters,
-                print_hint_msg=False,
-            )
-            prompt = task_text
-            runner_spec: Path | None = None
-            for repair_index in range(3):
-                response = asyncio.run(agent(make_user_msg(name="user", content=prompt)))
-                response_text = format_message_content(getattr(response, "content", "")).strip()
-                (phase_root / f"agent_response_{repair_index + 1}.txt").write_text(
-                    response_text,
-                    encoding="utf-8",
+
+            async def run_agent() -> Path | None:
+                agent, workspace = await create_reference_agent(
+                    name="Data Cleaning Agent",
+                    system_prompt=_checkpoint_test_system_prompt(context),
+                    toolkit=toolkit,
+                    workspace_dir=context.workspace_dir,
+                    max_iters=self.config.max_iters,
                 )
-                runner_spec = context.workspace_dir / "runner_spec.json"
-                gate = _runner_spec_quality_gate(
-                    runner_spec=runner_spec,
-                    workspace=context.workspace_dir,
-                    frozen_script_bundle=self.bundle,
-                    test_raw=Path(self.sanitized_contract["paths"]["test_raw"]),
-                    output_dir=self.test_run_dir / "result_package",
-                    train_reference_root=Path(
-                        self.sanitized_contract["paths"]["train_reference_root"]
-                    ),
-                )
-                self._last_gate = gate
-                _write_json(phase_root / f"runner_spec_gate_{repair_index + 1}.json", gate)
-                if gate.get("valid") or repair_index == 2:
-                    break
-                prompt = _test_repair_prompt(gate, context.workspace_dir)
+                prompt = task_text
+                runner_spec: Path | None = None
+                try:
+                    for repair_index in range(3):
+                        response = await stream_reference_agent_reply(
+                            agent,
+                            make_user_msg(name="user", content=prompt),
+                        )
+                        response_text = format_message_content(
+                            getattr(response, "content", ""),
+                        ).strip()
+                        (phase_root / f"agent_response_{repair_index + 1}.txt").write_text(
+                            response_text,
+                            encoding="utf-8",
+                        )
+                        runner_spec = context.workspace_dir / "runner_spec.json"
+                        gate = _runner_spec_quality_gate(
+                            runner_spec=runner_spec,
+                            workspace=context.workspace_dir,
+                            frozen_script_bundle=self.bundle,
+                            test_raw=Path(self.sanitized_contract["paths"]["test_raw"]),
+                            output_dir=self.test_run_dir / "result_package",
+                            train_reference_root=Path(
+                                self.sanitized_contract["paths"]["train_reference_root"],
+                            ),
+                        )
+                        self._last_gate = gate
+                        _write_json(
+                            phase_root / f"runner_spec_gate_{repair_index + 1}.json",
+                            gate,
+                        )
+                        if gate.get("valid") or repair_index == 2:
+                            break
+                        prompt = _test_repair_prompt(gate, context.workspace_dir)
+                    return runner_spec
+                finally:
+                    await close_reference_agent(agent, workspace)
+
+            runner_spec = asyncio.run(run_agent())
             if runner_spec is None or not runner_spec.is_file():
                 raise RuntimeError("Data Cleaning Agent produced no runner_spec.json")
             return runner_spec
@@ -284,7 +289,10 @@ class ReferenceCheckpointTestRuntime:
     def _read_roots(self, sanitized_contract_path: Path) -> list[str | Path]:
         paths = self.sanitized_contract["paths"]
         roots: list[str | Path] = [
-            *ENGINEER_CODE_READ_ROOTS,
+            *reference_code_read_roots(
+                include_pipeline_skills=True,
+                include_error_view_skills=False,
+            ),
             self.bundle,
             paths["train_raw"],
             paths["train_reference_root"],

@@ -31,6 +31,7 @@ class EngineerToolContext:
 
     engineer_phase_root: str | Path
     read_roots: Iterable[str | Path] = field(default_factory=tuple)
+    denied_read_roots: Iterable[str | Path] = field(default_factory=tuple)
     require_skill_plan: bool = False
     split_mode: str = "training"
     required_report_paths: dict[str, str] = field(default_factory=dict)
@@ -51,6 +52,7 @@ class EngineerToolContext:
         self.skill_usage_plan_path = self.workspace_dir / "skill_usage_plan.json"
         self.skill_usage_events_path = self.workspace_dir / "skill_usage_events.jsonl"
         self.task_execution_path = self.workspace_dir / "extraction_task_execution.json"
+        self.denied_read_roots = _normalize_roots(self.denied_read_roots)
         self.read_roots = _normalize_roots(
             [*self.read_roots, self.engineer_phase_root],
         )
@@ -63,17 +65,20 @@ class EngineerToolContext:
         engineer_phase_root: str | Path,
         explorer_phase_root: str | Path | None = None,
         additional_read_roots: Iterable[str | Path] = (),
+        denied_read_roots: Iterable[str | Path] = (),
         require_skill_plan: bool = False,
         split_mode: str = "training",
         required_report_paths: dict[str, str] | None = None,
     ) -> "EngineerToolContext":
+        denied = _normalize_roots(denied_read_roots)
         roots: list[str | Path] = list(additional_read_roots)
         if explorer_phase_root:
             roots.append(explorer_phase_root)
-        roots.extend(_existing_absolute_paths(task_text))
+        roots.extend(_existing_absolute_paths(task_text, denied_roots=denied))
         return cls(
             engineer_phase_root=engineer_phase_root,
             read_roots=roots,
+            denied_read_roots=denied,
             require_skill_plan=require_skill_plan,
             split_mode=split_mode,
             required_report_paths=required_report_paths or {},
@@ -223,6 +228,10 @@ class EngineerToolContext:
 
     def resolve_read_path(self, value: str | Path) -> Path:
         path = self._resolve(value)
+        if any(_is_within(path, root) for root in self.denied_read_roots):
+            raise EngineerToolPermissionError(
+                f"Read path is outside authorized roots or within a denied read root: {path}",
+            )
         if not any(self._read_root_allows(path, root) for root in self.read_roots):
             raise EngineerToolPermissionError(
                 f"Read path is outside authorized roots: {path}",
@@ -271,13 +280,23 @@ class EngineerToolContext:
 _ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.-])(/[^\s，。；;：:'\"<>]+)")
 
 
-def _existing_absolute_paths(text: str) -> list[Path]:
+def _existing_absolute_paths(
+    text: str,
+    *,
+    denied_roots: Iterable[str | Path] = (),
+) -> list[Path]:
+    denied = _normalize_roots(denied_roots)
     paths: list[Path] = []
     for match in _ABSOLUTE_PATH_RE.finditer(str(text or "")):
         raw = match.group(1).rstrip(")]}>,.，。")
         path = Path(os.path.expanduser(raw))
         if path.exists():
             resolved = path.resolve()
+            if any(
+                _is_within(resolved, root) or _is_within(root, resolved)
+                for root in denied
+            ):
+                continue
             if resolved not in paths:
                 paths.append(resolved)
     return paths

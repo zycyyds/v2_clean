@@ -11,16 +11,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agentscope.agent import ReActAgent
-
 from agent.reference_runtime import (
-    ENGINEER_CODE_READ_ROOTS,
-    create_reference_compression_config,
-    create_reference_memory,
+    DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS,
+    DATA_CLEANING_AGENT_PIPELINE_SKILLS,
+    close_reference_agent,
+    create_reference_agent,
     create_reference_toolkit,
-    make_reference_model,
+    error_view_skill_bundle_sha256,
+    reference_code_denied_read_roots,
+    reference_code_read_roots,
+    stream_reference_agent_reply,
 )
 from agent_tools.context import EngineerToolContext
+from agent_tools.codegraph_mcp import (
+    CodeGraphRuntime,
+    codegraph_manifest_identity,
+    open_codegraph_runtime,
+    probe_codegraph_connection,
+    summarize_codegraph_usage,
+)
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
 from lib.agent_runtime import format_message_content, make_user_msg
 from workflow.correction_evaluation import evaluate_correction_package
@@ -37,6 +46,8 @@ class ReferenceCorrectionConfig:
     task_text: str
     max_iters: int = 10000
     resume: bool = False
+    error_view_skills_enabled: bool = True
+    codegraph_enabled: bool = False
 
     def normalized(self) -> "ReferenceCorrectionConfig":
         dataset = Path(self.dataset_split).expanduser().resolve()
@@ -62,6 +73,8 @@ class ReferenceCorrectionConfig:
             task_text=self.task_text,
             max_iters=self.max_iters,
             resume=bool(self.resume),
+            error_view_skills_enabled=bool(self.error_view_skills_enabled),
+            codegraph_enabled=bool(self.codegraph_enabled),
         )
 
 
@@ -77,6 +90,16 @@ class ReferenceCorrectionWorkflow:
         self.resume_context: dict[str, Any] | None = None
 
     def run_sync(self) -> dict[str, Any]:
+        if self.config.codegraph_enabled:
+            asyncio.run(
+                probe_codegraph_connection(
+                    project_root=Path(__file__).resolve().parent.parent,
+                    allowed_roots=reference_code_read_roots(
+                        include_pipeline_skills=True,
+                        include_error_view_skills=self.config.error_view_skills_enabled,
+                    ),
+                ),
+            )
         self.experiment.mkdir(parents=True, exist_ok=True)
         report_path = self.experiment / "correction_run_report.json"
         self.resume_context = self._prepare_experiment(report_path)
@@ -99,6 +122,7 @@ class ReferenceCorrectionWorkflow:
                     "gate": gate,
                     "metrics": {},
                 }
+                self._attach_skill_usage_report(report)
                 _write_json(report_path, report)
                 return report
             final_package = self.experiment / "result_package"
@@ -128,6 +152,7 @@ class ReferenceCorrectionWorkflow:
                 "by_error_subtype": evaluation["by_error_subtype"],
                 "evaluation_report": evaluation["evaluation_report"],
             }
+            self._attach_skill_usage_report(report)
             _write_json(report_path, report)
             report["report_path"] = str(report_path)
             return report
@@ -141,11 +166,17 @@ class ReferenceCorrectionWorkflow:
                 "error": f"{type(exc).__name__}: {exc}",
                 "resume_count": int((self.resume_context or {}).get("resume_index") or 0),
             }
+            self._attach_skill_usage_report(report)
             _write_json(report_path, report)
             report["report_path"] = str(report_path)
             return report
 
     def _manifest_identity(self) -> dict[str, Any]:
+        error_view_names = (
+            sorted(DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS)
+            if self.config.error_view_skills_enabled
+            else []
+        )
         return {
             "schema_version": 1,
             "workflow": "reference-guided-correct",
@@ -153,6 +184,19 @@ class ReferenceCorrectionWorkflow:
             "source_archive_sha256": self.source_manifest.get("source_archive_sha256", ""),
             "task_text_sha256": _sha256_text(self.config.task_text),
             "max_iters": self.config.max_iters,
+            "error_view_skills_enabled": self.config.error_view_skills_enabled,
+            "error_view_skill_names": error_view_names,
+            "error_view_skill_bundle_sha256": (
+                error_view_skill_bundle_sha256() if error_view_names else ""
+            ),
+            **codegraph_manifest_identity(
+                enabled=self.config.codegraph_enabled,
+                project_root=Path(__file__).resolve().parent.parent,
+                allowed_roots=reference_code_read_roots(
+                    include_pipeline_skills=True,
+                    include_error_view_skills=self.config.error_view_skills_enabled,
+                ),
+            ),
         }
 
     def _prepare_experiment(self, report_path: Path) -> dict[str, Any] | None:
@@ -248,11 +292,22 @@ class ReferenceCorrectionWorkflow:
     def _agent_read_roots(self) -> list[str | Path]:
         paths = self.sanitized_contract["paths"]
         return [
-            *ENGINEER_CODE_READ_ROOTS,
+            *reference_code_read_roots(
+                include_pipeline_skills=True,
+                include_error_view_skills=self.config.error_view_skills_enabled,
+            ),
             paths["train_raw"],
             paths["train_reference"],
             paths["correction_raw"],
         ]
+
+    def _agent_denied_read_roots(self) -> list[str | Path]:
+        return list(
+            reference_code_denied_read_roots(
+                include_pipeline_skills=True,
+                include_error_view_skills=self.config.error_view_skills_enabled,
+            )
+        )
 
     def _task_text(
         self,
@@ -276,11 +331,27 @@ class ReferenceCorrectionWorkflow:
 - 优先从最近已验证的发现继续，不要重新进行完整的初始目录扫描。
 - 既有候选仍是未提交中间产物；必须继续验证、更新执行代码并重新生成完整结果包。
 """
+        prior_block = (
+            """
+
+【四类数据质量先验】
+- 四类数据质量 Skill 是非穷尽先验，只提供单表、实体对齐、跨表逻辑和任务导向四种分析视角，不是当前数据的错误答案清单。
+- 根据当前证据按需使用 Skill Viewer 读取相关 Skill；不能仅因模式与说明相似就直接修改。
+- 仍须从 train 成对示例和 correction 数据中独立验证规则，并允许发现这些 Skill 未覆盖的新异常或保留未分类结论。
+"""
+            if self.config.error_view_skills_enabled
+            else """
+
+【自主归纳要求】
+- 只能依据成对示例、当前数据和通用工具自主归纳纠错规则。
+"""
+        )
         return f"""\
 {self.config.task_text.strip()}
 
 【任务目标】
 根据{train_count}个成对标准示例，自主学习 dirty package 到 clean package 的纠错关系，然后修复 correction package。不要假设存在预先给定的错误清单。{resume_block}
+{prior_block}
 
 【结果包主键契约】
 - 本任务的样本主键是 `{key_column}`，correction 共 {correction_count} 个主键。
@@ -325,6 +396,7 @@ class ReferenceCorrectionWorkflow:
                     contract_path,
                     *([resume_context_path] if resume_context_path is not None else []),
                 ],
+                denied_read_roots=self._agent_denied_read_roots(),
                 require_skill_plan=False,
                 split_mode="correction",
                 required_report_paths={
@@ -332,30 +404,59 @@ class ReferenceCorrectionWorkflow:
                     "train_reference": str(self.dataset / "train/reference"),
                 },
             )
-            toolkit, _ = create_reference_toolkit(context)
-            _remove_fixed_reference_incompatible_tools(toolkit)
-            model, formatter = make_reference_model()
-            agent = ReActAgent(
-                name="Data Cleaning Agent",
-                sys_prompt=_correction_system_prompt(context),
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "data_cleaning_agent",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(agent_runs),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
-                max_iters=self.config.max_iters,
-                print_hint_msg=False,
-            )
-            response = asyncio.run(agent(make_user_msg(name="user", content=task_text)))
+            async def run_agent():
+                codegraph_runtime: CodeGraphRuntime | None = None
+                agent = None
+                workspace = None
+                try:
+                    if self.config.codegraph_enabled:
+                        codegraph_runtime = await open_codegraph_runtime(
+                            project_root=Path(__file__).resolve().parent.parent,
+                            allowed_roots=reference_code_read_roots(
+                                include_pipeline_skills=True,
+                                include_error_view_skills=self.config.error_view_skills_enabled,
+                            ),
+                            usage_path=phase_root / "codegraph_usage.jsonl",
+                            audit_path=context.workspace_dir / "tool_audit.jsonl",
+                            attempt=phase_root.name,
+                        )
+                    toolkit, _ = create_reference_toolkit(
+                        context,
+                        include_pipeline_skills=True,
+                        include_error_view_skills=self.config.error_view_skills_enabled,
+                        include_quality_tools=True,
+                        codegraph_tool=(
+                            codegraph_runtime.tool if codegraph_runtime is not None else None
+                        ),
+                    )
+                    _remove_fixed_reference_incompatible_tools(toolkit)
+                    agent, workspace = await create_reference_agent(
+                        name="Data Cleaning Agent",
+                        system_prompt=_correction_system_prompt(
+                            context,
+                            codegraph_enabled=self.config.codegraph_enabled,
+                        ),
+                        toolkit=toolkit,
+                        workspace_dir=context.workspace_dir,
+                        max_iters=self.config.max_iters,
+                    )
+                    return await stream_reference_agent_reply(
+                        agent,
+                        make_user_msg(name="user", content=task_text),
+                        skill_usage_report_path=self.experiment / "skill_usage_report.json",
+                        exposed_pipeline_skills=DATA_CLEANING_AGENT_PIPELINE_SKILLS,
+                        exposed_error_view_skills=(
+                            DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS
+                            if self.config.error_view_skills_enabled
+                            else set()
+                        ),
+                    )
+                finally:
+                    await close_reference_agent(agent, workspace)
+                    if codegraph_runtime is not None:
+                        await codegraph_runtime.close()
+
+            response = asyncio.run(run_agent())
             response_text = format_message_content(getattr(response, "content", "")).strip()
             (phase_root / "agent_response.txt").write_text(response_text, encoding="utf-8")
             package = _latest_result_package_dir(phase_root)
@@ -364,6 +465,21 @@ class ReferenceCorrectionWorkflow:
             return package
         finally:
             clear_phase_context()
+
+    def _attach_skill_usage_report(self, report: dict[str, Any]) -> None:
+        path = self.experiment / "skill_usage_report.json"
+        if path.is_file():
+            report["skill_usage_report"] = str(path)
+            try:
+                usage_report = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                usage_report = {}
+            if isinstance(usage_report.get("agent_usage"), dict):
+                report["agent_usage"] = usage_report["agent_usage"]
+        report["codegraph_usage"] = {
+            "enabled": self.config.codegraph_enabled,
+            **summarize_codegraph_usage(self.experiment),
+        }
 
 
 def validate_correction_result_package(
@@ -443,13 +559,28 @@ def validate_correction_result_package(
     }
 
 
-def _correction_system_prompt(context: EngineerToolContext) -> str:
+def _correction_system_prompt(
+    context: EngineerToolContext,
+    *,
+    codegraph_enabled: bool = False,
+) -> str:
     roots = "\n".join(f"- {path}" for path in context.read_roots)
+    codegraph_guidance = (
+        """
+
+理解已索引的授权项目源码和调用链时优先使用 CodeGraphExplore。数据、配置、文档和当前
+attempt workspace 继续使用 Read/Grep/InspectDataFile。CodeGraphExplore 返回 stale、DENIED
+或 ERROR 时使用 Read/Grep；不得查询历史实验、隐藏答案、其他项目或被关闭的 Skill。
+"""
+        if codegraph_enabled
+        else ""
+    )
     return f"""\
 你是 Data Cleaning Agent，当前执行一次独立的 reference-guided 数据纠错任务。
 
 你只能读取：
 {roots}
+{codegraph_guidance}
 
 你必须从成对训练示例中自主发现纠错规则。禁止猜测或搜索未授权路径。ExecutePython 只能写当前步骤 OUTPUT_DIR；最终通过 PublishDirectoryArtifact 发布完整结果包。
 """

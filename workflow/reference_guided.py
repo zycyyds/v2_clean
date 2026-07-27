@@ -16,23 +16,29 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Awaitable, Callable, Iterator
 
 import pandas as pd
 
-from agentscope.agent import ReActAgent
-
 from agent.reference_runtime import (
-    ENGINEER_CODE_READ_ROOTS,
     DATA_CLEANING_AGENT_PIPELINE_SKILLS,
-    create_reference_compression_config,
-    create_reference_memory,
+    close_reference_agent,
+    create_reference_agent,
     create_reference_toolkit,
-    make_reference_model,
+    reference_code_denied_read_roots,
+    reference_code_read_roots,
+    stream_reference_agent_reply,
 )
 from agent_tools.context import EngineerToolContext
+from agent_tools.codegraph_mcp import (
+    CodeGraphRuntime,
+    codegraph_manifest_identity,
+    open_codegraph_runtime,
+    probe_codegraph_connection,
+    summarize_codegraph_usage,
+)
 from lib.agent_artifacts import clear_phase_context, init_phase_session, set_phase_context
-from lib.agent_runtime import format_message_content, make_user_msg
+from lib.agent_runtime import AllApiKeysRateLimitedError, format_message_content, make_user_msg
 from workflow.reference_splits import infer_dataset_profile
 from workflow.reference_evaluation import (
     IGNORED_PACKAGE_FILES,
@@ -56,6 +62,7 @@ from workflow.skill_adapter import persist_validated_variants, restore_bundle_va
 KEY_PRIORITY = ("hadm_id", "stay_id", "subject_id", "case_id", "row_id")
 LABEL_COLUMNS = {"label", "mortality", "readmission", "los_label", "outcome"}
 NUMERIC_NORMALIZATION_PLACES = Decimal("0.000001")
+PUBLIC_GATE_MAX_REPAIRS = 2
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,8 @@ class ReferenceGuidedConfig:
     max_attempts: int = 100
     target_score: float | None = None
     max_iters: int = 60
+    pipeline_skills_enabled: bool = True
+    codegraph_enabled: bool = False
 
     def normalized(self) -> "ReferenceGuidedConfig":
         split = Path(self.dataset_split).expanduser().resolve()
@@ -96,6 +105,8 @@ class ReferenceGuidedConfig:
             max_attempts=self.max_attempts,
             target_score=self.target_score,
             max_iters=self.max_iters,
+            pipeline_skills_enabled=self.pipeline_skills_enabled,
+            codegraph_enabled=bool(self.codegraph_enabled),
         )
 
 
@@ -260,6 +271,19 @@ def _reference_stop_reason(
     if attempts_this_run >= max_attempts:
         return "max_attempts"
     return ""
+
+
+def _rate_limit_block_state(
+    state: dict[str, Any],
+    error: AllApiKeysRateLimitedError,
+) -> dict[str, Any]:
+    """Pause a run without converting an infrastructure error into an attempt."""
+    updated = json.loads(json.dumps(state))
+    updated["status"] = "blocked_rate_limited"
+    updated["termination_reason"] = "all_api_keys_rate_limited"
+    updated["rate_limit_error"] = str(error)
+    updated["blocked_at"] = datetime.now().isoformat(timespec="seconds")
+    return updated
 
 
 def _reference_candidate_quality_gate(
@@ -437,6 +461,91 @@ def _reference_candidate_quality_gate(
         "pipeline_replay_gate": pipeline_replay_gate,
         "issues": issues,
     }
+
+
+def _public_gate_repair_prompt(
+    *,
+    gate: dict[str, Any],
+    gate_report: Path,
+    workspace: Path,
+    repair_index: int,
+) -> str:
+    issues = [str(item) for item in gate.get("issues") or []]
+    issue_text = "\n".join(f"- {item}" for item in issues[:100]) or "- candidate gate did not pass"
+    if len(issues) > 100:
+        issue_text += f"\n- ... {len(issues) - 100} additional issues are recorded in the gate report"
+    return f"""\
+当前候选未通过宿主公开预提交门禁。这仍是同一个 attempt 的第 {repair_index} 次修复，继续使用当前 Agent 上下文和 workspace。
+
+公开门禁问题：
+{issue_text}
+
+完整门禁报告：{gate_report}
+
+请只修复 {workspace / 'pipeline'}、{workspace / 'result_package'} 以及必要的当前 workspace 报告文件。
+修复后必须重新运行累计 Pipeline、重新发布完整17文件 result_package，并再次执行 ValidateResultPackage。
+不得读取 validation/reference、test reference、历史实验或其他未授权路径；不得手工修改 Pipeline 运行后生成的业务 CSV。
+完成修复后再结束本次回复，宿主会在同一个 attempt 内重新归档并复查。
+"""
+
+
+async def _run_public_gate_repair_loop(
+    *,
+    candidate: Path,
+    phase_root: Path,
+    attempt_index: int,
+    max_repairs: int,
+    stage_and_gate: Callable[[int], tuple[dict[str, Any], dict[str, Any]]],
+    request_repair: Callable[[str, int], Awaitable[None]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Recheck public candidate gates after bounded repairs in one Agent session."""
+    if max_repairs < 0:
+        raise ValueError("max_repairs must be non-negative")
+    phase_root.mkdir(parents=True, exist_ok=True)
+    gate_dir = candidate / "draft_gates"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    staged: dict[str, Any] = {}
+    gate: dict[str, Any] = {
+        "schema_version": 1,
+        "valid": False,
+        "status": "NEEDS_REPAIR",
+        "issues": ["candidate was not checked"],
+    }
+    for check_index in range(max_repairs + 1):
+        staged, gate = stage_and_gate(check_index)
+        gate_report = gate_dir / f"draft_gate_{check_index + 1:02d}.json"
+        _write_json(gate_report, gate)
+        _append_runtime_event(
+            phase_root,
+            {
+                "event": "public_draft_gate_checked",
+                "attempt": attempt_index,
+                "check": check_index + 1,
+                "valid": bool(gate.get("valid")),
+                "gate_report": str(gate_report),
+                "issue_count": len(gate.get("issues") or []),
+            },
+        )
+        if gate.get("valid") or check_index == max_repairs:
+            return staged, gate
+        repair_index = check_index + 1
+        prompt = _public_gate_repair_prompt(
+            gate=gate,
+            gate_report=gate_report,
+            workspace=phase_root / "workspace",
+            repair_index=repair_index,
+        )
+        _append_runtime_event(
+            phase_root,
+            {
+                "event": "public_draft_gate_repair_requested",
+                "attempt": attempt_index,
+                "repair": repair_index,
+                "gate_report": str(gate_report),
+            },
+        )
+        await request_repair(prompt, repair_index)
+    return staged, gate
 
 
 def _package_relative_hashes(package_root: Path) -> dict[str, str]:
@@ -632,6 +741,15 @@ def _ensure_run_manifest(
         "key_file_sha256": key_hashes,
         "task_prompt_sha256": hashlib.sha256(config.task_text.encode("utf-8")).hexdigest(),
         "scorer_version": SCORER_VERSION,
+        "pipeline_skills_enabled": config.pipeline_skills_enabled,
+        **codegraph_manifest_identity(
+            enabled=config.codegraph_enabled,
+            project_root=Path(__file__).resolve().parent.parent,
+            allowed_roots=reference_code_read_roots(
+                include_pipeline_skills=config.pipeline_skills_enabled,
+                include_error_view_skills=False,
+            ),
+        ),
     }
     run_id = hashlib.sha256(
         json.dumps(immutable, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -667,6 +785,16 @@ class ReferenceGuidedWorkflow:
         self.contract_path = self.experiment_dir / "reference_contract.json"
 
     def run_sync(self) -> dict[str, Any]:
+        if self.config.codegraph_enabled:
+            asyncio.run(
+                probe_codegraph_connection(
+                    project_root=Path(__file__).resolve().parent.parent,
+                    allowed_roots=reference_code_read_roots(
+                        include_pipeline_skills=self.config.pipeline_skills_enabled,
+                        include_error_view_skills=False,
+                    ),
+                ),
+            )
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
         contract = infer_reference_contract(self.config.dataset_split)
         _ensure_run_manifest(self.config, contract, self.experiment_dir)
@@ -1192,6 +1320,10 @@ class DataCleaningAgentRuntime:
                     candidate=candidate,
                     attempt_index=attempt_index,
                 )
+            except AllApiKeysRateLimitedError as exc:
+                state = _rate_limit_block_state(state, exc)
+                _write_json(self.state_path, state)
+                break
             except KeyboardInterrupt:
                 _recover_interrupted_promotion(self.promotion_journal_path, self.state_path)
                 state = _migrate_reference_experiment_state(_load_json(self.state_path))
@@ -1237,6 +1369,8 @@ class DataCleaningAgentRuntime:
                     test_rule_feedback=test_rule_feedback,
                 )
             )
+        except AllApiKeysRateLimitedError:
+            raise
         except Exception as exc:
             gate = {
                 "schema_version": 1,
@@ -1527,8 +1661,16 @@ class DataCleaningAgentRuntime:
                 repair_targets_path,
             )
             report_paths["repair_targets"] = str(repair_targets_path)
+        code_read_roots = reference_code_read_roots(
+            include_pipeline_skills=self.config.pipeline_skills_enabled,
+            include_error_view_skills=False,
+        )
+        denied_read_roots = reference_code_denied_read_roots(
+            include_pipeline_skills=self.config.pipeline_skills_enabled,
+            include_error_view_skills=False,
+        )
         read_roots = [
-            *ENGINEER_CODE_READ_ROOTS,
+            *code_read_roots,
             paths["train_raw"],
             train_reference_root,
             paths["validation_raw"],
@@ -1545,12 +1687,16 @@ class DataCleaningAgentRuntime:
         if previous_feedback_path:
             read_roots.append(previous_feedback_path)
         task_text = self._task_text(candidate, phase_root, report_paths, public_feedback)
+        agent: Agent | None = None
+        agent_workspace = None
+        codegraph_runtime: CodeGraphRuntime | None = None
         try:
             context = EngineerToolContext.from_task(
                 task_text=task_text,
                 engineer_phase_root=phase_root,
                 explorer_phase_root=str(candidate),
                 additional_read_roots=read_roots,
+                denied_read_roots=denied_read_roots,
                 require_skill_plan=False,
                 split_mode="validation",
                 required_report_paths=report_paths,
@@ -1561,9 +1707,21 @@ class DataCleaningAgentRuntime:
             )
             if inherited_parent != parent_pipeline_sha256:
                 raise RuntimeError("inherited pipeline hash changed before Agent execution")
-            toolkit, manifest = create_reference_toolkit(context)
+            if self.config.codegraph_enabled:
+                codegraph_runtime = await open_codegraph_runtime(
+                    project_root=Path(__file__).resolve().parent.parent,
+                    allowed_roots=code_read_roots,
+                    usage_path=phase_root / "codegraph_usage.jsonl",
+                    audit_path=context.workspace_dir / "tool_audit.jsonl",
+                    attempt=f"attempt_{attempt_index:04d}",
+                )
+            toolkit, manifest = create_reference_toolkit(
+                context,
+                include_pipeline_skills=self.config.pipeline_skills_enabled,
+                codegraph_tool=(codegraph_runtime.tool if codegraph_runtime is not None else None),
+            )
             _remove_fixed_reference_incompatible_tools(toolkit)
-            agent_skill_prompt = toolkit.get_agent_skill_prompt()
+            agent_skill_prompt = await toolkit.get_skill_instructions()
             if agent_skill_prompt:
                 (phase_root / "agentscope_skill_prompt.txt").write_text(agent_skill_prompt, encoding="utf-8")
             restore_bundle_variants(self.active_dir, context.variant_root)
@@ -1578,60 +1736,118 @@ class DataCleaningAgentRuntime:
                     "read_roots": [str(Path(root).expanduser().resolve()) for root in read_roots],
                 },
             )
-            model, formatter = make_reference_model()
-            agent = ReActAgent(
+            agent, agent_workspace = await create_reference_agent(
                 name="Data Cleaning Agent",
-                sys_prompt=_data_cleaning_agent_system_prompt("", context),
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "data_cleaning_agent",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(attempt_root),
-                    },
-                    model,
+                system_prompt=_data_cleaning_agent_system_prompt(
+                    "",
+                    context,
+                    pipeline_skills_enabled=self.config.pipeline_skills_enabled,
+                    codegraph_enabled=self.config.codegraph_enabled,
                 ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
+                toolkit=toolkit,
+                workspace_dir=context.workspace_dir,
                 max_iters=self.config.max_iters,
-                print_hint_msg=False,
             )
-            response = await agent(make_user_msg(name="user", content=task_text))
+            response = await stream_reference_agent_reply(
+                agent,
+                make_user_msg(name="user", content=task_text),
+                skill_usage_report_path=phase_root / "skill_usage_report.json",
+                exposed_pipeline_skills=(
+                    DATA_CLEANING_AGENT_PIPELINE_SKILLS
+                    if self.config.pipeline_skills_enabled
+                    else set()
+                ),
+                exposed_error_view_skills=set(),
+            )
             response_text = format_message_content(getattr(response, "content", "")).strip()
             (phase_root / "agent_response.txt").write_text(response_text, encoding="utf-8")
             _append_manifest_steps_to_runtime_trace(phase_root)
-            pipeline_check = _write_pipeline_skill_usage_check(phase_root)
-            if not pipeline_check["has_pipeline_skill_exposure"]:
+            pipeline_check = _write_pipeline_skill_usage_check(
+                phase_root,
+                required=self.config.pipeline_skills_enabled,
+            )
+            if self.config.pipeline_skills_enabled and not pipeline_check["has_pipeline_skill_exposure"]:
                 self._write_context_summary(phase_root, attempt_index, "needs_repair")
                 raise RuntimeError(
                     "Data Cleaning Agent did not expose any pipeline AgentScope skills; "
                     f"see {phase_root / 'pipeline_skill_usage_check.json'}"
                 )
-            package = _complete_reference_package_paths(phase_root, self.contract)
-            if package is None:
-                check = _write_reference_completion_check(phase_root, self.contract)
+            latest_completion_check: Path | None = None
+            latest_package: dict[str, Path] | None = None
+
+            def stage_and_gate(_check_index: int) -> tuple[dict[str, Any], dict[str, Any]]:
+                nonlocal latest_completion_check, latest_package
+                package = _complete_reference_package_paths(phase_root, self.contract)
+                if package is None:
+                    latest_package = None
+                    latest_completion_check = _write_reference_completion_check(phase_root, self.contract)
+                    return {}, {
+                        "schema_version": 1,
+                        "valid": False,
+                        "status": "NEEDS_REPAIR",
+                        "issues": [
+                            "Data Cleaning Agent did not produce a complete reference result package; "
+                            f"see {latest_completion_check}"
+                        ],
+                    }
+                latest_package = package
+                _stage_workspace_pipeline(context.workspace_dir, candidate)
+                staged_package = _stage_reference_agent_package(package, candidate)
+                gate = _reference_candidate_quality_gate(
+                    active=self.active_dir,
+                    candidate=candidate,
+                    contract=self.contract,
+                    repair_targets=(
+                        candidate / "repair_targets.json"
+                        if (candidate / "repair_targets.json").is_file()
+                        else None
+                    ),
+                )
+                return staged_package, gate
+
+            async def request_gate_repair(prompt: str, repair_index: int) -> None:
+                continuation_response = await stream_reference_agent_reply(
+                    agent,
+                    make_user_msg(name="user", content=prompt),
+                )
+                continuation_text = format_message_content(
+                    getattr(continuation_response, "content", "")
+                ).strip()
+                (phase_root / f"public_gate_repair_response_{repair_index:02d}.txt").write_text(
+                    continuation_text,
+                    encoding="utf-8",
+                )
+                _append_manifest_steps_to_runtime_trace(phase_root)
+
+            staged, draft_gate = await _run_public_gate_repair_loop(
+                candidate=candidate,
+                phase_root=phase_root,
+                attempt_index=attempt_index,
+                max_repairs=PUBLIC_GATE_MAX_REPAIRS,
+                stage_and_gate=stage_and_gate,
+                request_repair=request_gate_repair,
+            )
+            if not staged:
                 self._write_context_summary(phase_root, attempt_index, "needs_repair")
                 raise RuntimeError(
                     "Data Cleaning Agent did not produce a complete reference result package; "
-                    f"see {check}"
+                    f"see {latest_completion_check or candidate / 'draft_gates'}"
                 )
-            staged_pipeline = _stage_workspace_pipeline(context.workspace_dir, candidate)
+            staged_pipeline = candidate / "script_bundle" / "pipeline"
             persisted = persist_validated_variants(context.variant_root, candidate)
             packaged_skills = _stage_claude_style_agent_skills(
                 phase_root=phase_root,
                 candidate=candidate,
-                package=package,
+                package=latest_package or {},
                 contract=self.contract,
             )
             adapter_bundle = _write_adapter_bundle_manifest(candidate, persisted, packaged_skills)
-            staged = _stage_reference_agent_package(package, candidate)
             staged["producer"] = "data_cleaning_agent"
             staged["engineer_phase_root"] = str(phase_root)
             staged["adapter_bundle"] = str(adapter_bundle)
-            staged["pipeline"] = str(staged_pipeline) if staged_pipeline is not None else ""
+            staged["pipeline"] = str(staged_pipeline) if staged_pipeline.is_dir() else ""
+            staged["public_draft_gate"] = str(candidate / "draft_gates")
+            staged["public_draft_gate_valid"] = bool(draft_gate.get("valid"))
             feedback_response_path = None
             if repair_targets_path is not None:
                 if _latest_named_file(phase_root, "feedback_response.json") is None:
@@ -1647,7 +1863,10 @@ class DataCleaningAgentRuntime:
                         repair_targets_path=repair_targets_path,
                         candidate=candidate,
                     )
-                    continuation_response = await agent(make_user_msg(name="user", content=continuation))
+                    continuation_response = await stream_reference_agent_reply(
+                        agent,
+                        make_user_msg(name="user", content=continuation),
+                    )
                     continuation_text = format_message_content(
                         getattr(continuation_response, "content", "")
                     ).strip()
@@ -1686,6 +1905,9 @@ class DataCleaningAgentRuntime:
                 )
             return staged
         finally:
+            await close_reference_agent(agent, agent_workspace)
+            if codegraph_runtime is not None:
+                await codegraph_runtime.close()
             clear_phase_context()
 
     def _task_text(
@@ -1705,6 +1927,20 @@ class DataCleaningAgentRuntime:
         )
         validation_keys = Path(paths.get("validation_keys") or "")
         expected_count = _validation_key_count(self.contract)
+        pipeline_learning_steps = (
+            [
+                "3. 处理 cohort、diagnosis、procedure、lab、medication、ICU event、clean/package 时，优先阅读或调用对应 pipeline_* skill；如果接口不匹配，记录原因后在 experiment 内创建 adapter/fork。",
+                "4. 如果 train/reference 是 `preproc_*_icu.csv` 这类事件明细长表，而对应 pipeline skill 默认输出宽表或列名不匹配，说明这是接口/输出契约差异，不是逻辑不可用。",
+                "5. 对接口/输出契约差异，先 inspect_skill，再创建 experiment 内 adapter/fork，复用原 pipeline skill 或其 source_pipeline_files 的核心逻辑；不要新增全局 skill，也不要直接写一个匿名大脚本绕过。",
+                "6. 如果某个相关 pipeline skill 的核心逻辑确实不适用，写 no_applicable_skill_reason.json 说明缺口，再创建 adapter/fork 或 standalone 草稿。",
+            ]
+            if self.config.pipeline_skills_enabled
+            else [
+                "3. 本次是无 Pipeline Skill 消融：不得读取、调用、复制或依赖任何 pipeline_* skill。",
+                "4. 只可根据 train/raw、train/reference、授权的通用代码和工具输出，自行推导文件、字段、key、join、filter、derive 与序列化规则。",
+                "5. 将推导出的规则落实到 workspace/pipeline 的明确模块中；不要创建匿名的大型一次性脚本。",
+            ]
+        )
         lines = [
             _task_text_with_reference_contract(self.config.task_text, self.contract),
             "",
@@ -1730,10 +1966,7 @@ class DataCleaningAgentRuntime:
             "【固定策略，不固定实现】",
             "1. 用 Read/Glob/InspectDataFile 理解 train/raw 和 train/reference 目录；package_manifest 如存在仅作可选索引，不是必须产物。",
             "2. 分析 raw 到 reference 的文件、字段、key、join、filter、derive、clean 关系。",
-            "3. 处理 cohort、diagnosis、procedure、lab、medication、ICU event、clean/package 时，优先阅读或调用对应 pipeline_* skill；如果接口不匹配，记录原因后在 experiment 内创建 adapter/fork。",
-            "4. 如果 train/reference 是 `preproc_*_icu.csv` 这类事件明细长表，而对应 pipeline skill 默认输出宽表或列名不匹配，说明这是接口/输出契约差异，不是逻辑不可用。",
-            "5. 对接口/输出契约差异，先 inspect_skill，再创建 experiment 内 adapter/fork，复用原 pipeline skill 或其 source_pipeline_files 的核心逻辑；不要新增全局 skill，也不要直接写一个匿名大脚本绕过。",
-            "6. 如果某个相关 pipeline skill 的核心逻辑确实不适用，写 no_applicable_skill_reason.json 说明缺口，再创建 adapter/fork 或 standalone 草稿。",
+            *pipeline_learning_steps,
             "7. 创建或更新 workspace/pipeline 下的累计 Pipeline；唯一入口必须是 workspace/pipeline/run.py。",
             "7a. 本轮不强制包装 Skill。只有当你已经自然整理好稳定能力时，才可选写 workspace/skill_packaging_plan.json 和 workspace/capabilities/<skill_name>/；缺失或格式不完整不得阻塞 result_package 进入评估。",
             "8. 必须用 workspace/pipeline/run.py 在 train raw 上生成预测 reference package，并与 train/reference 做回归检查；Agent 报告只作参考，宿主会在隔离进程重新生成机器报告。",
@@ -1742,6 +1975,7 @@ class DataCleaningAgentRuntime:
             "11. ExecutePython 只能写本步骤 OUTPUT_DIR，绝不能直接写 workspace/result_package。候选完整 result_package 必须由 workspace/pipeline/run.py 生成，不得执行后手工修改任何业务 CSV。",
             "12. 每轮结束前必须用 PublishDirectoryArtifact 将 OUTPUT_DIR/result_package 发布为 workspace/result_package；宿主只会评估这个已发布的完整候选包。",
             "13. 一个 attempt 内可做多次局部修改和 train 检查；未涉及 repair target 的现有业务文件必须与 current best 保持字节一致。只有门禁通过的候选才会隐藏评估，且 composite_score 严格提升才算完成正式 loop。",
+            "13a. 宿主可能在同一个 attempt 内返回公开预提交门禁问题；收到后必须继续修改当前 workspace 中的累计 Pipeline，重新运行、发布并验证完整结果包，不得另起一套规则。",
             "14. workspace/pipeline 必须包含 pipeline_manifest.json、run.py、cohort.py、labels.py、chart.py、diag.py、med.py、out.py、proc.py、summary.py、config.yaml。manifest 必须声明完整业务文件、固定模块以及本轮 required parent_pipeline_sha256。",
             "14a. summary 的实现方式由你自主决定。若 raw 无法稳定推导 train/reference 中的 summary，你可以把从公开 train/reference 学到的 summary 层信息沉淀到 workspace/pipeline/summary_assets/*.csv，并在 manifest 的 learned_summary_assets 中逐项声明 source、path、sha256；宿主会验证它与 train/reference 对应 summary 文件完全一致。不要为了使用该能力机械复制 summary，能够从 raw 稳定计算时仍可直接计算。",
             "15. 后续正式 Round 必须继承 workspace 中已有 Pipeline，只修改反馈涉及模块；入口仍必须生成全部17个业务文件。缺入口、manifest、lineage 或宿主可重放能力时不得返回 SUCCESS。",
@@ -2302,8 +2536,12 @@ summary 的实现方式由你自主判断。若 raw 无法稳定推导公开 tra
                 for index, bundle in enumerate(round_bundles, start=1)
             },
         }
+        code_read_roots = reference_code_read_roots(
+            include_pipeline_skills=True,
+            include_error_view_skills=False,
+        )
         read_roots: list[str | Path] = [
-            *ENGINEER_CODE_READ_ROOTS,
+            *code_read_roots,
             *round_bundles,
             paths["train_raw"],
             paths["train_reference_root"],
@@ -2316,19 +2554,23 @@ summary 的实现方式由你自主判断。若 raw 无法稳定推导公开 tra
                 engineer_phase_root=phase_root,
                 explorer_phase_root=str(consolidation_root),
                 additional_read_roots=read_roots,
+                denied_read_roots=reference_code_denied_read_roots(
+                    include_pipeline_skills=True,
+                    include_error_view_skills=False,
+                ),
                 require_skill_plan=False,
                 split_mode="validation",
                 required_report_paths=reports,
             )
-            toolkit, _ = create_reference_toolkit(context)
-            _remove_fixed_reference_incompatible_tools(toolkit)
-            model, formatter = make_reference_model()
             read_roots_text = "\n".join(
                 f"- {Path(root).expanduser().resolve()}" for root in read_roots
             )
-            agent = ReActAgent(
-                name="Data Cleaning Agent",
-                sys_prompt=f"""\
+            codegraph_guidance = (
+                "5. 理解授权项目源码时优先使用 CodeGraphExplore；返回 stale、DENIED 或 ERROR 时改用 Read/Grep。\n"
+                if self.config.codegraph_enabled
+                else ""
+            )
+            system_prompt = f"""\
 你是 Data Cleaning Agent 的一次性 pipeline consolidation 上下文。
 只整理本次实验已晋升脚本，不创建新业务规则，不读取隐藏结果。
 
@@ -2342,25 +2584,46 @@ workspace: {context.workspace_dir}
 2. Write/Edit 只能写 workspace；ExecutePython 只能执行 workspace 内已存在的 .py 文件。
 3. 不得搜索项目根、experiments 总目录、active_bundle、validation_result 或 private reference。
 4. 最终必须生成 {context.workspace_dir / 'pipeline'}；是否可复现由宿主机器验收。
-""",
-                model=model,
-                formatter=formatter,
-                toolkit=toolkit,
-                memory=create_reference_memory(
-                    {
-                        "phase_name": "pipeline_consolidation",
-                        "phase_root": str(phase_root),
-                        "run_id": run_id,
-                        "run_root": str(consolidation_root / "agent_runs"),
-                    },
-                    model,
-                ),
-                compression_config=create_reference_compression_config(model),
-                parallel_tool_calls=False,
-                max_iters=self.config.max_iters,
-                print_hint_msg=False,
-            )
-            response = asyncio.run(agent(make_user_msg(name="user", content=task_text)))
+{codegraph_guidance}
+"""
+
+            async def run_agent():
+                codegraph_runtime: CodeGraphRuntime | None = None
+                agent = None
+                workspace = None
+                try:
+                    if self.config.codegraph_enabled:
+                        codegraph_runtime = await open_codegraph_runtime(
+                            project_root=Path(__file__).resolve().parent.parent,
+                            allowed_roots=code_read_roots,
+                            usage_path=phase_root / "codegraph_usage.jsonl",
+                            audit_path=context.workspace_dir / "tool_audit.jsonl",
+                            attempt=f"consolidation_round_{best_round:04d}",
+                        )
+                    toolkit, _ = create_reference_toolkit(
+                        context,
+                        codegraph_tool=(
+                            codegraph_runtime.tool if codegraph_runtime is not None else None
+                        ),
+                    )
+                    _remove_fixed_reference_incompatible_tools(toolkit)
+                    agent, workspace = await create_reference_agent(
+                        name="Data Cleaning Agent",
+                        system_prompt=system_prompt,
+                        toolkit=toolkit,
+                        workspace_dir=context.workspace_dir,
+                        max_iters=self.config.max_iters,
+                    )
+                    return await stream_reference_agent_reply(
+                        agent,
+                        make_user_msg(name="user", content=task_text),
+                    )
+                finally:
+                    await close_reference_agent(agent, workspace)
+                    if codegraph_runtime is not None:
+                        await codegraph_runtime.close()
+
+            response = asyncio.run(run_agent())
             (phase_root / "agent_response.txt").write_text(
                 format_message_content(getattr(response, "content", "")).strip(),
                 encoding="utf-8",
@@ -2397,12 +2660,34 @@ workspace: {context.workspace_dir}
             "checkpoint_count": len(state.get("checkpoints", [])),
             "latest_checkpoint": latest_checkpoint,
             "test_status": latest_checkpoint.get("test_status", ""),
+            "codegraph_usage": {
+                "enabled": self.config.codegraph_enabled,
+                **summarize_codegraph_usage(self.experiment_dir),
+            },
         }
 
 
-def _data_cleaning_agent_system_prompt(skill_manifest_text: str, context: EngineerToolContext) -> str:
+def _data_cleaning_agent_system_prompt(
+    skill_manifest_text: str,
+    context: EngineerToolContext,
+    *,
+    pipeline_skills_enabled: bool = True,
+    codegraph_enabled: bool = False,
+) -> str:
     read_roots = "\n".join(f"- {path}" for path in context.read_roots)
     reports = "\n".join(f"- {name}: {path}" for name, path in sorted(context.required_report_paths.items()))
+    codegraph_guidance = (
+        """
+# CodeGraph
+
+理解已索引的授权项目源码和调用链时，优先使用 CodeGraphExplore。
+数据文件、配置、文档和当前 attempt workspace 继续使用现有 Read/Grep/InspectDataFile。
+CodeGraphExplore 返回 stale、DENIED 或 ERROR 时，使用 Read/Grep 检查对应授权文件。
+不得用 CodeGraph 寻找历史实验、隐藏答案、其他项目或被关闭的 Skill。
+"""
+        if codegraph_enabled
+        else ""
+    )
     return f"""\
 你是 Data Cleaning Agent，一个 Codex-style 本地代码智能体。
 
@@ -2421,6 +2706,7 @@ Prompt 只负责指导；宿主会隔离重放 Pipeline，并逐文件比较业�
 - CompareArtifact：只用于公开 train reference 回归对比。
 - ValidateResultPackage：只做 validation 结果包自洽检查，不读取 hidden reference。
 - PublishDirectoryArtifact：把 step OUTPUT_DIR 中的 result_package 目录发布到 workspace。
+{codegraph_guidance}
 
 # 工作区
 
@@ -2440,7 +2726,7 @@ Prompt 只负责指导；宿主会隔离重放 Pipeline，并逐文件比较业�
 1. 必须先读取 reference_contract，并用 Glob/InspectDataFile 探索 train/reference 目录；package_manifest 如存在只能作为可选结构索引，不是必须产物。
 2. 分析 raw 到 reference 的文件、字段、key、join、filter、derive、clean 关系。
 3. 如果 train/reference 中出现 `preproc_chart_icu.csv`、`preproc_med_icu.csv`、`preproc_out_icu.csv`、`preproc_proc_icu.csv`、`preproc_diag_icu.csv`、cohort 明细文件，直接学习并生成同构目录包；不要强行合并成宽表。
-4. 如果现有 pipeline skill 或其接口不匹配 train/reference 形态，允许在当前 experiment 内创建 adapter/fork；不要新增全局 skill。
+4. {"如果现有 pipeline skill 或其接口不匹配 train/reference 形态，允许在当前 experiment 内创建 adapter/fork；不要新增全局 skill。" if pipeline_skills_enabled else "本次是无 Pipeline Skill 消融运行：不得读取、调用或依赖 pipeline_* Skill；只可根据 train/raw、train/reference 和通用代码自行推导规则。"}
 5. Round 1 创建完整 Pipeline；后续 Round 继承上一正式 best Pipeline，只修改反馈涉及模块。不得以 build_package.py、standalone 脚本或手工 CSV 替代 canonical Pipeline。
 6. 原始 skills/、lib/、workflow/ 和 teacher pipeline 始终只读；需要实现时只在 workspace 写脚本或 adapter。
 7. 不要调用 execute_current_extraction_task；不要调用 finalize_result_package；不要把固定 workflow 当兜底。
@@ -2455,17 +2741,9 @@ Prompt 只负责指导；宿主会隔离重放 Pipeline，并逐文件比较业�
 
 
 def _remove_fixed_reference_incompatible_tools(toolkit) -> None:
-    for name in (
-        "execute_current_extraction_task",
-        "finalize_result_package",
-        "record_current_extraction_task",
-        "record_extraction_task",
-        "get_extraction_progress",
-        "initialize_skill_usage_plan",
-        "plan_skill_usage",
-        "revise_skill_usage",
-    ):
-        toolkit.tools.pop(name, None)
+    # The parity Toolkit is constructed from an explicit allowlist, so none of
+    # the fixed extraction workflow tools can be present.
+    return None
 
 
 def _append_runtime_event(phase_root: Path, payload: dict[str, Any]) -> None:
@@ -2509,7 +2787,7 @@ def _pipeline_skill_call_counts(phase_root: Path) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _write_pipeline_skill_usage_check(phase_root: Path) -> dict[str, Any]:
+def _write_pipeline_skill_usage_check(phase_root: Path, *, required: bool = True) -> dict[str, Any]:
     counts = _pipeline_skill_call_counts(phase_root)
     prompt_path = phase_root / "agentscope_skill_prompt.txt"
     prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.is_file() else ""
@@ -2519,7 +2797,8 @@ def _write_pipeline_skill_usage_check(phase_root: Path) -> dict[str, Any]:
     has_any_exposure = bool(counts) or has_agent_skills
     payload = {
         "schema_version": 1,
-        "status": "SUCCESS" if has_any_exposure else "NEEDS_REPAIR",
+        "status": "SUCCESS" if has_any_exposure or not required else "NEEDS_REPAIR",
+        "pipeline_skills_required": required,
         "has_pipeline_skill_exposure": has_any_exposure,
         "has_pipeline_skill_calls": bool(counts),
         "pipeline_skill_call_counts": counts,
@@ -2529,7 +2808,7 @@ def _write_pipeline_skill_usage_check(phase_root: Path) -> dict[str, Any]:
         "missing_agentscope_agent_skill_names": [name for name in expected if name not in registered_agent_skills],
         "required_prefix": "pipeline_",
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "issues": [] if has_any_exposure else ["No pipeline AgentScope skill or pipeline_* tool was exposed to Data Cleaning Agent"],
+        "issues": [] if has_any_exposure or not required else ["No pipeline AgentScope skill or pipeline_* tool was exposed to Data Cleaning Agent"],
     }
     _write_json(phase_root / "pipeline_skill_usage_check.json", payload)
     return payload

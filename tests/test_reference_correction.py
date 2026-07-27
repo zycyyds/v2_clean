@@ -363,6 +363,21 @@ def test_correction_cli_exposes_prepare_and_single_run_workflows() -> None:
     assert prepare.train_count == 10
     assert run.workflow == "reference-guided-correct"
     assert run.resume is False
+    assert run.disable_error_view_skills is False
+
+    without_error_views = parse_args(
+        [
+            "--workflow",
+            "reference-guided-correct",
+            "--dataset-split",
+            "/tmp/dataset",
+            "--experiment-dir",
+            "/tmp/experiment-disabled",
+            "--disable-error-view-skills",
+            "task",
+        ]
+    )
+    assert without_error_views.disable_error_view_skills is True
 
     resumed = parse_args(
         [
@@ -377,6 +392,20 @@ def test_correction_cli_exposes_prepare_and_single_run_workflows() -> None:
         ]
     )
     assert resumed.resume is True
+
+    with_codegraph = parse_args(
+        [
+            "--workflow",
+            "reference-guided-correct",
+            "--dataset-split",
+            "/tmp/dataset",
+            "--experiment-dir",
+            "/tmp/experiment-codegraph",
+            "--enable-codegraph",
+            "task",
+        ]
+    )
+    assert with_codegraph.enable_codegraph is True
 
 
 def test_correction_agent_contract_and_prompt_hide_private_truth_and_taxonomy(
@@ -418,6 +447,110 @@ def test_correction_agent_contract_and_prompt_hide_private_truth_and_taxonomy(
     assert str(dataset / "train/keys.csv") not in roots
     assert str(dataset / "correction/keys.csv") not in roots
     assert str(dataset / "host_private") not in roots
+    assert "四类数据质量 Skill 是非穷尽先验" in prompt
+    assert "允许发现这些 Skill 未覆盖的新异常" in prompt
+
+
+def test_correction_skill_identity_and_read_roots_follow_ablation(tmp_path: Path) -> None:
+    from agent.reference_runtime import (
+        DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS,
+        DATA_CLEANING_AGENT_PIPELINE_SKILLS,
+        V2_DIR,
+    )
+    from workflow.correction_dataset import build_correction_dataset
+    from agent_tools.context import EngineerToolContext, EngineerToolPermissionError
+    from workflow.reference_correction import ReferenceCorrectionConfig, ReferenceCorrectionWorkflow
+
+    archive = _build_synthetic_correction_archive(tmp_path / "source.zip")
+    dataset = tmp_path / "dataset"
+    build_correction_dataset(archive, dataset, train_count=2)
+
+    enabled = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=tmp_path / "enabled",
+            task_text="discover and correct",
+            max_iters=20,
+        )
+    )
+    disabled = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=tmp_path / "disabled",
+            task_text="discover and correct",
+            max_iters=20,
+            error_view_skills_enabled=False,
+        )
+    )
+    codegraph = ReferenceCorrectionWorkflow(
+        ReferenceCorrectionConfig(
+            dataset_split=dataset,
+            experiment_dir=tmp_path / "codegraph",
+            task_text="discover and correct",
+            max_iters=20,
+            codegraph_enabled=True,
+        )
+    )
+
+    enabled_identity = enabled._manifest_identity()
+    disabled_identity = disabled._manifest_identity()
+    codegraph_identity = codegraph._manifest_identity()
+    enabled_roots = {str(Path(path).resolve()) for path in enabled._agent_read_roots()}
+    disabled_roots = {str(Path(path).resolve()) for path in disabled._agent_read_roots()}
+    error_roots = {
+        str((V2_DIR / "skills" / name).resolve())
+        for name in DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS
+    }
+    pipeline_roots = {
+        str((V2_DIR / "skills" / name).resolve())
+        for name in DATA_CLEANING_AGENT_PIPELINE_SKILLS
+    }
+
+    assert enabled_identity["error_view_skills_enabled"] is True
+    assert enabled_identity["error_view_skill_names"] == sorted(
+        DATA_CLEANING_AGENT_ERROR_VIEW_SKILLS
+    )
+    assert len(enabled_identity["error_view_skill_bundle_sha256"]) == 64
+    assert disabled_identity["error_view_skills_enabled"] is False
+    assert disabled_identity["error_view_skill_names"] == []
+    assert disabled_identity["error_view_skill_bundle_sha256"] == ""
+    assert codegraph_identity["codegraph_enabled"] is True
+    assert codegraph_identity["codegraph_version"] == "1.5.0"
+    assert codegraph_identity["codegraph_tool"] == "codegraph_explore"
+    assert codegraph_identity["codegraph_scope_version"] == "reference_code_roots_v1"
+    assert len(codegraph_identity["codegraph_source_bundle_sha256"]) == 64
+    assert pipeline_roots <= enabled_roots
+    assert pipeline_roots <= disabled_roots
+    assert error_roots <= enabled_roots
+    assert error_roots.isdisjoint(disabled_roots)
+    assert str((V2_DIR / "skills").resolve()) not in enabled_roots
+    assert str((V2_DIR / "skills").resolve()) not in disabled_roots
+    disabled_prompt = disabled._task_text(tmp_path / "disabled_phase")
+    assert "四类数据质量" not in disabled_prompt
+    assert "Error View" not in disabled_prompt
+    assert "只能依据成对示例、当前数据和通用工具自主归纳纠错规则" in disabled_prompt
+
+    disabled_context = EngineerToolContext.from_task(
+        task_text=(
+            "correction ablation "
+            f"{V2_DIR} "
+            f"{V2_DIR / 'skills' / 'correction_intra_table_errors' / 'SKILL.md'}"
+        ),
+        engineer_phase_root=tmp_path / "disabled_phase",
+        additional_read_roots=disabled._agent_read_roots(),
+        denied_read_roots=disabled._agent_denied_read_roots(),
+        require_skill_plan=False,
+    )
+    assert str(V2_DIR.resolve()) not in {
+        str(Path(path).resolve()) for path in disabled_context.read_roots
+    }
+    with pytest.raises(EngineerToolPermissionError, match="outside authorized roots"):
+        disabled_context.resolve_read_path(
+            V2_DIR
+            / "skills"
+            / "correction_intra_table_errors"
+            / "SKILL.md"
+        )
 
 
 def test_correction_result_gate_requires_complete_matching_package(tmp_path: Path) -> None:
@@ -517,6 +650,19 @@ def test_correction_workflow_runs_one_agent_session_then_private_evaluation(
         calls.append("agent")
         package = experiment / "agent_output/result_package"
         shutil.copytree(dataset / "correction/reference_private", package)
+        (experiment / "skill_usage_report.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "SUCCESS",
+                    "exposed": {"pipeline": [], "error_view": []},
+                    "loaded": {"pipeline": [], "error_view": []},
+                    "not_loaded": {"pipeline": [], "error_view": []},
+                    "calls": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         return package
 
     monkeypatch.setattr(workflow, "_run_agent_session", fake_agent_session)
@@ -528,6 +674,7 @@ def test_correction_workflow_runs_one_agent_session_then_private_evaluation(
     assert report["metrics"]["exact_repair_recall"] == 1.0
     assert Path(report["result_package"]).is_dir()
     assert Path(report["evaluation_report"]).is_file()
+    assert Path(report["skill_usage_report"]).is_file()
 
 
 def test_correction_workflow_explicitly_resumes_failed_same_experiment(
