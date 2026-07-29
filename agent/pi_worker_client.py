@@ -21,8 +21,6 @@ class SandboxedWorkerConfig:
     skill_dirs: tuple[Path, ...]
     max_iters: int
     model_environment: dict[str, str]
-    tool_profile: str = "full"
-    runner_spec_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -83,7 +81,6 @@ def build_sandboxed_worker_launch(config: SandboxedWorkerConfig) -> WorkerLaunch
         "PYTHONPATH": str(project),
         "PI_HARNESS_SANDBOX": "1",
         **config.model_environment,
-        "V2_SKIP_LOCAL_MODEL_CONFIG": "1",
     }
     command = [
         "/usr/bin/sandbox-exec",
@@ -100,11 +97,6 @@ def build_sandboxed_worker_launch(config: SandboxedWorkerConfig) -> WorkerLaunch
     ]
     for skill_dir in config.skill_dirs:
         command.extend(["--skills-dir", str(skill_dir.resolve())])
-    command.extend(["--tool-profile", config.tool_profile])
-    for read_root in config.public_read_roots:
-        command.extend(["--read-root", str(read_root.resolve())])
-    if config.runner_spec_path is not None:
-        command.extend(["--runner-spec", str(config.runner_spec_path.resolve())])
     return WorkerLaunch(
         command=command,
         cwd=workdir,

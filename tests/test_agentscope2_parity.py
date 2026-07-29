@@ -68,8 +68,6 @@ def test_openai_model_rotates_to_next_key_after_rate_limit(monkeypatch) -> None:
     )
     model, _ = runtime.create_openai_model_and_formatter("react_planner", "fallback")
     seen_keys: list[str] = []
-    failovers: list[dict] = []
-    model.on_failover = failovers.append
 
     class FakeRateLimitError(Exception):
         status_code = 429
@@ -86,15 +84,6 @@ def test_openai_model_rotates_to_next_key_after_rate_limit(monkeypatch) -> None:
 
     assert response.content[0].text == "recovered"
     assert seen_keys == ["first-key", "second-key"]
-    assert failovers == [
-        {
-            "event": "api_key_failover",
-            "from_slot": 1,
-            "to_slot": 2,
-            "reason": "http_429",
-        },
-    ]
-    assert "key" not in json.dumps(failovers).replace("api_key_failover", "")
 
 
 def test_openai_model_accepts_worker_key_bundle_and_env_parameters(monkeypatch) -> None:

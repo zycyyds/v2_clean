@@ -64,9 +64,8 @@ conda run -n py3102 env PYTHONPATH=. \
   --validation-raw /absolute/path/to/validation/raw \
   --validation-gold /absolute/path/to/validation/reference_private \
   --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --dataset-manifest /absolute/path/to/dataset-split/split_manifest.json \
   --prompt-file /absolute/path/to/prompt.txt \
-  --max-rounds 5 \
+  --max-rounds 20 \
   --patience 3 \
   --target-score 1.0 \
   --max-iters 10000
@@ -107,21 +106,7 @@ Pi式Validation Harness使用一个持续Agent：
 - `round`是一次Agent自然结束后进行的隐藏评分；不同round共享上下文和压缩历史。
 - `--max-iters`在每个round重新获得完整预算，不限制宿主round数量。
 - 分数严格提升至少`1e-6`才晋升；未提升时恢复best文件，但保留失败经验。
-- `run_manifest.json`记录Git提交与dirty diff哈希、Prompt/数据/评估manifest哈希、split keys哈希、模型公开配置、API槽位数量、Skill状态和评分器版本，不记录Key值或指纹。
-- 每轮私有报告记录Agent与评分耗时、token、模型/ReAct/工具调用、工具错误、API failover、压缩和流事件/block ID摘要。
-
-Validation完成后，独立Test Harness冻结`reproducible_snapshot`并优先直接重放。只有运行声明失败时才创建全新的Test Declaration Agent；该Agent没有Bash和Skill，只能读取冻结Pipeline与公开数据，并且后端只允许写`runner_spec.json`。声明Agent关闭后，宿主才读取Test Gold并评分一次，分数不会返回Agent。
-
-```bash
-conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_test_harness_cli \
-  --validation-experiment /absolute/path/to/validation-experiment \
-  --test-experiment /absolute/path/to/new-empty-test-experiment \
-  --test-raw /absolute/path/to/test/raw \
-  --test-gold /absolute/path/to/test/reference_private \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --max-declaration-repairs 3
-```
+- 该Pi式Harness第一阶段只实现Validation，尚未接入独立Test Agent。
 
 原有`reference-guided-*`命令仍保留旧parity架构：宿主管理attempt，每个attempt创建全新的Agent和AgentState，冻结best后进入原有Test流程。两条链路互不共享上下文或实验目录。
 
@@ -209,78 +194,6 @@ python main.py \
   --raw-mode copy \
   --decompress-gzip
 ```
-
-### 1.1 从父划分生成嵌套 10:20:5000 数据集
-
-该工具保留父数据集的Train 10和Test 5000，按父Validation `keys.csv`的既有顺序选择前20项。三份split均为物理文件；不会创建符号链接，也不会修改父目录。Validation Raw和17个private Reference文件会重新按20个stay物化。
-
-```bash
-conda run -n py3102 env PYTHONPATH=. \
-  python -m reproduction.nested_validation_split \
-  --parent-split /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_reproduced_random_10train_4000val_5000test_seed_1759733077 \
-  --output-root /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077 \
-  --validation-count 20 \
-  --parent-seed 1759733077
-```
-
-输出包含`split_manifest.json`、`split_validation_report.json`及三个`split_record.json`。已有输出目录只有在身份完全一致时才复用；count、父目录或seed不同会被拒绝。
-
-### 1.2 运行无Skill的10:20 Validation
-
-先在普通终端验证真实Worker能够在macOS沙盒中导入，且沙盒不会授权
-`agent_tools/`、`workflow/`或private Gold：
-
-```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
-conda run -n py3102 env PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 \
-  pytest -p no:cacheprovider -q \
-  tests/test_pi_worker_client.py::test_real_project_worker_import_respects_runtime_code_boundary
-```
-
-看到`1 passed`后再启动真实实验。失败实验目录不得复用；下面的`v2`是修复
-Worker导入边界后的全新实验身份。
-
-```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
-conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_harness_cli \
-  --experiment-dir /Users/mac/PycharmProjects/pi_harness_runs/mimic_10train_20val_pi_harness_seed666_v4 \
-  --train-raw /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/train/raw \
-  --train-reference /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/train/reference \
-  --validation-raw /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/validation/raw \
-  --validation-gold /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/validation/reference_private \
-  --dataset-manifest /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/split_manifest.json \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --prompt-file prompts/pi_harness_mimic_smoke.md \
-  --max-rounds 5 \
-  --patience 3 \
-  --target-score 1.0 \
-  --max-iters 10000
-```
-
-不传`--skills-dir`即为无Skill实验；Pi式Harness当前也不注册CodeGraph。
-
-### 1.3 冻结后运行独立5000例Test
-
-只有上一条Validation实验最终状态为`SUCCESS_REPRODUCIBLE`时才运行：
-
-```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
-conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_test_harness_cli \
-  --validation-experiment /Users/mac/PycharmProjects/pi_harness_runs/mimic_10train_20val_pi_harness_seed666_v4 \
-  --test-experiment /Users/mac/PycharmProjects/pi_harness_runs/mimic_10train_20val_5000test_seed666_v1 \
-  --test-raw /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/test/raw \
-  --test-gold /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/test/reference_private \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --max-declaration-repairs 3 \
-  --max-iters 10000
-```
-
-Test Harness只评分一次且不会把分数反馈给任何Agent。直接重放成功时不会创建Test Agent；只有运行声明失败时才启动声明修复。
 
 ### 2. Validation Loop 与自动 Test
 
@@ -466,4 +379,4 @@ conda run -n py3102 env PYTHONPYCACHEPREFIX=/private/tmp/v2_clean_pycache \
   python -m compileall -q main.py agent agent_tools workflow skills lib
 ```
 
-涉及`macOS sandbox-exec`的测试必须在普通终端运行；Codex自身的嵌套沙盒会返回`Operation not permitted`。以当前checkout执行上述完整命令的结果为准。
+当前基线测试：`160 passed`。

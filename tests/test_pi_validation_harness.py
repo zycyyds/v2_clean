@@ -57,21 +57,7 @@ class FakeWorker:
             ),
             encoding="utf-8",
         )
-        return {
-            "status": "SUCCESS",
-            "model_calls": 2,
-            "input_tokens": 100 * round_index,
-            "output_tokens": 10 * round_index,
-            "react_iterations": 3,
-            "duration_seconds": 0.25,
-            "tool_calls": 4,
-            "tool_errors": 1,
-            "api_failovers": 0,
-            "compactions": 0,
-            "stream_event_counts": {"TextBlockDeltaEvent": 2},
-            "text_block_ids": [f"answer-{round_index}"],
-            "thinking_block_ids": [f"thinking-{round_index}"],
-        }
+        return {"status": "SUCCESS"}
 
     async def clear_file_cache(self) -> None:
         self.events.append("clear_file_cache")
@@ -133,19 +119,12 @@ def _config(tmp_path: Path) -> PiValidationHarnessConfig:
     validation_gold = tmp_path / "data/validation/gold"
     for path in (train_raw, train_reference, validation_raw, validation_gold):
         path.mkdir(parents=True)
-    (train_raw.parent / "keys.csv").write_text("stay_id\n1\n", encoding="utf-8")
-    (validation_raw.parent / "keys.csv").write_text("stay_id\n2\n", encoding="utf-8")
     (validation_gold / "data.csv").write_text("id,value\n1,gold\n", encoding="utf-8")
     manifest = tmp_path / "evaluation_manifest.json"
     manifest.write_text(
         json.dumps(
             {"schema_version": 1, "files": {"data.csv": {"key_columns": ["id"]}}},
         ),
-        encoding="utf-8",
-    )
-    dataset_manifest = tmp_path / "split_manifest.json"
-    dataset_manifest.write_text(
-        json.dumps({"schema_version": 1, "counts": {"train": 1, "validation": 1}}),
         encoding="utf-8",
     )
     return PiValidationHarnessConfig(
@@ -156,7 +135,6 @@ def _config(tmp_path: Path) -> PiValidationHarnessConfig:
         validation_raw=validation_raw,
         validation_gold=validation_gold,
         evaluation_manifest=manifest,
-        dataset_manifest=dataset_manifest,
         max_rounds=2,
         patience=2,
         target_score=1.0,
@@ -199,60 +177,6 @@ def test_harness_reuses_worker_and_rolls_back_before_feedback(tmp_path: Path) ->
     assert worker.events == ["start", "turn", "turn", "clear_file_cache", "turn"]
     assert worker.closed
     assert (config.experiment_dir / "agent_workdir/scripts/build.py").read_text() == "# round 3\n"
-
-
-def test_harness_records_immutable_identity_and_round_execution_metrics(tmp_path: Path) -> None:
-    config = replace(_config(tmp_path), max_rounds=1)
-    worker = FakeWorker(config.experiment_dir / "agent_workdir")
-
-    async def replay(source: Path) -> ReplayExecution:
-        return ReplayExecution(
-            status="SUCCESS",
-            returncode=0,
-            stdout="",
-            stderr="",
-            duration_seconds=0.1,
-            result_root=source / "result_package",
-            score_report=_report(0.7),
-        )
-
-    harness = PiValidationHarness(
-        config,
-        worker=worker,
-        scorer=lambda *_args, **_kwargs: _report(0.7),
-        replay_runner=replay,
-        sandbox_probe=lambda *_args, **_kwargs: None,
-    )
-    asyncio.run(harness.run("identity prompt"))
-
-    manifest = json.loads((config.experiment_dir / "host/run_manifest.json").read_text())
-    assert manifest["dataset_manifest_sha256"]
-    assert manifest["evaluation_manifest_sha256"]
-    assert manifest["prompt_sha256"]
-    assert manifest["keys_sha256"]["validation"]
-    assert manifest["git"]["commit"]
-    assert "dirty_diff_sha256" in manifest["git"]
-    assert manifest["model"]["api_key_count"] >= 1
-    assert "OPENAI_API_KEYS_JSON" not in json.dumps(manifest)
-    assert manifest["skills"]["enabled"] is False
-    assert manifest["scorer_version"] == "equal_file_row_aligned_v1"
-
-    private_round = json.loads(
-        (config.experiment_dir / "host/rounds/round_0001.json").read_text()
-    )
-    execution = private_round["execution"]
-    assert execution["agent"]["model_calls"] == 2
-    assert execution["agent"]["input_tokens"] == 100
-    assert execution["agent"]["tool_calls"] == 4
-    assert execution["agent"]["tool_errors"] == 1
-    assert execution["agent"]["stream_event_counts"] == {"TextBlockDeltaEvent": 2}
-    assert execution["agent_wall_seconds"] >= 0
-    assert execution["scoring_wall_seconds"] >= 0
-
-    public_round = json.loads(
-        (config.experiment_dir / "host/public_feedback/round_0001.json").read_text()
-    )
-    assert "execution" not in public_round
 
 
 def test_harness_emits_low_frequency_phase_updates(tmp_path: Path) -> None:
@@ -383,11 +307,6 @@ def test_replay_failure_returns_to_same_agent_until_reproducible(tmp_path: Path)
     assert len(worker.prompts) == 2
     assert "independent replay failed" in worker.prompts[1].lower()
     assert worker.events.count("start") == 1
-    repair_metrics = json.loads(
-        (config.experiment_dir / "host/replay/repair_metrics_0001.json").read_text()
-    )
-    assert repair_metrics["agent"]["model_calls"] == 2
-    assert repair_metrics["replay"]["status"] == "SUCCESS"
 
 
 def test_invalid_submission_returns_to_same_worker_for_correction(tmp_path: Path) -> None:

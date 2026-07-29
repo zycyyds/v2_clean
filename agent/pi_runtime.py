@@ -42,7 +42,6 @@ from agentscope.workspace import LocalWorkspace
 from pydantic import BaseModel, Field
 
 from lib.agent_runtime import create_openai_model_and_formatter
-from lib.restricted_local_backend import RestrictedLocalBackend
 
 
 AGENTSCOPE_VERSION = "2.0.4.post1"
@@ -137,16 +136,6 @@ The user may declare allowed and forbidden paths in the task prompt. Obey those
 boundaries. Do not inspect hidden references, private evaluation data, historical
 experiments, credentials, or unrelated projects unless the user explicitly authorizes
 them. These are behavioral instructions; the local tools are not a security sandbox.
-"""
-
-
-PI_TEST_DECLARATION_SYSTEM_PROMPT = """\
-You are a Test Declaration Agent. Diagnose only how to invoke a frozen pipeline.
-You may inspect the frozen snapshot, public Test raw data, Train reference schema,
-and your work directory. You must write only runner_spec.json. Do not create or
-modify Python or shell scripts, do not generate result data, and do not attempt to
-change the frozen pipeline. You have no Bash tool. Hidden Test gold and scores are
-never available to you.
 """
 
 
@@ -352,9 +341,6 @@ class PiAgentConfig:
     workdir: str | Path
     max_iters: int = 10_000
     skill_dirs: tuple[str | Path, ...] = ()
-    tool_profile: str = "full"
-    read_roots: tuple[str | Path, ...] = ()
-    runner_spec_path: str | Path | None = None
 
     def normalized(self) -> "PiAgentConfig":
         workdir = Path(self.workdir).expanduser().resolve()
@@ -362,29 +348,16 @@ class PiAgentConfig:
             raise ValueError(f"workdir must be an existing directory: {workdir}")
         if self.max_iters < 1:
             raise ValueError("max_iters must be positive")
-        if self.tool_profile not in {"full", "test_declaration"}:
-            raise ValueError("tool_profile must be full or test_declaration")
         skill_dirs = tuple(
             Path(item).expanduser().resolve() for item in self.skill_dirs
         )
         missing = [str(item) for item in skill_dirs if not item.is_dir()]
         if missing:
             raise ValueError("skill directory does not exist: " + ", ".join(missing))
-        read_roots = tuple(Path(item).expanduser().resolve() for item in self.read_roots)
-        runner_spec = (
-            Path(self.runner_spec_path).expanduser().resolve()
-            if self.runner_spec_path is not None
-            else None
-        )
-        if self.tool_profile == "test_declaration" and runner_spec is None:
-            raise ValueError("test_declaration requires runner_spec_path")
         return PiAgentConfig(
             workdir=workdir,
             max_iters=self.max_iters,
             skill_dirs=skill_dirs,
-            tool_profile=self.tool_profile,
-            read_roots=read_roots,
-            runner_spec_path=runner_spec,
         )
 
 
@@ -416,13 +389,6 @@ class AgentTurnResult:
     output_tokens: int
     react_iterations: int
     duration_seconds: float
-    tool_calls: int
-    tool_errors: int
-    api_failovers: int
-    compactions: int
-    stream_event_counts: dict[str, int]
-    text_block_ids: tuple[str, ...]
-    thinking_block_ids: tuple[str, ...]
 
 
 def create_pi_context_config() -> ContextConfig:
@@ -460,40 +426,17 @@ def build_pi_toolkit(
     workdir: str | Path,
     *,
     skill_dirs: tuple[str | Path, ...] = (),
-    tool_profile: str = "full",
-    read_roots: tuple[str | Path, ...] = (),
-    runner_spec_path: str | Path | None = None,
 ) -> Toolkit:
     root = Path(workdir).expanduser().resolve()
-    if tool_profile == "test_declaration":
-        if runner_spec_path is None:
-            raise ValueError("test_declaration requires runner_spec_path")
-        backend = _RunnerSpecBackend(
-            read_roots=(*read_roots, root),
-            denied_read_roots=(),
-            write_roots=(root,),
-            cwd=root,
-            runner_spec_path=runner_spec_path,
-        )
-        tools = [
-            Read(backend=backend),
-            Glob(backend=backend),
-            Grep(backend=backend),
-            Write(backend=backend),
-            Edit(backend=backend),
-        ]
-    elif tool_profile == "full":
-        backend = LocalBackend()
-        tools = [
-            Read(backend=backend),
-            Write(backend=backend),
-            Edit(backend=backend),
-            Glob(backend=backend),
-            Grep(backend=backend),
-            Bash(cwd=str(root), backend=backend),
-        ]
-    else:
-        raise ValueError("tool_profile must be full or test_declaration")
+    backend = LocalBackend()
+    tools = [
+        Read(backend=backend),
+        Write(backend=backend),
+        Edit(backend=backend),
+        Glob(backend=backend),
+        Grep(backend=backend),
+        Bash(cwd=str(root), backend=backend),
+    ]
     loaders = [
         LocalSkillLoader(
             directory=str(Path(item).expanduser().resolve()),
@@ -505,19 +448,6 @@ def build_pi_toolkit(
         tools=tools,
         skills_or_loaders=loaders or None,
     )
-
-
-class _RunnerSpecBackend(RestrictedLocalBackend):
-    def __init__(self, *, runner_spec_path: str | Path, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.runner_spec_path = Path(runner_spec_path).expanduser().resolve()
-
-    def _require_write(self, value: str | os.PathLike[str]) -> Path:
-        path = super()._require_write(value)
-        # AgentScope Write issues `mkdir -p <parent>` before writing the file.
-        if path not in {self.runner_spec_path, self.runner_spec_path.parent}:
-            raise PermissionError(f"only runner_spec.json may be written: {path}")
-        return path
 
 
 class PiCompactionAgent(Agent):
@@ -628,7 +558,6 @@ class PiAgentRuntime:
         self._turns: list[dict[str, Any]] = []
         self._status = "INITIALIZED"
         self._closed = False
-        self._active_turn_counters: dict[str, int] | None = None
 
     async def initialize(self) -> None:
         if self.agent is not None:
@@ -665,20 +594,12 @@ class PiAgentRuntime:
         toolkit = build_pi_toolkit(
             self.config.workdir,
             skill_dirs=self.config.skill_dirs,
-            tool_profile=self.config.tool_profile,
-            read_roots=self.config.read_roots,
-            runner_spec_path=self.config.runner_spec_path,
         )
-        tool_schemas = await toolkit.get_tool_schemas()
         model = make_pi_model()
         scrub_model_secrets_from_environment()
         self.agent = PiCompactionAgent(
             name="Pi-style Coding Agent",
-            system_prompt=(
-                PI_TEST_DECLARATION_SYSTEM_PROMPT
-                if self.config.tool_profile == "test_declaration"
-                else PI_SYSTEM_PROMPT
-            ),
+            system_prompt=PI_SYSTEM_PROMPT,
             model=model,
             toolkit=toolkit,
             state=AgentState(
@@ -698,8 +619,6 @@ class PiAgentRuntime:
             compression_policy=self.compression_policy,
         )
         self.agent.on_compaction = self._record_compaction
-        if hasattr(model, "on_failover"):
-            model.on_failover = self._record_model_failover
         self._started_at = datetime.now().isoformat(timespec="seconds")
         self._status = "READY"
         _atomic_write_json(
@@ -717,8 +636,7 @@ class PiAgentRuntime:
                 },
                 "max_iters": self.config.max_iters,
                 "skill_dirs": [str(item) for item in self.config.skill_dirs],
-                "tools": [schema["function"]["name"] for schema in tool_schemas],
-                "tool_profile": self.config.tool_profile,
+                "tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
                 "permission_mode": "BYPASS_PROMPT_CONSTRAINT_ONLY",
                 "compression": asdict(self.compression_policy),
             },
@@ -730,8 +648,6 @@ class PiAgentRuntime:
             return
         with (self.run_dir / "tool_audit.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-        if event.get("event") == "compression_start" and self._active_turn_counters is not None:
-            self._active_turn_counters["compactions"] += 1
         if self._stream is not None:
             if event["event"] == "compression_start":
                 self._line(
@@ -740,18 +656,6 @@ class PiAgentRuntime:
                 )
             else:
                 self._line("[Compression End]")
-
-    def _record_model_failover(self, event: dict[str, Any]) -> None:
-        if self.run_dir is None:
-            return
-        with (self.run_dir / "tool_audit.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-        if self._active_turn_counters is not None:
-            self._active_turn_counters["api_failovers"] += 1
-        self._line(
-            f"[API Failover] slot={event['from_slot']}->{event['to_slot']} "
-            f"reason={event['reason']}",
-        )
 
     def _record_retry(self, event: dict[str, Any]) -> None:
         if self.run_dir is None:
@@ -775,11 +679,6 @@ class PiAgentRuntime:
         model_calls = 0
         input_tokens = 0
         output_tokens = 0
-        counters = {"tool_calls": 0, "tool_errors": 0, "api_failovers": 0, "compactions": 0}
-        self._active_turn_counters = counters
-        stream_event_counts: dict[str, int] = {}
-        text_block_ids: list[str] = []
-        thinking_block_ids: list[str] = []
         text_blocks: dict[str, str] = {}
         text_order: list[str] = []
         pending_tools: dict[str, dict[str, Any]] = {}
@@ -790,8 +689,6 @@ class PiAgentRuntime:
             async for event in self.agent.reply_stream(
                 UserMsg(name="user", content=prompt),
             ):
-                event_name = type(event).__name__
-                stream_event_counts[event_name] = stream_event_counts.get(event_name, 0) + 1
                 if isinstance(event, ReplyStartEvent):
                     self._line(f"[Reply Start] {event.name}")
                 elif isinstance(event, ModelCallStartEvent):
@@ -806,7 +703,6 @@ class PiAgentRuntime:
                         f"reason={_event_value(event.finished_reason)}",
                     )
                 elif isinstance(event, ToolCallStartEvent):
-                    counters["tool_calls"] += 1
                     self._line(f"[Tool Call] {event.tool_call_name}")
                     pending_tools[event.tool_call_id] = {
                         "tool_call_id": event.tool_call_id,
@@ -833,8 +729,6 @@ class PiAgentRuntime:
                 elif isinstance(event, ToolResultEndEvent):
                     self._line()
                     result_state = _event_value(event.state)
-                    if result_state.lower() == "error":
-                        counters["tool_errors"] += 1
                     self._line(f"[Tool Result End] {result_state}")
                     pending = pending_tools.pop(event.tool_call_id, None)
                     if pending is not None:
@@ -846,8 +740,6 @@ class PiAgentRuntime:
                         )
                         self._append_tool_audit(pending)
                 elif isinstance(event, TextBlockDeltaEvent):
-                    if event.block_id not in text_block_ids:
-                        text_block_ids.append(event.block_id)
                     if event.block_id not in text_blocks:
                         text_blocks[event.block_id] = ""
                         text_order.append(event.block_id)
@@ -855,8 +747,6 @@ class PiAgentRuntime:
                     self._stream.write(event.delta)
                     self._stream.flush()
                 elif isinstance(event, ThinkingBlockDeltaEvent):
-                    if event.block_id not in thinking_block_ids:
-                        thinking_block_ids.append(event.block_id)
                     self._stream.write(event.delta)
                     self._stream.flush()
                 elif isinstance(event, ExceedMaxItersEvent):
@@ -901,18 +791,10 @@ class PiAgentRuntime:
                 output_tokens=output_tokens,
                 react_iterations=int(self.agent.state.cur_iter or 0),
                 duration_seconds=round(time.monotonic() - started, 6),
-                tool_calls=counters["tool_calls"],
-                tool_errors=counters["tool_errors"],
-                api_failovers=counters["api_failovers"],
-                compactions=counters["compactions"],
-                stream_event_counts=stream_event_counts,
-                text_block_ids=tuple(text_block_ids),
-                thinking_block_ids=tuple(thinking_block_ids),
             )
             self._turns.append(asdict(result))
             self._status = status
             self._write_report()
-            self._active_turn_counters = None
         return result
 
     def _latest_text(self) -> str:

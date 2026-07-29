@@ -19,7 +19,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--validation-raw", required=True)
     parser.add_argument("--validation-gold", required=True)
     parser.add_argument("--evaluation-manifest", required=True)
-    parser.add_argument("--dataset-manifest", required=True)
     parser.add_argument("--prompt-file", required=True)
     parser.add_argument("--max-rounds", type=int, default=20)
     parser.add_argument("--patience", type=int, default=3)
@@ -42,7 +41,6 @@ async def _run(args: argparse.Namespace) -> int:
             validation_raw=Path(args.validation_raw),
             validation_gold=Path(args.validation_gold),
             evaluation_manifest=Path(args.evaluation_manifest),
-            dataset_manifest=Path(args.dataset_manifest),
             max_rounds=args.max_rounds,
             patience=args.patience,
             target_score=args.target_score,

@@ -24,13 +24,6 @@ class _Turn:
     output_tokens: int = 3
     react_iterations: int = 4
     duration_seconds: float = 0.1
-    tool_calls: int = 0
-    tool_errors: int = 0
-    api_failovers: int = 0
-    compactions: int = 0
-    stream_event_counts: dict[str, int] | None = None
-    text_block_ids: tuple[str, ...] = ()
-    thinking_block_ids: tuple[str, ...] = ()
 
 
 class _FakeToolContext:

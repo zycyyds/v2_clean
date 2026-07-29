@@ -5,7 +5,6 @@ import stat
 from pathlib import Path
 from typing import Any
 
-
 from workflow.reference_evaluation import (
     IGNORED_PACKAGE_FILES,
     _compare_file,
@@ -16,7 +15,7 @@ from workflow.reference_evaluation import (
 )
 
 
-SCORER_VERSION = "equal_file_row_aligned_v1"
+SCORER_VERSION = "equal_weight_f1_v1"
 
 
 def load_evaluation_manifest(

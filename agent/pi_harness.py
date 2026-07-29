@@ -10,7 +10,6 @@ import re
 import shutil
 import signal
 import stat
-import subprocess
 import sys
 import tempfile
 import time
@@ -28,7 +27,6 @@ from agent.pi_worker_client import (
 )
 from lib.agent_runtime import build_worker_model_environment
 from workflow.pi_harness_evaluation import (
-    SCORER_VERSION,
     load_evaluation_manifest,
     public_feedback_from_equal_weight_report,
     score_equal_weight_reference_directory,
@@ -78,7 +76,6 @@ class PiValidationHarnessConfig:
     validation_raw: Path
     validation_gold: Path
     evaluation_manifest: Path
-    dataset_manifest: Path
     max_rounds: int = 20
     patience: int = 3
     target_score: float = 1.0
@@ -326,11 +323,9 @@ class PiValidationHarness:
         self._worker_launch: WorkerLaunch | None = None
         self._worker_log_handle: Any | None = None
         self._key_columns: dict[str, tuple[str, ...]] = {}
-        self._model_environment: dict[str, str] | None = None
-        self._round_executions: list[dict[str, Any]] = []
 
     async def run(self, prompt: str) -> PiHarnessResult:
-        self._prepare(prompt)
+        self._prepare()
         progress = HarnessProgress()
         repair_rounds = 0
         next_prompt = self._initial_prompt(prompt)
@@ -347,15 +342,11 @@ class PiValidationHarness:
                     f"round {progress.round_index + 1}/{self.config.max_rounds}: "
                     "Agent turn started",
                 )
-                agent_started = time.monotonic()
-                turn_result = await self.worker.run_turn(next_prompt)
-                agent_wall_seconds = round(time.monotonic() - agent_started, 6)
+                await self.worker.run_turn(next_prompt)
                 self._host_line(
                     f"round {progress.round_index + 1}: hidden scoring started",
                 )
-                scoring_started = time.monotonic()
                 report, submission_error = self._score_current()
-                scoring_wall_seconds = round(time.monotonic() - scoring_started, 6)
                 score = float((report.get("metrics") or {}).get("composite_score") or 0.0)
                 progress, decision = record_round_score(
                     progress,
@@ -401,13 +392,7 @@ class PiValidationHarness:
                         "The host restored the formal best files. Re-read files before editing; "
                         "do not assume your rejected filesystem changes still exist."
                     )
-                execution = {
-                    "agent_wall_seconds": agent_wall_seconds,
-                    "scoring_wall_seconds": scoring_wall_seconds,
-                    "agent": _turn_metrics(turn_result),
-                }
-                self._round_executions.append(execution)
-                self._record_round(progress.round_index, report, feedback, execution)
+                self._record_round(progress.round_index, report, feedback)
                 next_prompt = self._feedback_prompt(feedback)
 
             if not self.best_snapshot.is_dir():
@@ -426,32 +411,11 @@ class PiValidationHarness:
                     replay_feedback,
                 )
                 self._host_line(f"replay repair {repair_rounds}: Agent turn started")
-                agent_started = time.monotonic()
-                turn_result = await self.worker.run_turn(self._feedback_prompt(replay_feedback))
-                agent_wall_seconds = round(time.monotonic() - agent_started, 6)
-                scoring_started = time.monotonic()
+                await self.worker.run_turn(self._feedback_prompt(replay_feedback))
                 _, submission_error = self._score_current()
-                scoring_wall_seconds = round(time.monotonic() - scoring_started, 6)
                 if submission_error:
                     replay_feedback["submission_error"] = self._sanitize(submission_error)
                 last_replay = await self.replay_runner(self.agent_workdir)
-                execution = {
-                    "phase": "replay_repair",
-                    "agent_wall_seconds": agent_wall_seconds,
-                    "scoring_wall_seconds": scoring_wall_seconds,
-                    "agent": _turn_metrics(turn_result),
-                    "replay": {
-                        "status": last_replay.status,
-                        "returncode": last_replay.returncode,
-                        "duration_seconds": last_replay.duration_seconds,
-                        "score": last_replay.score,
-                    },
-                }
-                self._round_executions.append(execution)
-                self._atomic_json(
-                    self.host_dir / "replay" / f"repair_metrics_{repair_rounds:04d}.json",
-                    execution,
-                )
                 self._host_line(
                     f"replay repair {repair_rounds}: status={last_replay.status} "
                     f"score={last_replay.score:.6f}",
@@ -472,7 +436,7 @@ class PiValidationHarness:
                 best_snapshot=self.best_snapshot,
                 reproducible_snapshot=final_snapshot,
             )
-            self._atomic_json(self.host_dir / "run_report.json", self._run_report_payload(result))
+            self._atomic_json(self.host_dir / "run_report.json", _dataclass_payload(result))
             return result
         except asyncio.CancelledError:
             if hasattr(self.worker, "interrupt"):
@@ -498,7 +462,7 @@ class PiValidationHarness:
                 best_snapshot=self.best_snapshot,
                 reproducible_snapshot=self.best_snapshot,
             )
-            self._atomic_json(self.host_dir / "run_report.json", self._run_report_payload(result))
+            self._atomic_json(self.host_dir / "run_report.json", _dataclass_payload(result))
             return result
         finally:
             if self.worker is not None:
@@ -507,7 +471,7 @@ class PiValidationHarness:
                 self._worker_log_handle.close()
                 self._worker_log_handle = None
 
-    def _prepare(self, prompt: str = "") -> None:
+    def _prepare(self) -> None:
         if not self.experiment_dir.exists():
             self.experiment_dir.mkdir(parents=True)
         elif any(self.experiment_dir.iterdir()):
@@ -526,12 +490,6 @@ class PiValidationHarness:
             raise ValueError("target_score must be finite and between 0 and 1")
         if not math.isfinite(self.config.replay_timeout_seconds) or self.config.replay_timeout_seconds <= 0:
             raise ValueError("replay_timeout_seconds must be positive and finite")
-        for path, label in (
-            (self.config.evaluation_manifest, "evaluation manifest"),
-            (self.config.dataset_manifest, "dataset manifest"),
-        ):
-            if not path.expanduser().resolve().is_file():
-                raise ValueError(f"{label} does not exist: {path}")
         self.agent_workdir.mkdir()
         (self.host_dir / "rounds").mkdir(parents=True)
         (self.host_dir / "public_feedback").mkdir(parents=True)
@@ -540,35 +498,16 @@ class PiValidationHarness:
             self.config.evaluation_manifest,
             self.config.validation_gold,
         )
-        self._model_environment = build_worker_model_environment("react_planner", "MiniMax-M3")
-        model_identity = _public_model_identity(self._model_environment)
-        git_identity = _git_identity(self.config.project_root)
         self._atomic_json(
             self.host_dir / "run_manifest.json",
             {
-                "schema_version": 2,
+                "schema_version": 1,
                 "project_root": str(self.config.project_root.resolve()),
                 "train_raw": str(self.config.train_raw.resolve()),
                 "train_reference": str(self.config.train_reference.resolve()),
                 "validation_raw": str(self.config.validation_raw.resolve()),
                 "validation_gold": str(self.config.validation_gold.resolve()),
                 "evaluation_manifest": str(self.config.evaluation_manifest.resolve()),
-                "dataset_manifest": str(self.config.dataset_manifest.resolve()),
-                "dataset_manifest_sha256": _file_sha256(self.config.dataset_manifest),
-                "evaluation_manifest_sha256": _file_sha256(self.config.evaluation_manifest),
-                "prompt_sha256": _text_sha256(prompt),
-                "keys_sha256": {
-                    "train": _file_sha256(self.config.train_raw.resolve().parent / "keys.csv"),
-                    "validation": _file_sha256(self.config.validation_raw.resolve().parent / "keys.csv"),
-                },
-                "git": git_identity,
-                "model": model_identity,
-                "skills": {
-                    "enabled": bool(self.config.skill_dirs),
-                    "directories": [str(path.resolve()) for path in self.config.skill_dirs],
-                    "bundle_sha256": _directory_bundle_sha256(self.config.skill_dirs),
-                },
-                "scorer_version": SCORER_VERSION,
                 "max_rounds": self.config.max_rounds,
                 "patience": self.config.patience,
                 "target_score": self.config.target_score,
@@ -577,9 +516,7 @@ class PiValidationHarness:
         )
 
     def _create_worker(self) -> tuple[JsonlWorkerClient, WorkerLaunch]:
-        model_environment = self._model_environment or build_worker_model_environment(
-            "react_planner", "MiniMax-M3"
-        )
+        model_environment = build_worker_model_environment("react_planner", "MiniMax-M3")
         launch = build_sandboxed_worker_launch(
             SandboxedWorkerConfig(
                 project_root=self.config.project_root,
@@ -639,39 +576,10 @@ class PiValidationHarness:
         round_index: int,
         private_report: dict[str, Any],
         public_feedback: dict[str, Any],
-        execution: dict[str, Any],
     ) -> None:
         name = f"round_{round_index:04d}.json"
-        self._atomic_json(
-            self.host_dir / "rounds" / name,
-            {**private_report, "execution": execution},
-        )
+        self._atomic_json(self.host_dir / "rounds" / name, private_report)
         self._atomic_json(self.host_dir / "public_feedback" / name, public_feedback)
-
-    def _run_report_payload(self, result: PiHarnessResult) -> dict[str, Any]:
-        usage_fields = (
-            "model_calls",
-            "input_tokens",
-            "output_tokens",
-            "react_iterations",
-            "tool_calls",
-            "tool_errors",
-            "api_failovers",
-            "compactions",
-        )
-        totals = {
-            field: sum(int(item.get("agent", {}).get(field) or 0) for item in self._round_executions)
-            for field in usage_fields
-        }
-        totals["agent_wall_seconds"] = round(
-            sum(float(item.get("agent_wall_seconds") or 0.0) for item in self._round_executions),
-            6,
-        )
-        totals["scoring_wall_seconds"] = round(
-            sum(float(item.get("scoring_wall_seconds") or 0.0) for item in self._round_executions),
-            6,
-        )
-        return {**_dataclass_payload(result), "validation_usage": totals}
 
     def _initial_prompt(self, prompt: str) -> str:
         return (
@@ -981,120 +889,6 @@ def _dataclass_payload(result: PiHarnessResult) -> dict[str, Any]:
         "reproducible_score": result.reproducible_score,
         "best_snapshot": str(result.best_snapshot),
         "reproducible_snapshot": str(result.reproducible_snapshot),
-    }
-
-
-def _turn_metrics(payload: Any) -> dict[str, Any]:
-    value = payload if isinstance(payload, dict) else {}
-    scalar_fields = (
-        "status",
-        "finished_reason",
-        "model_calls",
-        "input_tokens",
-        "output_tokens",
-        "react_iterations",
-        "duration_seconds",
-        "tool_calls",
-        "tool_errors",
-        "api_failovers",
-        "compactions",
-    )
-    result = {field: value.get(field) for field in scalar_fields if field in value}
-    result["stream_event_counts"] = dict(value.get("stream_event_counts") or {})
-    result["text_block_ids"] = list(value.get("text_block_ids") or [])
-    result["thinking_block_ids"] = list(value.get("thinking_block_ids") or [])
-    return result
-
-
-def _file_sha256(path: str | Path) -> str:
-    target = Path(path).expanduser().resolve()
-    if not target.is_file():
-        raise ValueError(f"identity file does not exist: {target}")
-    digest = hashlib.sha256()
-    with target.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _text_sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _directory_bundle_sha256(paths: tuple[Path, ...]) -> str:
-    digest = hashlib.sha256()
-    for root in sorted((path.expanduser().resolve() for path in paths), key=str):
-        if not root.is_dir():
-            raise ValueError(f"skill directory does not exist: {root}")
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            if path.name in {".DS_Store"} or "__pycache__" in path.parts or path.suffix == ".pyc":
-                continue
-            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _public_model_identity(environment: dict[str, str]) -> dict[str, Any]:
-    try:
-        keys = json.loads(environment.get("OPENAI_API_KEYS_JSON", "[]"))
-    except json.JSONDecodeError as exc:
-        raise ValueError("worker API key bundle is invalid") from exc
-    if not isinstance(keys, list):
-        raise ValueError("worker API key bundle must be a list")
-    return {
-        "name": environment.get("MODEL_NAME", "MiniMax-M3"),
-        "base_url": environment.get("OPENAI_API_BASE", ""),
-        "temperature": float(environment.get("AGENT_TEMPERATURE", "0")),
-        "seed": int(environment["AGENT_SEED"]) if environment.get("AGENT_SEED") else None,
-        "api_key_count": len(keys),
-    }
-
-
-def _git_identity(project_root: str | Path) -> dict[str, Any]:
-    root = Path(project_root).expanduser().resolve()
-
-    def run(*args: str) -> bytes:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise ValueError(completed.stderr.decode(errors="replace").strip())
-        return completed.stdout
-
-    try:
-        commit = run("rev-parse", "HEAD").decode().strip()
-        status = run("status", "--porcelain=v1")
-        diff = run("diff", "--no-ext-diff", "--binary", "HEAD")
-        untracked = run("ls-files", "--others", "--exclude-standard", "-z")
-    except (OSError, ValueError) as exc:
-        return {"commit": "", "dirty": None, "dirty_diff_sha256": "", "error": str(exc)}
-    digest = hashlib.sha256(diff)
-    included_untracked = 0
-    ignored_roots = {".test_runs", "datasets", "experiments", "output", "outputs", "reports"}
-    for raw_path in sorted(item for item in untracked.split(b"\0") if item):
-        relative = Path(raw_path.decode(errors="surrogateescape"))
-        if relative.parts and relative.parts[0] in ignored_roots:
-            continue
-        path = root / relative
-        if not path.is_file():
-            continue
-        digest.update(b"U\0" + raw_path + b"\0")
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        included_untracked += 1
-    return {
-        "commit": commit,
-        "dirty": bool(status.strip()),
-        "dirty_diff_sha256": digest.hexdigest(),
-        "untracked_files_included": included_untracked,
     }
 
 

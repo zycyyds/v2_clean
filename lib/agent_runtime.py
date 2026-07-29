@@ -71,7 +71,6 @@ class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
         self._api_keys = tuple(api_keys)
         self._base_url = base_url
         self._active_key_index = 0
-        self.on_failover = None
         super().__init__(
             credential=OpenAICredential(api_key=self._api_keys[0], base_url=base_url),
             max_retries=0,
@@ -92,16 +91,6 @@ class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
                 if not _is_rate_limit_error(exc):
                     raise
                 last_error = exc
-                next_slot = ((key_index + 1) % len(self._api_keys)) + 1
-                if self.on_failover is not None and offset + 1 < len(self._api_keys):
-                    self.on_failover(
-                        {
-                            "event": "api_key_failover",
-                            "from_slot": key_index + 1,
-                            "to_slot": next_slot,
-                            "reason": "http_429",
-                        },
-                    )
                 continue
             self._active_key_index = key_index
             return response

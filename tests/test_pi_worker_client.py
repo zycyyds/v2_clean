@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,64 +11,6 @@ from agent.pi_worker_client import (
     build_sandboxed_worker_launch,
 )
 from agent.pi_harness import PiValidationHarnessConfig, verify_agent_sandbox_access
-
-
-def test_restricted_backend_import_does_not_load_pipeline_workflow() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(project_root)
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "import agent_tools.restricted_backend; "
-                "assert 'workflow.skill_adapter' not in sys.modules"
-            ),
-        ],
-        cwd=project_root,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_pi_runtime_does_not_import_agent_tools_compatibility_package() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(project_root)
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "import agent.pi_runtime; "
-                "assert not any(name == 'agent_tools' or "
-                "name.startswith('agent_tools.') for name in sys.modules)"
-            ),
-        ],
-        cwd=project_root,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_agent_tools_package_keeps_lazy_public_exports() -> None:
-    import agent_tools
-
-    assert agent_tools.EngineerTools.__name__ == "EngineerTools"
-    assert agent_tools.ReferenceVariantTools.__name__ == "ReferenceVariantTools"
-    assert callable(agent_tools.register_engineer_atomic_tools)
-    assert callable(agent_tools.register_reference_variant_tools)
 
 
 def test_jsonl_worker_client_reuses_one_process(tmp_path: Path) -> None:
@@ -114,9 +54,7 @@ def test_sandboxed_launch_uses_marker_and_never_authorizes_gold(tmp_path: Path) 
     gold = tmp_path / "dataset/validation/reference_private"
     for path in (
         project / "agent",
-        project / "agent_tools",
         project / "lib",
-        project / "workflow",
         workdir,
         runtime,
         train_raw,
@@ -142,14 +80,11 @@ def test_sandboxed_launch_uses_marker_and_never_authorizes_gold(tmp_path: Path) 
 
     assert launch.command[:3] == ["/usr/bin/sandbox-exec", "-f", str(launch.profile_path)]
     assert launch.env["PI_HARNESS_SANDBOX"] == "1"
-    assert launch.env["V2_SKIP_LOCAL_MODEL_CONFIG"] == "1"
     assert launch.env["OPENAI_API_KEYS_JSON"] == '["secret"]'
     assert "--max-iters" in launch.command
     profile = launch.profile_path.read_text(encoding="utf-8")
     assert f'(allow file-read* (literal "{project.resolve()}"))' in profile
     assert f'(subpath "{project.resolve()}")' not in profile
-    assert str((project / "agent_tools").resolve()) not in profile
-    assert str((project / "workflow").resolve()) not in profile
     assert str(train_raw.resolve()) in profile
     assert str(train_reference.resolve()) in profile
     assert str(validation_raw.resolve()) in profile
@@ -194,56 +129,6 @@ def test_real_sandbox_probe_denies_gold_python_shell_and_symlink(tmp_path: Path)
         validation_raw=validation_raw,
         validation_gold=gold,
         evaluation_manifest=manifest,
-        dataset_manifest=manifest,
     )
 
     asyncio.run(verify_agent_sandbox_access(config, launch))
-
-
-def test_real_project_worker_import_respects_runtime_code_boundary(tmp_path: Path) -> None:
-    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
-        return
-    project = Path(__file__).resolve().parents[1]
-    workdir = tmp_path / "experiment/agent_workdir"
-    runtime = tmp_path / "experiment/host/runtime"
-    public = tmp_path / "dataset/public"
-    public.mkdir(parents=True)
-    launch = build_sandboxed_worker_launch(
-        SandboxedWorkerConfig(
-            project_root=project,
-            agent_workdir=workdir,
-            runtime_root=runtime,
-            public_read_roots=(public,),
-            skill_dirs=(),
-            max_iters=1,
-            model_environment={},
-        ),
-    )
-    profile = launch.profile_path.read_text(encoding="utf-8")
-    assert str((project / "agent_tools").resolve()) not in profile
-    assert str((project / "workflow").resolve()) not in profile
-    completed = subprocess.run(
-        [
-            "/usr/bin/sandbox-exec",
-            "-f",
-            str(launch.profile_path),
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "import agent.pi_worker; "
-                "assert not any(name == 'agent_tools' or "
-                "name.startswith('agent_tools.') or name == 'workflow' or "
-                "name.startswith('workflow.') for name in sys.modules); "
-                "print('PI_WORKER_SANDBOX_IMPORT_OK')"
-            ),
-        ],
-        cwd=workdir,
-        env=launch.env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "PI_WORKER_SANDBOX_IMPORT_OK"
