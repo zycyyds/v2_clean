@@ -258,6 +258,7 @@ def _compare_file(
     category: str,
     weight: float,
     fallback_key_column: str,
+    key_columns_override: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     reference_columns = _table_columns(reference_file)
     result_columns = _table_columns(result_file)
@@ -268,7 +269,11 @@ def _compare_file(
     schema_precision = schema_matches / max(len(result_columns), 1)
     schema_recall = schema_matches / max(len(reference_columns), 1)
     schema_f1 = _f1(schema_matches, len(result_columns), len(reference_columns))
-    key_columns = _key_columns(relative_path, reference_columns, fallback_key_column)
+    key_columns = (
+        [str(column) for column in key_columns_override]
+        if key_columns_override is not None
+        else _key_columns(relative_path, reference_columns, fallback_key_column)
+    )
     missing_key_columns = [column for column in key_columns if column not in result_columns]
 
     if not reference_columns:
@@ -664,8 +669,14 @@ def _missing_file_report(
     result_file: Path,
     category: str,
     weight: float,
+    key_columns_override: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     columns = _table_columns(reference_file)
+    key_columns = (
+        [str(column) for column in key_columns_override]
+        if key_columns_override is not None
+        else _key_columns(relative_path, columns, "")
+    )
     return {
         "relative_path": relative_path,
         "reference_file": str(reference_file),
@@ -673,8 +684,8 @@ def _missing_file_report(
         "status": "missing_file",
         "category": category,
         "weight": weight,
-        "key_columns": _key_columns(relative_path, columns, ""),
-        "missing_key_columns": _key_columns(relative_path, columns, ""),
+        "key_columns": key_columns,
+        "missing_key_columns": key_columns,
         "missing_columns": columns,
         "extra_columns": [],
         "reference_rows": _count_rows(reference_file),

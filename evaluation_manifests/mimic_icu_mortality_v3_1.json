@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "files": {
+    "cohort/cohort_icu_mortality_0__.csv": {"key_columns": ["stay_id"]},
+    "csv/labels.csv": {"key_columns": ["stay_id"]},
+    "features/preproc_chart_icu.csv": {"key_columns": ["stay_id", "itemid", "event_time_from_admit"]},
+    "features/preproc_diag_icu.csv": {"key_columns": ["stay_id"]},
+    "features/preproc_med_icu.csv": {"key_columns": ["subject_id", "hadm_id", "stay_id", "itemid", "starttime", "endtime", "orderid"]},
+    "features/preproc_out_icu.csv": {"key_columns": ["subject_id", "hadm_id", "stay_id", "itemid", "charttime"]},
+    "features/preproc_proc_icu.csv": {"key_columns": ["subject_id", "hadm_id", "stay_id", "itemid", "starttime"]},
+    "summary/chart_features.csv": {"key_columns": ["itemid"]},
+    "summary/chart_summary.csv": {"key_columns": ["itemid"]},
+    "summary/diag_features.csv": {"key_columns": ["new_icd_code"]},
+    "summary/diag_summary.csv": {"key_columns": ["new_icd_code"]},
+    "summary/med_features.csv": {"key_columns": ["itemid"]},
+    "summary/med_summary.csv": {"key_columns": ["itemid"]},
+    "summary/out_features.csv": {"key_columns": ["itemid"]},
+    "summary/out_summary.csv": {"key_columns": ["itemid"]},
+    "summary/proc_features.csv": {"key_columns": ["itemid"]},
+    "summary/proc_summary.csv": {"key_columns": ["itemid"]}
+  }
+}

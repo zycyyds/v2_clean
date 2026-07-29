@@ -71,6 +71,7 @@ class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
         self._api_keys = tuple(api_keys)
         self._base_url = base_url
         self._active_key_index = 0
+        self.on_failover = None
         super().__init__(
             credential=OpenAICredential(api_key=self._api_keys[0], base_url=base_url),
             max_retries=0,
@@ -91,6 +92,16 @@ class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
                 if not _is_rate_limit_error(exc):
                     raise
                 last_error = exc
+                next_slot = ((key_index + 1) % len(self._api_keys)) + 1
+                if self.on_failover is not None and offset + 1 < len(self._api_keys):
+                    self.on_failover(
+                        {
+                            "event": "api_key_failover",
+                            "from_slot": key_index + 1,
+                            "to_slot": next_slot,
+                            "reason": "http_429",
+                        },
+                    )
                 continue
             self._active_key_index = key_index
             return response
@@ -187,27 +198,88 @@ def _configured_api_keys(cfg: dict[str, Any]) -> list[str]:
     return keys
 
 
-def create_openai_model_and_formatter(agent_key: str, default_model: str):
+def _environment_api_keys() -> list[str]:
+    raw = os.environ.get("OPENAI_API_KEYS_JSON", "").strip()
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("OPENAI_API_KEYS_JSON must be valid JSON") from exc
+        if not isinstance(payload, list):
+            raise ValueError("OPENAI_API_KEYS_JSON must contain a JSON array")
+        keys = [str(item).strip() for item in payload if str(item).strip()]
+        if not keys:
+            raise ValueError("OPENAI_API_KEYS_JSON must contain at least one key")
+        return list(dict.fromkeys(keys))
+    single = os.environ.get("OPENAI_API_KEY", "").strip()
+    return [single] if single else []
+
+
+def build_worker_model_environment(agent_key: str, default_model: str) -> dict[str, str]:
+    """Serialize only model settings needed by a sandboxed Agent worker."""
     cfg = effective_agent_config(agent_key)
-    api_keys = [os.environ["OPENAI_API_KEY"]] if os.environ.get("OPENAI_API_KEY") else _configured_api_keys(cfg)
+    keys = _environment_api_keys() or _configured_api_keys(cfg)
+    if not keys:
+        raise ValueError(f"no API key configured for {agent_key}")
+    environment = {
+        "OPENAI_API_KEYS_JSON": json.dumps(keys),
+        "OPENAI_API_BASE": str(
+            os.environ.get("OPENAI_API_BASE")
+            or cfg.get("base_url")
+            or cfg.get("api_base")
+            or "https://api.openai.com/v1"
+        ),
+        "MODEL_NAME": str(
+            os.environ.get("MODEL_NAME")
+            or cfg.get("model_name")
+            or cfg.get("model")
+            or default_model
+        ),
+        "V2_SKIP_LOCAL_MODEL_CONFIG": "1",
+    }
+    if "temperature" in cfg:
+        environment["AGENT_TEMPERATURE"] = str(cfg["temperature"])
+    if "seed" in cfg:
+        environment["AGENT_SEED"] = str(cfg["seed"])
+    return environment
+
+
+def create_openai_model_and_formatter(
+    agent_key: str,
+    default_model: str,
+    *,
+    stream: bool = False,
+    context_size_override: int | None = None,
+    parallel_tool_calls: bool = False,
+    model_name_override: str | None = None,
+):
+    cfg = effective_agent_config(agent_key)
+    api_keys = _environment_api_keys() or _configured_api_keys(cfg)
     base_url = (
         os.environ.get("OPENAI_API_BASE")
         or cfg.get("base_url")
         or cfg.get("api_base")
         or "https://api.openai.com/v1"
     )
-    parameters: dict[str, Any] = {"parallel_tool_calls": False}
-    if "temperature" in cfg:
+    parameters: dict[str, Any] = {
+        "parallel_tool_calls": parallel_tool_calls,
+    }
+    if os.environ.get("AGENT_TEMPERATURE") is not None:
+        parameters["temperature"] = float(os.environ["AGENT_TEMPERATURE"])
+    elif "temperature" in cfg:
         parameters["temperature"] = cfg.get("temperature")
-    model_name = resolve_model_name(agent_key, default_model)
-    context_size = _model_context_size(model_name)
-    extra_body = {"seed": cfg["seed"]} if "seed" in cfg else None
+    model_name = model_name_override or resolve_model_name(agent_key, default_model)
+    context_size = context_size_override or _model_context_size(model_name)
+    if os.environ.get("AGENT_SEED") is not None:
+        extra_body = {"seed": int(os.environ["AGENT_SEED"])}
+    else:
+        extra_body = {"seed": cfg["seed"]} if "seed" in cfg else None
     model = RotatingOpenAIChatModel(
         api_keys=api_keys or [""],
         base_url=base_url,
         model=model_name,
         parameters=OpenAIChatModel.Parameters(**parameters),
-        stream=False,
+        stream=stream,
         context_size=context_size,
         extra_body=extra_body,
         formatter=OpenAIChatFormatter(),

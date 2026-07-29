@@ -68,6 +68,8 @@ def test_openai_model_rotates_to_next_key_after_rate_limit(monkeypatch) -> None:
     )
     model, _ = runtime.create_openai_model_and_formatter("react_planner", "fallback")
     seen_keys: list[str] = []
+    failovers: list[dict] = []
+    model.on_failover = failovers.append
 
     class FakeRateLimitError(Exception):
         status_code = 429
@@ -84,6 +86,56 @@ def test_openai_model_rotates_to_next_key_after_rate_limit(monkeypatch) -> None:
 
     assert response.content[0].text == "recovered"
     assert seen_keys == ["first-key", "second-key"]
+    assert failovers == [
+        {
+            "event": "api_key_failover",
+            "from_slot": 1,
+            "to_slot": 2,
+            "reason": "http_429",
+        },
+    ]
+    assert "key" not in json.dumps(failovers).replace("api_key_failover", "")
+
+
+def test_openai_model_accepts_worker_key_bundle_and_env_parameters(monkeypatch) -> None:
+    import lib.agent_runtime as runtime
+
+    monkeypatch.setattr(runtime, "effective_agent_config", lambda _key: {})
+    monkeypatch.setenv("OPENAI_API_KEYS_JSON", '["worker-first", "worker-second"]')
+    monkeypatch.setenv("OPENAI_API_BASE", "https://worker.invalid/v1")
+    monkeypatch.setenv("AGENT_TEMPERATURE", "0.25")
+    monkeypatch.setenv("AGENT_SEED", "777")
+
+    model, _ = runtime.create_openai_model_and_formatter("react_planner", "MiniMax-M3")
+
+    assert model._api_keys == ("worker-first", "worker-second")
+    assert model.credential.base_url == "https://worker.invalid/v1"
+    assert model.parameters.temperature == pytest.approx(0.25)
+    assert model.extra_body == {"seed": 777}
+
+
+def test_build_worker_model_environment_contains_no_unrelated_host_values(monkeypatch) -> None:
+    import lib.agent_runtime as runtime
+
+    monkeypatch.setattr(
+        runtime,
+        "effective_agent_config",
+        lambda _key: {
+            "api_keys": ["first", "second"],
+            "base_url": "https://example.invalid/v1",
+            "model": "MiniMax-M3",
+            "temperature": 0.0,
+            "seed": 666,
+        },
+    )
+    environment = runtime.build_worker_model_environment("react_planner", "MiniMax-M3")
+
+    assert json.loads(environment["OPENAI_API_KEYS_JSON"]) == ["first", "second"]
+    assert environment["OPENAI_API_BASE"] == "https://example.invalid/v1"
+    assert environment["MODEL_NAME"] == "MiniMax-M3"
+    assert environment["AGENT_TEMPERATURE"] == "0.0"
+    assert environment["AGENT_SEED"] == "666"
+    assert environment["V2_SKIP_LOCAL_MODEL_CONFIG"] == "1"
 
 
 def test_openai_model_raises_single_error_when_all_keys_are_rate_limited(monkeypatch) -> None:
@@ -383,7 +435,20 @@ def test_native_file_tools_execute_through_restricted_backend(tmp_path: Path) ->
 
     results = asyncio.run(exercise())
 
-    assert all(result.state is not ToolResultState.ERROR for result in results)
+    names = ("Write", "Read", "Glob", "Grep", "Edit")
+    errors = [
+        {
+            "tool": name,
+            "state": str(result.state),
+            "content": "\n".join(
+                str(getattr(block, "text", block))
+                for block in result.content
+            ),
+        }
+        for name, result in zip(names, results)
+        if result.state is ToolResultState.ERROR
+    ]
+    assert not errors, errors
     assert target.read_text(encoding="utf-8") == "print('done')\n"
     assert str(target) in results[2].content[0].text
     assert "print('ok')" in results[3].content[0].text
@@ -1038,5 +1103,6 @@ def test_environment_locks_python311_and_agentscope2() -> None:
 
     assert environment["name"] == "py3102"
     assert "python=3.11" in dependencies
+    assert "ripgrep" in dependencies
     assert "agentscope==2.0.4.post1" in pip_dependencies
     assert not (root / "agent" / "bounded_memory.py").exists()

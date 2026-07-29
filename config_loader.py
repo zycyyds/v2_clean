@@ -31,7 +31,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _load_config() -> dict:
     base = _load_yaml(V2_DIR / "model_config.yaml")
-    local = _load_yaml(V2_DIR / "model_config.local.yaml")
+    local = (
+        {}
+        if os.environ.get("V2_SKIP_LOCAL_MODEL_CONFIG") == "1"
+        else _load_yaml(V2_DIR / "model_config.local.yaml")
+    )
     return _deep_merge(base, local)
 
 
