@@ -56,7 +56,7 @@ def build_sandboxed_worker_launch(config: SandboxedWorkerConfig) -> WorkerLaunch
         Path("/bin"),
         Path("/sbin"),
         Path("/private/etc"),
-        Path("/private/var/select/sh"),
+        Path("/private/var/select"),
         workdir,
         *config.public_read_roots,
         *config.skill_dirs,

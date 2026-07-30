@@ -24,6 +24,7 @@ def build_macos_sandbox_profile(
         "(deny default)",
         '(import "system.sb")',
         "(allow process*)",
+        "(allow signal (target same-sandbox))",
         "(allow network-outbound)" if allow_network else "(deny network*)",
         '(allow file-read-metadata (literal "/"))',
         f'(allow process-exec (literal "{literal(executable)}"))',

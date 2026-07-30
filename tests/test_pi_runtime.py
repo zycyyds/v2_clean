@@ -13,6 +13,7 @@ from agentscope.message import TextBlock, ToolCallBlock
 from agentscope.model import ChatResponse, FinishedReason, OpenAIChatModel
 from agentscope.state import AgentState
 from agentscope.event import ModelCallStartEvent, TextBlockDeltaEvent
+from agentscope.tool import ExecResult
 
 from agent.pi_runtime import (
     M3_CONTEXT_SIZE,
@@ -28,6 +29,38 @@ from agent.pi_runtime import (
     create_pi_context_config,
     is_context_overflow,
 )
+
+
+def test_full_toolkit_bash_defaults_to_180_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, float | None] = {}
+
+    async def fake_exec_shell(self, command, *, cwd=None, timeout=None):
+        observed["timeout"] = timeout
+        return ExecResult(exit_code=0, stdout=b"ok", stderr=b"")
+
+    monkeypatch.setattr(
+        "lib.reliable_local_backend.ReliableLocalBackend.exec_shell",
+        fake_exec_shell,
+    )
+
+    async def exercise() -> int:
+        toolkit = build_pi_toolkit(tmp_path)
+        schemas = await toolkit.get_tool_schemas()
+        bash_schema = next(
+            schema for schema in schemas if schema["function"]["name"] == "Bash"
+        )
+        bash = await toolkit.get_tool("Bash")
+        chunks = [chunk async for chunk in bash.call(command="true")]
+        assert chunks[-1].content[0].text == "ok"
+        return bash_schema["function"]["parameters"]["properties"]["timeout"][
+            "default"
+        ]
+
+    assert asyncio.run(exercise()) == 180_000
+    assert observed["timeout"] == 180.0
 
 
 def _test_model(*, stream: bool = False) -> OpenAIChatModel:
@@ -541,7 +574,14 @@ def test_runtime_writes_non_blocking_audit_artifacts(
 ) -> None:
     import agent.pi_runtime as runtime_module
 
-    async def fake_call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+    async def fake_call_api(
+        self,
+        model_name,
+        messages,
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ):
         return ChatResponse(content=[TextBlock(text="done")], is_last=True)
 
     monkeypatch.setattr(runtime_module, "make_pi_model", lambda: _test_model())
@@ -646,6 +686,53 @@ def test_invalid_tool_arguments_return_to_same_agent_for_correction(
     assert result.compactions == 0
     assert result.stream_event_counts["ToolResultEndEvent"] == 1
     assert len(result.text_block_ids) == 1
+    assert "[Tool Result End] error" in terminal
+
+
+def test_failed_bash_returns_to_same_agent_for_correction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agent.pi_runtime as runtime_module
+
+    calls = 0
+
+    async def fake_call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                content=[
+                    ToolCallBlock(
+                        id="bash-failure",
+                        name="Bash",
+                        input=json.dumps({"command": "exit 9"}),
+                    ),
+                ],
+                is_last=True,
+            )
+        return ChatResponse(content=[TextBlock(text="recovered")], is_last=True)
+
+    monkeypatch.setattr(runtime_module, "make_pi_model", lambda: _test_model())
+    monkeypatch.setattr(OpenAIChatModel, "_call_api", fake_call_api)
+
+    async def exercise() -> tuple[AgentTurnResult, str]:
+        terminal = io.StringIO()
+        runtime = PiAgentRuntime(PiAgentConfig(workdir=tmp_path), output=terminal)
+        await runtime.initialize()
+        try:
+            return await runtime.run_turn("run and recover"), terminal.getvalue()
+        finally:
+            await runtime.close()
+
+    result, terminal = asyncio.run(exercise())
+
+    assert calls == 2
+    assert result.status == "SUCCESS"
+    assert result.text == "recovered"
+    assert result.tool_calls == 1
+    assert result.tool_errors == 1
+    assert result.stream_event_counts["ToolResultEndEvent"] == 1
     assert "[Tool Result End] error" in terminal
 
 

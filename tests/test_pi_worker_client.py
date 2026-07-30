@@ -155,6 +155,7 @@ def test_sandboxed_launch_uses_marker_and_never_authorizes_gold(tmp_path: Path) 
     assert str(validation_raw.resolve()) in profile
     assert str(gold.resolve()) not in profile
     assert "model_config.local.yaml" not in profile
+    assert '(subpath "/private/var/select")' in profile
 
 
 def test_real_sandbox_probe_denies_gold_python_shell_and_symlink(tmp_path: Path) -> None:
@@ -247,3 +248,22 @@ def test_real_project_worker_import_respects_runtime_code_boundary(tmp_path: Pat
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "PI_WORKER_SANDBOX_IMPORT_OK"
+
+    shell = subprocess.run(
+        [
+            "/usr/bin/sandbox-exec",
+            "-f",
+            str(launch.profile_path),
+            "/bin/sh",
+            "-c",
+            "printf PI_WORKER_SANDBOX_SHELL_OK",
+        ],
+        cwd=workdir,
+        env=launch.env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert shell.returncode == 0, shell.stderr
+    assert shell.stdout == "PI_WORKER_SANDBOX_SHELL_OK"
+    assert "Error opening /private/var/select/sh" not in shell.stderr

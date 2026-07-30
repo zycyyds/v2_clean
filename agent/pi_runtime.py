@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from importlib.metadata import version
@@ -36,12 +37,12 @@ from agentscope.middleware import MiddlewareBase
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.skill import LocalSkillLoader
 from agentscope.state import AgentState
-from agentscope.tool import Bash, Edit, Glob, Grep, Read, Toolkit, Write
-from agentscope.tool._builtin._backend import LocalBackend
+from agentscope.tool import Bash, Edit, Glob, Grep, Read, Toolkit, ToolChunk, Write
 from agentscope.workspace import LocalWorkspace
 from pydantic import BaseModel, Field
 
 from lib.agent_runtime import create_openai_model_and_formatter
+from lib.reliable_local_backend import ReliableLocalBackend
 from lib.restricted_local_backend import RestrictedLocalBackend
 
 
@@ -51,6 +52,42 @@ PI_RESERVE_TOKENS = 16_384
 PI_KEEP_RECENT_TOKENS = 20_000
 PI_TOOL_RESULT_LIMIT = 4_000
 MODEL_SECRET_ENV_KEYS = ("OPENAI_API_KEY", "OPENAI_API_KEYS_JSON")
+
+
+class PiBash(Bash):
+    """AgentScope Bash with a three-minute default timeout."""
+
+    description = Bash.description.replace(
+        "120000ms\n   (2 minutes)",
+        "180000ms\n   (3 minutes)",
+    )
+    input_schema = {
+        **Bash.input_schema,
+        "properties": {
+            **Bash.input_schema["properties"],
+            "timeout": {
+                **Bash.input_schema["properties"]["timeout"],
+                "description": (
+                    "Optional timeout in milliseconds "
+                    "(default: 180000, max: 600000)"
+                ),
+                "default": 180_000,
+            },
+        },
+    }
+
+    async def call(
+        self,
+        command: str,
+        description: str = "",
+        timeout: int = 180_000,
+    ) -> AsyncGenerator[ToolChunk, None]:
+        async for chunk in super().call(
+            command=command,
+            description=description,
+            timeout=timeout,
+        ):
+            yield chunk
 
 
 class PiCompressionSummary(BaseModel):
@@ -483,14 +520,14 @@ def build_pi_toolkit(
             Edit(backend=backend),
         ]
     elif tool_profile == "full":
-        backend = LocalBackend()
+        backend = ReliableLocalBackend()
         tools = [
             Read(backend=backend),
             Write(backend=backend),
             Edit(backend=backend),
             Glob(backend=backend),
             Grep(backend=backend),
-            Bash(cwd=str(root), backend=backend),
+            PiBash(cwd=str(root), backend=backend),
         ]
     else:
         raise ValueError("tool_profile must be full or test_declaration")
