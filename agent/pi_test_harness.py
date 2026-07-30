@@ -105,6 +105,16 @@ class PiTestHarnessResult:
 ReplayRunner = Callable[[ReplayRequest], Awaitable[TestReplayExecution]]
 ScoreRunner = Callable[[Path, Path, Path, float], Awaitable[ScoreExecution]]
 
+TEST_GOLD_OVERLAP_ERROR = "unsafe Test Gold path overlap"
+
+
+def require_test_gold_isolated(test_gold: Path, public_paths: tuple[Path, ...]) -> None:
+    gold = test_gold.expanduser().resolve(strict=False)
+    for public_path in public_paths:
+        public = public_path.expanduser().resolve(strict=False)
+        if gold == public or gold in public.parents or public in gold.parents:
+            raise ValueError(TEST_GOLD_OVERLAP_ERROR)
+
 
 class PiTestPreflight:
     """Run a frozen Validation pipeline on large public Validation raw data."""
@@ -283,9 +293,21 @@ class PiTestHarness:
         self.score_runner = score_runner or self._run_score
 
     async def run(self) -> PiTestHarnessResult:
+        validation = self.config.validation_experiment.expanduser().resolve(strict=False)
+        source_snapshot = validation / "host/reproducible_snapshot"
+        require_test_gold_isolated(
+            self.config.test_gold,
+            (
+                self.config.test_raw,
+                source_snapshot,
+                self.config.test_experiment,
+                self.config.project_root,
+            ),
+        )
         source, train_reference, source_hash = _load_validation_bundle(
             self.config.validation_experiment,
         )
+        require_test_gold_isolated(self.config.test_gold, (train_reference,))
         attestation = (
             _load_attestation(self.config.preflight_attestation, source_hash)
             if self.config.preflight_attestation is not None

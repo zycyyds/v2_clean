@@ -78,7 +78,9 @@ async def _run(args: argparse.Namespace) -> int:
         ),
     )
     report_status = report.get("status")
-    if received_signal is not None or report_status == "INTERRUPTED":
+    if received_signal is not None:
+        return 128 + int(received_signal)
+    if report_status == "INTERRUPTED":
         return 130
     return 0 if report_status == "SUCCESS" else 1
 

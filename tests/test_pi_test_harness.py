@@ -384,6 +384,64 @@ def test_same_test_experiment_cannot_replay_twice(tmp_path: Path) -> None:
     assert len(replay_requests) == 1
 
 
+@pytest.mark.parametrize(
+    "public_path",
+    ["test_raw", "train_reference", "source_snapshot", "test_experiment", "project_root"],
+)
+@pytest.mark.parametrize("relationship", ["same", "gold_parent", "gold_child", "symlink"])
+def test_test_gold_overlap_stops_standalone_harness_before_pipeline(
+    tmp_path: Path,
+    public_path: str,
+    relationship: str,
+) -> None:
+    validation, train_reference = _validation_fixture(tmp_path)
+    config = _test_config(tmp_path, None)
+    candidates = {
+        "test_raw": config.test_raw,
+        "train_reference": train_reference,
+        "source_snapshot": validation / "host/reproducible_snapshot",
+        "test_experiment": config.test_experiment,
+        "project_root": config.project_root,
+    }
+    public = candidates[public_path]
+    if relationship == "same":
+        test_gold = public
+    elif relationship == "gold_parent":
+        test_gold = public.parent
+    elif relationship == "gold_child":
+        test_gold = public / "private_gold"
+    else:
+        public.mkdir(parents=True, exist_ok=True)
+        link = tmp_path / "test_gold_link"
+        link.symlink_to(public, target_is_directory=True)
+        test_gold = link
+    config = replace(config, test_gold=test_gold)
+    replay_calls = 0
+    score_calls = 0
+
+    async def replay(_request: ReplayRequest) -> TestReplayExecution:
+        nonlocal replay_calls
+        replay_calls += 1
+        raise AssertionError("Test replay must not start")
+
+    async def score(*_args, **_kwargs) -> ScoreExecution:
+        nonlocal score_calls
+        score_calls += 1
+        raise AssertionError("Pipeline scoring must not start")
+
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(
+            PiTestHarness(config, replay_runner=replay, score_runner=score).run(),
+        )
+
+    assert str(exc_info.value) == "unsafe Test Gold path overlap"
+    assert str(test_gold.expanduser().resolve(strict=False)) not in str(exc_info.value)
+    assert replay_calls == 0
+    assert score_calls == 0
+    assert not (config.test_experiment / "host").exists()
+    assert not (config.test_experiment / "host/test_started.json").exists()
+
+
 def test_test_replay_failure_is_not_retried_or_scored(tmp_path: Path) -> None:
     preflight_config = _preflight_config(tmp_path)
     preflight = asyncio.run(

@@ -20,6 +20,7 @@ from agent.pi_test_harness import (
     PiTestHarness,
     PiTestHarnessConfig,
     PiTestHarnessResult,
+    require_test_gold_isolated,
 )
 
 
@@ -107,6 +108,20 @@ class PiFullExperiment:
         )
 
     async def run(self, prompt: str) -> PiFullExperimentResult:
+        validation_config = self.config.validation
+        require_test_gold_isolated(
+            self.config.test_gold,
+            (
+                validation_config.train_raw,
+                validation_config.train_reference,
+                validation_config.validation_raw,
+                validation_config.experiment_dir,
+                *validation_config.skill_dirs,
+                validation_config.project_root,
+                self.config.test_raw,
+                self.config.test_experiment,
+            ),
+        )
         started = time.monotonic()
         validation_started = time.monotonic()
         try:
@@ -136,6 +151,18 @@ class PiFullExperiment:
                 error_code="VALIDATION_EXCEPTION",
             )
         validation_duration = time.monotonic() - validation_started
+
+        if validation.status == "INTERRUPTED":
+            return self._finish(
+                status="INTERRUPTED",
+                phase="validation",
+                validation=validation,
+                test=None,
+                validation_duration=validation_duration,
+                test_duration=0.0,
+                duration=time.monotonic() - started,
+                error_code="VALIDATION_CANCELLED",
+            )
 
         if validation.status != "SUCCESS_REPRODUCIBLE":
             return self._finish(

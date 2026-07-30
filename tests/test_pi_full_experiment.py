@@ -108,10 +108,19 @@ def test_validation_success_automatically_runs_test_once(tmp_path: Path) -> None
     assert result.test_result is test_result
 
 
-@pytest.mark.parametrize("status", ["INTERRUPTED", "FAILED", "REPLAY_FAILED"])
+@pytest.mark.parametrize(
+    ("status", "expected_status", "expected_error_code"),
+    [
+        ("INTERRUPTED", "INTERRUPTED", "VALIDATION_CANCELLED"),
+        ("FAILED", "VALIDATION_FAILED", ""),
+        ("REPLAY_FAILED", "VALIDATION_FAILED", ""),
+    ],
+)
 def test_validation_non_success_never_starts_test(
     tmp_path: Path,
     status: str,
+    expected_status: str,
+    expected_error_code: str,
 ) -> None:
     test_calls = 0
     config = _full_config(tmp_path)
@@ -132,17 +141,91 @@ def test_validation_non_success_never_starts_test(
         ).run("prompt"),
     )
 
-    assert result.status == "VALIDATION_FAILED"
+    assert result.status == expected_status
     assert result.phase == "validation"
     assert result.test_result is None
     assert test_calls == 0
     assert not config.test_experiment.exists()
     assert result.report_path.is_file()
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
-    assert report["status"] == "VALIDATION_FAILED"
+    assert report["status"] == expected_status
+    assert report["error_code"] == expected_error_code
     assert report["test"] is None
     assert report["test_execution_count"] == 0
     assert report["scoring_execution_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "public_path",
+    [
+        "train_raw",
+        "train_reference",
+        "validation_raw",
+        "experiment_dir",
+        "skill_dir",
+        "project_root",
+        "test_raw",
+        "test_experiment",
+    ],
+)
+@pytest.mark.parametrize("relationship", ["same", "gold_parent", "gold_child", "symlink"])
+def test_test_gold_overlap_stops_full_experiment_before_validation(
+    tmp_path: Path,
+    public_path: str,
+    relationship: str,
+) -> None:
+    config = _full_config(tmp_path)
+    skill_dir = tmp_path / "skills/one"
+    validation = replace(config.validation, skill_dirs=(skill_dir,))
+    config = replace(config, validation=validation)
+    candidates = {
+        "train_raw": validation.train_raw,
+        "train_reference": validation.train_reference,
+        "validation_raw": validation.validation_raw,
+        "experiment_dir": validation.experiment_dir,
+        "skill_dir": skill_dir,
+        "project_root": validation.project_root,
+        "test_raw": config.test_raw,
+        "test_experiment": config.test_experiment,
+    }
+    public = candidates[public_path]
+    if relationship == "same":
+        test_gold = public
+    elif relationship == "gold_parent":
+        test_gold = public.parent
+    elif relationship == "gold_child":
+        test_gold = public / "private_gold"
+    else:
+        public.mkdir(parents=True, exist_ok=True)
+        link = tmp_path / "test_gold_link"
+        link.symlink_to(public, target_is_directory=True)
+        test_gold = link
+    config = replace(config, test_gold=test_gold)
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        raise AssertionError("Validation must not start")
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        raise AssertionError("Test must not start")
+
+    experiment = PiFullExperiment(
+        config,
+        validation_runner=run_validation,
+        test_runner=run_test,
+    )
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(experiment.run("prompt"))
+
+    assert calls == []
+    assert str(exc_info.value) == "unsafe Test Gold path overlap"
+    assert str(test_gold.expanduser().resolve(strict=False)) not in str(exc_info.value)
+    assert not experiment.report_path.exists()
+    assert not (config.validation.experiment_dir / "host").exists()
+    assert not (config.test_experiment / "host").exists()
+    assert not (config.test_experiment / "host/test_started.json").exists()
 
 
 @pytest.mark.parametrize(

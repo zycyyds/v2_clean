@@ -115,7 +115,7 @@ Pi主流程由`agent.pi_full_experiment_cli`自动串联：
 ```text
 Validation persistent Agent loop
   -> SUCCESS_REPRODUCIBLE
-  -> 宿主自动冻结best为reproducible_snapshot
+  -> 使用Validation产出的、独立重放通过的reproducible_snapshot
   -> 无人工确认自动执行Test一次
   -> hidden score一次
   -> host/full_experiment_report.json combined report

@@ -231,7 +231,9 @@ def test_run_projects_none_test_from_combined_report(
         ("SUCCESS", None, 0),
         ("INTERRUPTED", None, 130),
         ("REPLAY_FAILED", None, 1),
-        ("SUCCESS", signal.SIGTERM, 130),
+        ("SUCCESS", signal.SIGINT, 130),
+        ("SUCCESS", signal.SIGTERM, 143),
+        ("SUCCESS", signal.SIGHUP, 129),
     ],
 )
 def test_run_maps_terminal_outcomes_to_exit_codes(
