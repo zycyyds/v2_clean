@@ -208,7 +208,7 @@ class PiFullExperiment:
             phase = "scoring"
             replay_status = "SUCCESS"
             execution_count = 1
-            frozen_hash = scoring_hash
+            frozen_hash = scoring_hash if scoring_hash == test_hash else ""
         else:
             status = "INTERRUPTED" if cancelled else "REPLAY_FAILED"
             phase = "test_replay"
@@ -339,6 +339,8 @@ class PiFullExperiment:
             resolved = path.expanduser().resolve()
             resolved.relative_to(public_root.expanduser().resolve())
         except (OSError, RuntimeError, ValueError):
+            return ""
+        if not resolved.exists():
             return ""
         return self._redact_path_text(str(resolved))
 

@@ -77,9 +77,10 @@ async def _run(args: argparse.Namespace) -> int:
             indent=2,
         ),
     )
-    if received_signal is not None or result.status == "INTERRUPTED":
+    report_status = report.get("status")
+    if received_signal is not None or report_status == "INTERRUPTED":
         return 130
-    return 0 if result.status == "SUCCESS" else 1
+    return 0 if report_status == "SUCCESS" else 1
 
 
 def _cli_payload(report: dict, report_path: Path) -> dict:

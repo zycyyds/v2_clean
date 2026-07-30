@@ -856,3 +856,95 @@ def test_real_preflight_and_test_replay_deny_private_inputs_and_network(
     assert result.status == "SUCCESS"
     assert result.test_execution_count == 1
     assert result.score == 0.0
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file(),
+    reason="requires macOS sandbox-exec",
+)
+def test_real_direct_test_replay_allows_only_frozen_public_inputs_and_result_write(
+    tmp_path: Path,
+) -> None:
+    validation, train_reference = _validation_fixture(tmp_path)
+    config = _test_config(tmp_path, None)
+    source = validation / "host/reproducible_snapshot"
+    test_gold_file = config.test_gold / "secret.csv"
+    validation_gold_file = tmp_path / "dataset/validation/reference_private/secret.csv"
+    train_raw_file = tmp_path / "dataset/train/raw/secret.csv"
+    host_private_file = validation / "host/private/secret.csv"
+    for path in (
+        test_gold_file,
+        validation_gold_file,
+        train_raw_file,
+        host_private_file,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("secret\n", encoding="utf-8")
+    frozen_public_file = source / "bundle_public.txt"
+    frozen_public_file.write_text("bundle\n", encoding="utf-8")
+    workflow_file = config.project_root / "workflow/pi_harness_evaluation.py"
+    forbidden_paths = [
+        str(test_gold_file),
+        str(validation_gold_file),
+        str(train_raw_file),
+        str(workflow_file),
+        str(host_private_file),
+    ]
+    submission_path = source / "submission.json"
+    submission = json.loads(submission_path.read_text(encoding="utf-8"))
+    submission["replay"]["argv"][2:2] = [
+        "--train-reference",
+        "{train_reference}",
+    ]
+    submission_path.write_text(json.dumps(submission), encoding="utf-8")
+    (source / "scripts/build.py").write_text(
+        "import argparse,pathlib,socket\n"
+        "p=argparse.ArgumentParser(); p.add_argument('--train-reference'); "
+        "p.add_argument('--raw'); p.add_argument('--out'); a=p.parse_args()\n"
+        "checks=[]\n"
+        f"for value in {forbidden_paths!r}:\n"
+        " try: pathlib.Path(value).read_bytes(); checks.append(False)\n"
+        " except OSError: checks.append(True)\n"
+        "try:\n"
+        " s=socket.socket(); s.bind(('127.0.0.1',0)); checks.append(False)\n"
+        "except OSError: checks.append(True)\n"
+        "assert all(checks), checks\n"
+        "bundle=(pathlib.Path(__file__).parents[1]/'bundle_public.txt').read_text()\n"
+        "raw=(pathlib.Path(a.raw)/'data.csv').read_text()\n"
+        "reference=(pathlib.Path(a.train_reference)/'catalog.csv').read_text()\n"
+        "out=pathlib.Path(a.out); out.mkdir(parents=True,exist_ok=True)\n"
+        "(out/'data.csv').write_text(bundle+raw+reference)\n",
+        encoding="utf-8",
+    )
+    score_calls = 0
+
+    async def score_runner(
+        result_root: Path,
+        _gold_root: Path,
+        _evaluation_manifest: Path,
+        _timeout: float,
+    ) -> ScoreExecution:
+        nonlocal score_calls
+        score_calls += 1
+        assert (result_root / "data.csv").read_text(encoding="utf-8") == (
+            "bundle\nid,value\n2,test\nid\n1\n"
+        )
+        return ScoreExecution("SUCCESS", 0, "", 0.1, _score_report(0.75))
+
+    result = asyncio.run(PiTestHarness(config, score_runner=score_runner).run())
+    if result.status == "REPLAY_FAILED":
+        run_report = json.loads(
+            (config.test_experiment / "host/run_report.json").read_text(encoding="utf-8"),
+        )
+        replay_stderr = str((run_report.get("replay") or {}).get("stderr") or "")
+        if "sandbox_apply" in replay_stderr and "Operation not permitted" in replay_stderr:
+            pytest.xfail("outer Codex sandbox blocks nested sandbox-exec")
+
+    assert result.status == "SUCCESS"
+    assert result.preflight_status == "NOT_RUN"
+    assert result.test_execution_count == 1
+    assert result.score == 0.75
+    assert score_calls == 1
+    assert (config.test_experiment / "host/test_started.json").is_file()
+    assert (config.test_experiment / "host/scoring_started.json").is_file()
+    assert train_reference.is_dir()

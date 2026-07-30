@@ -265,6 +265,31 @@ def test_run_maps_terminal_outcomes_to_exit_codes(
     assert asyncio.run(cli._run(cli.parse_args(_argv(prompt_file)))) == expected
 
 
+def test_run_uses_public_report_status_as_exit_code_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("prompt", encoding="utf-8")
+    report_path = tmp_path / "full_experiment_report.json"
+    report_path.write_text(json.dumps(_combined_report(status="SUCCESS")), encoding="utf-8")
+
+    class FakeExperiment:
+        def __init__(self, _config) -> None:
+            pass
+
+        async def run(self, _prompt: str):
+            return _result(report_path, status="REPLAY_FAILED")
+
+    async def fake_signal_wrapper(operation):
+        return await operation, None
+
+    monkeypatch.setattr(cli, "PiFullExperiment", FakeExperiment)
+    monkeypatch.setattr(cli, "_run_with_terminal_signals", fake_signal_wrapper)
+
+    assert asyncio.run(cli._run(cli.parse_args(_argv(prompt_file)))) == 0
+
+
 def test_main_maps_keyboard_interrupt_to_130(monkeypatch: pytest.MonkeyPatch) -> None:
     def interrupt(_args) -> int:
         raise KeyboardInterrupt

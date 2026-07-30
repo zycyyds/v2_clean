@@ -41,6 +41,7 @@ def _validation_result(
     status: str = "SUCCESS_REPRODUCIBLE",
 ) -> PiHarnessResult:
     experiment = tmp_path / "validation_experiment"
+    (experiment / "host/reproducible_snapshot").mkdir(parents=True, exist_ok=True)
     return PiHarnessResult(
         status=status,
         stop_reason="target_score" if status == "SUCCESS_REPRODUCIBLE" else "failed",
@@ -61,6 +62,8 @@ def _test_result(
     score: float | None = 0.88,
 ) -> PiTestHarnessResult:
     experiment = tmp_path / "test_experiment"
+    (experiment / "host/frozen_snapshot").mkdir(parents=True, exist_ok=True)
+    (experiment / "host/test_result_package").mkdir(parents=True, exist_ok=True)
     return PiTestHarnessResult(
         status=status,
         phase=phase,
@@ -362,6 +365,7 @@ def test_validation_exception_writes_fixed_failure_without_starting_test(
     assert result.status == report["status"] == "VALIDATION_FAILED"
     assert result.phase == report["phase"] == "validation"
     assert report["error_code"] == "VALIDATION_EXCEPTION"
+    assert report["validation"]["reproducible_snapshot"] == ""
     assert sentinel not in report_text
     assert str(config.validation.validation_gold.resolve()) not in report_text
     assert str(config.test_gold.resolve()) not in report_text
@@ -553,6 +557,50 @@ def test_test_failure_after_scoring_marker_recovers_scoring_phase(
     assert "GOLD_VALUE_MUST_NOT_LEAK" not in report_text
 
 
+def test_conflicting_valid_start_marker_hashes_do_not_publish_either_hash(
+    tmp_path: Path,
+) -> None:
+    config = _full_config(tmp_path)
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        host = config.test_experiment / "host"
+        host.mkdir(parents=True)
+        for name, frozen_hash in (
+            ("test_started.json", "b" * 64),
+            ("scoring_started.json", "c" * 64),
+        ):
+            (host / name).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "frozen_snapshot_sha256": frozen_hash,
+                        "started_at_unix": 1.0,
+                    },
+                ),
+                encoding="utf-8",
+            )
+        raise RuntimeError("failed after scoring started")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert result.status == report["status"] == "SCORING_FAILED"
+    assert result.phase == report["phase"] == "scoring"
+    assert report["test_execution_count"] == 1
+    assert report["scoring_execution_count"] == 1
+    assert report["test"]["replay_status"] == "SUCCESS"
+    assert report["test"]["frozen_snapshot_sha256"] == ""
+
+
 @pytest.mark.parametrize(
     "marker_text",
     [
@@ -635,6 +683,40 @@ def test_public_paths_are_serialized_in_resolved_form(tmp_path: Path) -> None:
     )
 
 
+def test_public_paths_omit_artifacts_that_do_not_exist(tmp_path: Path) -> None:
+    config = _full_config(tmp_path)
+    validation_result = replace(
+        _validation_result(tmp_path),
+        reproducible_snapshot=(
+            config.validation.experiment_dir / "host/missing_reproducible_snapshot"
+        ),
+    )
+    test_result = replace(
+        _test_result(tmp_path),
+        frozen_snapshot=config.test_experiment / "host/missing_frozen_snapshot",
+        result_package=config.test_experiment / "host/missing_test_result_package",
+    )
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return validation_result
+
+    async def run_test() -> PiTestHarnessResult:
+        return test_result
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["validation"]["reproducible_snapshot"] == ""
+    assert report["test"]["frozen_snapshot"] == ""
+    assert report["test"]["result_package"] == ""
+
+
 def test_combined_report_constrains_unknown_validation_status(tmp_path: Path) -> None:
     config = _full_config(tmp_path)
     sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
@@ -697,6 +779,9 @@ def test_default_runners_reuse_existing_harnesses_without_preflight(
 
     assert result.status == "SUCCESS"
     assert seen["validation_config"] is config.validation
+    validation_config = seen["validation_config"]
+    for test_only_field in ("test_experiment", "test_raw", "test_gold"):
+        assert not hasattr(validation_config, test_only_field)
     assert seen["prompt"] == "default prompt"
     test_config = seen["test_config"]
     assert test_config.validation_experiment == config.validation.experiment_dir
