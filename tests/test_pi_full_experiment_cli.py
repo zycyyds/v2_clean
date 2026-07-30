@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import signal
@@ -191,6 +192,105 @@ def test_run_builds_full_config_reads_prompt_once_and_prints_public_payload(
     assert "GOLD_VALUE_MUST_NOT_LEAK" not in output
     assert "/private/validation/gold" not in output
     assert "/private/test/gold" not in output
+
+
+def _safe_cli_args(tmp_path: Path, prompt_file: Path) -> argparse.Namespace:
+    args = cli.parse_args(_argv(prompt_file))
+    args.experiment_dir = str(tmp_path / "validation_experiment")
+    args.train_raw = str(tmp_path / "train/raw")
+    args.train_reference = str(tmp_path / "train/reference")
+    args.validation_raw = str(tmp_path / "validation/raw")
+    args.validation_gold = str(tmp_path / "private/validation_gold")
+    args.evaluation_manifest = str(tmp_path / "evaluation.json")
+    args.dataset_manifest = str(tmp_path / "dataset.json")
+    args.skills_dir = []
+    args.test_experiment = str(tmp_path / "test_experiment")
+    args.test_raw = str(tmp_path / "test/raw")
+    args.test_gold = str(tmp_path / "private/test_gold")
+    return args
+
+
+@pytest.mark.parametrize("gold_field", ["validation_gold", "test_gold"])
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "prompt_parent", "prompt_child", "symlink"],
+)
+def test_cli_rejects_prompt_gold_overlap_before_reading_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    gold_field: str,
+    relationship: str,
+) -> None:
+    gold = tmp_path / f"private/{gold_field}"
+    if relationship == "same":
+        prompt_file = gold
+    elif relationship == "prompt_parent":
+        prompt_file = gold.parent
+    elif relationship == "prompt_child":
+        prompt_file = gold / "prompt.txt"
+    else:
+        gold.mkdir(parents=True)
+        prompt_file = tmp_path / f"{gold_field}-prompt-link"
+        prompt_file.symlink_to(gold, target_is_directory=True)
+    args = _safe_cli_args(tmp_path, prompt_file)
+    setattr(args, gold_field, str(gold))
+    prompt_reads: list[Path] = []
+    experiment_calls = 0
+
+    def forbidden_read(path: Path, *_args, **_kwargs) -> str:
+        prompt_reads.append(path)
+        raise AssertionError("prompt must not be read")
+
+    class FakeExperiment:
+        def __init__(self, _config) -> None:
+            nonlocal experiment_calls
+            experiment_calls += 1
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    monkeypatch.setattr(cli, "parse_args", lambda _argv: args)
+    monkeypatch.setattr(cli, "PiFullExperiment", FakeExperiment)
+
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "CLI_FAILED",
+        "error_code": "FULL_EXPERIMENT_EXCEPTION",
+    }
+    assert prompt_reads == []
+    assert experiment_calls == 0
+    assert not (Path(args.experiment_dir) / "host").exists()
+    assert not (Path(args.test_experiment) / "host").exists()
+
+
+def test_cli_validates_role_topology_before_reading_safe_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prompt_file = tmp_path / "prompt.txt"
+    args = _safe_cli_args(tmp_path, prompt_file)
+    args.test_raw = args.train_raw
+    prompt_reads: list[Path] = []
+
+    def forbidden_read(path: Path, *_args, **_kwargs) -> str:
+        prompt_reads.append(path)
+        raise AssertionError("prompt must not be read")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    monkeypatch.setattr(cli, "parse_args", lambda _argv: args)
+
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "CLI_FAILED",
+        "error_code": "FULL_EXPERIMENT_EXCEPTION",
+    }
+    assert prompt_reads == []
+    assert not (Path(args.experiment_dir) / "host").exists()
+    assert not (Path(args.test_experiment) / "host").exists()
 
 
 def test_run_projects_none_test_from_combined_report(

@@ -18,6 +18,8 @@ from agent.pi_harness import (
     PiValidationHarnessConfig,
 )
 from agent.pi_harness_sandbox import (
+    recursive_paths_overlap,
+    require_path_isolated,
     require_test_gold_isolated,
     sandbox_visible_recursive_roots,
 )
@@ -91,6 +93,59 @@ ERROR_CODES = frozenset(
         "TEST_CANCELLED",
     },
 )
+FULL_ROLE_TOPOLOGY_ERROR = "unsafe full experiment role topology"
+
+
+def validate_full_experiment_role_topology(
+    config: PiFullExperimentConfig,
+    *,
+    prompt_file: Path | None = None,
+) -> None:
+    """Reject path topologies that expose Test or Validation private inputs."""
+
+    validation = config.validation
+    recursive_roots = sandbox_visible_recursive_roots(
+        validation.project_root / "agent",
+        validation.project_root / "lib",
+        validation.train_raw,
+        validation.train_reference,
+        validation.validation_raw,
+        validation.experiment_dir,
+        *validation.skill_dirs,
+        include_shell_state=True,
+    )
+    literal_paths = (
+        validation.project_root,
+        validation.project_root / "config_loader.py",
+        validation.project_root / "model_config.yaml",
+        Path(sys.executable),
+        Path("/dev/null"),
+    )
+    require_test_gold_isolated(
+        config.test_gold,
+        recursive_roots=(*recursive_roots, config.test_raw, config.test_experiment),
+        literal_paths=literal_paths,
+    )
+    if recursive_paths_overlap(validation.validation_gold, config.test_gold):
+        raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
+    for validation_visible_data in (
+        validation.train_raw,
+        validation.train_reference,
+        validation.validation_raw,
+    ):
+        if recursive_paths_overlap(config.test_raw, validation_visible_data):
+            raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
+    require_path_isolated(
+        validation.validation_gold,
+        recursive_roots,
+        literal_paths=literal_paths,
+        error_message=FULL_ROLE_TOPOLOGY_ERROR,
+    )
+
+    if prompt_file is not None:
+        for gold_root in (validation.validation_gold, config.test_gold):
+            if recursive_paths_overlap(prompt_file, gold_root):
+                raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
 
 
 class PiFullExperiment:
@@ -112,29 +167,7 @@ class PiFullExperiment:
         )
 
     async def run(self, prompt: str) -> PiFullExperimentResult:
-        validation_config = self.config.validation
-        require_test_gold_isolated(
-            self.config.test_gold,
-            recursive_roots=sandbox_visible_recursive_roots(
-                validation_config.project_root / "agent",
-                validation_config.project_root / "lib",
-                validation_config.train_raw,
-                validation_config.train_reference,
-                validation_config.validation_raw,
-                validation_config.experiment_dir,
-                *validation_config.skill_dirs,
-                self.config.test_raw,
-                self.config.test_experiment,
-                include_shell_state=True,
-            ),
-            literal_paths=(
-                validation_config.project_root,
-                validation_config.project_root / "config_loader.py",
-                validation_config.project_root / "model_config.yaml",
-                Path(sys.executable),
-                Path("/dev/null"),
-            ),
-        )
+        validate_full_experiment_role_topology(self.config)
         started = time.monotonic()
         validation_started = time.monotonic()
         try:

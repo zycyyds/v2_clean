@@ -81,6 +81,54 @@ def _test_result(
     )
 
 
+def _overlapping_path(
+    public: Path,
+    relationship: str,
+    tmp_path: Path,
+) -> Path:
+    if relationship == "same":
+        return public
+    if relationship == "private_parent":
+        return public.parent
+    if relationship == "private_child":
+        return public / "private"
+    public.mkdir(parents=True, exist_ok=True)
+    link = tmp_path / "private-link"
+    link.symlink_to(public, target_is_directory=True)
+    return link
+
+
+def _assert_topology_rejected(config: PiFullExperimentConfig) -> None:
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        raise AssertionError("Validation must not start")
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        raise AssertionError("Test must not start")
+
+    experiment = PiFullExperiment(
+        config,
+        validation_runner=run_validation,
+        test_runner=run_test,
+    )
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(experiment.run("prompt"))
+
+    assert calls == []
+    assert str(exc_info.value) == "unsafe full experiment role topology"
+    assert str(config.validation.validation_gold.resolve(strict=False)) not in str(
+        exc_info.value,
+    )
+    assert str(config.test_gold.resolve(strict=False)) not in str(exc_info.value)
+    assert not experiment.report_path.exists()
+    assert not (config.validation.experiment_dir / "host").exists()
+    assert not (config.test_experiment / "host").exists()
+    assert not (config.test_experiment / "host/test_started.json").exists()
+
+
 def test_validation_success_automatically_runs_test_once(tmp_path: Path) -> None:
     calls: list[str] = []
     validation_result = _validation_result(tmp_path)
@@ -304,13 +352,20 @@ def test_full_guard_rejects_exact_validation_worker_literal_file(
     assert not experiment.report_path.exists()
 
 
-def test_project_private_gold_is_not_rejected_by_full_guard(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "relative_gold",
+    [Path("private/test_gold"), Path("workflow/private/test_gold")],
+)
+def test_project_private_gold_is_not_rejected_by_full_guard(
+    tmp_path: Path,
+    relative_gold: Path,
+) -> None:
     config = _full_config(tmp_path)
     project = tmp_path / "project"
     config = replace(
         config,
         validation=replace(config.validation, project_root=project),
-        test_gold=project / "private/test_gold",
+        test_gold=project / relative_gold,
     )
     calls: list[str] = []
     validation_result = _validation_result(tmp_path)
@@ -327,6 +382,171 @@ def test_project_private_gold_is_not_rejected_by_full_guard(tmp_path: Path) -> N
     result = asyncio.run(
         PiFullExperiment(
             config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    assert calls == ["validation", "test"]
+    assert result.status == "SUCCESS"
+
+
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "private_parent", "private_child", "symlink"],
+)
+def test_validation_and_test_gold_must_be_disjoint(
+    tmp_path: Path,
+    relationship: str,
+) -> None:
+    config = _full_config(tmp_path)
+    test_gold = _overlapping_path(
+        config.validation.validation_gold,
+        relationship,
+        tmp_path,
+    )
+
+    _assert_topology_rejected(replace(config, test_gold=test_gold))
+
+
+@pytest.mark.parametrize("public_name", ["train_raw", "train_reference", "validation_raw"])
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "private_parent", "private_child", "symlink"],
+)
+def test_test_raw_must_be_disjoint_from_validation_visible_data(
+    tmp_path: Path,
+    public_name: str,
+    relationship: str,
+) -> None:
+    config = _full_config(tmp_path)
+    public = getattr(config.validation, public_name)
+    test_raw = _overlapping_path(public, relationship, tmp_path)
+
+    _assert_topology_rejected(replace(config, test_raw=test_raw))
+
+
+@pytest.mark.parametrize(
+    "public_name",
+    [
+        "train_raw",
+        "train_reference",
+        "validation_raw",
+        "experiment_dir",
+        "skill_dir",
+        "project_agent",
+        "project_lib",
+    ],
+)
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "private_parent", "private_child", "symlink"],
+)
+def test_validation_gold_must_be_disjoint_from_agent_recursive_roots(
+    tmp_path: Path,
+    public_name: str,
+    relationship: str,
+) -> None:
+    config = _full_config(tmp_path)
+    skill_dir = tmp_path / "skills/one"
+    validation = replace(config.validation, skill_dirs=(skill_dir,))
+    candidates = {
+        "train_raw": validation.train_raw,
+        "train_reference": validation.train_reference,
+        "validation_raw": validation.validation_raw,
+        "experiment_dir": validation.experiment_dir,
+        "skill_dir": skill_dir,
+        "project_agent": validation.project_root / "agent",
+        "project_lib": validation.project_root / "lib",
+    }
+    validation_gold = _overlapping_path(
+        candidates[public_name],
+        relationship,
+        tmp_path,
+    )
+
+    _assert_topology_rejected(
+        replace(config, validation=replace(validation, validation_gold=validation_gold)),
+    )
+
+
+@pytest.mark.parametrize(
+    "sandbox_root",
+    [
+        Path(sys.prefix),
+        Path(sys.base_prefix),
+        Path("/System"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/private/etc"),
+        Path("/private/var/select"),
+    ],
+)
+def test_validation_gold_must_be_disjoint_from_system_recursive_roots(
+    tmp_path: Path,
+    sandbox_root: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    validation = replace(
+        config.validation,
+        validation_gold=sandbox_root / "private-validation-gold",
+    )
+
+    _assert_topology_rejected(replace(config, validation=validation))
+
+
+@pytest.mark.parametrize(
+    "literal_name",
+    ["project_root", "config_loader", "model_config", "executable", "devnull"],
+)
+def test_validation_gold_rejects_exact_agent_literal_paths(
+    tmp_path: Path,
+    literal_name: str,
+) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    validation = replace(config.validation, project_root=project)
+    literals = {
+        "project_root": project,
+        "config_loader": project / "config_loader.py",
+        "model_config": project / "model_config.yaml",
+        "executable": Path(sys.executable),
+        "devnull": Path("/dev/null"),
+    }
+    validation = replace(validation, validation_gold=literals[literal_name])
+
+    _assert_topology_rejected(replace(config, validation=validation))
+
+
+@pytest.mark.parametrize(
+    "relative_gold",
+    [Path("private/validation_gold"), Path("workflow/private/validation_gold")],
+)
+def test_project_private_validation_gold_is_not_rejected(
+    tmp_path: Path,
+    relative_gold: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    validation = replace(
+        config.validation,
+        project_root=project,
+        validation_gold=project / relative_gold,
+    )
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        return _test_result(tmp_path)
+
+    result = asyncio.run(
+        PiFullExperiment(
+            replace(config, validation=validation),
             validation_runner=run_validation,
             test_runner=run_test,
         ).run("prompt"),

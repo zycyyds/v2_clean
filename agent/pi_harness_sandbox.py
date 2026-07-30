@@ -29,22 +29,44 @@ def sandbox_visible_recursive_roots(
     return _unique_paths(roots)
 
 
+def recursive_paths_overlap(first: Path, second: Path) -> bool:
+    """Return whether either resolved path contains the other."""
+
+    left = first.expanduser().resolve(strict=False)
+    right = second.expanduser().resolve(strict=False)
+    return left == right or left in right.parents or right in left.parents
+
+
+def require_path_isolated(
+    private_path: Path,
+    recursive_roots: Iterable[Path],
+    *,
+    literal_paths: Iterable[Path] = (),
+    error_message: str,
+) -> None:
+    """Reject recursive overlap, while treating literal paths as exact-only."""
+
+    private = private_path.expanduser().resolve(strict=False)
+    for recursive_root in recursive_roots:
+        if recursive_paths_overlap(private, recursive_root):
+            raise ValueError(error_message)
+    for literal_path in literal_paths:
+        if private == literal_path.expanduser().resolve(strict=False):
+            raise ValueError(error_message)
+
+
 def require_test_gold_isolated(
     test_gold: Path,
     recursive_roots: Iterable[Path],
     *,
     literal_paths: Iterable[Path] = (),
 ) -> None:
-    """Reject recursive overlap, while treating literal paths as exact-only."""
-
-    gold = test_gold.expanduser().resolve(strict=False)
-    for recursive_root in recursive_roots:
-        public = recursive_root.expanduser().resolve(strict=False)
-        if gold == public or gold in public.parents or public in gold.parents:
-            raise ValueError(TEST_GOLD_OVERLAP_ERROR)
-    for literal_path in literal_paths:
-        if gold == literal_path.expanduser().resolve(strict=False):
-            raise ValueError(TEST_GOLD_OVERLAP_ERROR)
+    require_path_isolated(
+        test_gold,
+        recursive_roots,
+        literal_paths=literal_paths,
+        error_message=TEST_GOLD_OVERLAP_ERROR,
+    )
 
 
 def build_macos_sandbox_profile(

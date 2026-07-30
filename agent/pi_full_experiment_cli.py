@@ -7,7 +7,11 @@ import json
 import sys
 from pathlib import Path
 
-from agent.pi_full_experiment import PiFullExperiment, PiFullExperimentConfig
+from agent.pi_full_experiment import (
+    PiFullExperiment,
+    PiFullExperimentConfig,
+    validate_full_experiment_role_topology,
+)
 from agent.pi_harness import PiValidationHarnessConfig
 from agent.pi_harness_cli import _run_with_terminal_signals
 
@@ -39,7 +43,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    prompt = Path(args.prompt_file).expanduser().resolve().read_text(encoding="utf-8")
     evaluation_manifest = Path(args.evaluation_manifest)
     validation = PiValidationHarnessConfig(
         project_root=Path(__file__).parents[1],
@@ -57,17 +60,19 @@ async def _run(args: argparse.Namespace) -> int:
         skill_dirs=tuple(Path(item) for item in args.skills_dir),
         replay_timeout_seconds=args.replay_timeout,
     )
-    experiment = PiFullExperiment(
-        PiFullExperimentConfig(
-            validation=validation,
-            test_experiment=Path(args.test_experiment),
-            test_raw=Path(args.test_raw),
-            test_gold=Path(args.test_gold),
-            evaluation_manifest=evaluation_manifest,
-            test_replay_timeout_seconds=args.test_replay_timeout,
-            test_scoring_timeout_seconds=args.test_scoring_timeout,
-        ),
+    config = PiFullExperimentConfig(
+        validation=validation,
+        test_experiment=Path(args.test_experiment),
+        test_raw=Path(args.test_raw),
+        test_gold=Path(args.test_gold),
+        evaluation_manifest=evaluation_manifest,
+        test_replay_timeout_seconds=args.test_replay_timeout,
+        test_scoring_timeout_seconds=args.test_scoring_timeout,
     )
+    prompt_path = Path(args.prompt_file).expanduser().resolve(strict=False)
+    validate_full_experiment_role_topology(config, prompt_file=prompt_path)
+    prompt = prompt_path.read_text(encoding="utf-8")
+    experiment = PiFullExperiment(config)
     result, received_signal = await _run_with_terminal_signals(experiment.run(prompt))
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
     print(
