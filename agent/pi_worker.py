@@ -94,9 +94,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--max-iters", type=int, default=10_000)
     parser.add_argument("--skills-dir", action="append", default=[])
-    parser.add_argument("--tool-profile", choices=("full", "test_declaration"), default="full")
-    parser.add_argument("--read-root", action="append", default=[])
-    parser.add_argument("--runner-spec")
     return parser.parse_args(argv)
 
 
@@ -106,9 +103,6 @@ async def _run(args: argparse.Namespace) -> None:
             workdir=Path(args.workdir),
             max_iters=args.max_iters,
             skill_dirs=tuple(Path(item) for item in args.skills_dir),
-            tool_profile=args.tool_profile,
-            read_roots=tuple(Path(item) for item in args.read_root),
-            runner_spec_path=Path(args.runner_spec) if args.runner_spec else None,
         ),
         output=sys.stderr,
     )

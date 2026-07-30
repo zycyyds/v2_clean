@@ -110,17 +110,26 @@ Pi式Validation Harness使用一个持续Agent：
 - `run_manifest.json`记录Git提交与dirty diff哈希、Prompt/数据/评估manifest哈希、split keys哈希、模型公开配置、API槽位数量、Skill状态和评分器版本，不记录Key值或指纹。
 - 每轮私有报告记录Agent与评分耗时、token、模型/ReAct/工具调用、工具错误、API failover、压缩和流事件/block ID摘要。
 
-Validation完成后，独立Test Harness冻结`reproducible_snapshot`并优先直接重放。只有运行声明失败时才创建全新的Test Declaration Agent；该Agent没有Bash和Skill，只能读取冻结Pipeline与公开数据，并且后端只允许写`runner_spec.json`。声明Agent关闭后，宿主才读取Test Gold并评分一次，分数不会返回Agent。
+Validation完成后，Test分成两个完全无Agent的宿主阶段。先在4000例公开Validation raw上预检冻结的`reproducible_snapshot`；人工确认预检成功后，正式Test才允许对5000例Test raw执行冻结Pipeline一次，并由独立无模型评分子进程读取隐藏Gold一次。Test分数只报告给用户，不会返回Agent，也不会触发修复或重试。
 
 ```bash
 conda run -n py3102 env PYTHONPATH=. \
+  python -m agent.pi_test_preflight_cli \
+  --validation-experiment /absolute/path/to/validation-experiment \
+  --preflight-experiment /absolute/path/to/new-empty-preflight-experiment \
+  --preflight-raw /absolute/path/to/validation/raw \
+  --replay-timeout 1800
+
+conda run -n py3102 env PYTHONPATH=. \
   python -m agent.pi_test_harness_cli \
   --validation-experiment /absolute/path/to/validation-experiment \
+  --preflight-attestation /absolute/path/to/preflight-experiment/host/preflight_attestation.json \
   --test-experiment /absolute/path/to/new-empty-test-experiment \
   --test-raw /absolute/path/to/test/raw \
   --test-gold /absolute/path/to/test/reference_private \
   --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --max-declaration-repairs 3
+  --replay-timeout 1800 \
+  --scoring-timeout 3600
 ```
 
 原有`reference-guided-*`命令仍保留旧parity架构：宿主管理attempt，每个attempt创建全新的Agent和AgentState，冻结best后进入原有Test流程。两条链路互不共享上下文或实验目录。
@@ -262,7 +271,7 @@ conda run -n py3102 env PYTHONPATH=. \
 
 不传`--skills-dir`即为无Skill实验；Pi式Harness当前也不注册CodeGraph。
 
-### 1.3 冻结后运行独立5000例Test
+### 1.3 冻结后先运行4000例公开预检
 
 只有上一条Validation实验最终状态为`SUCCESS_REPRODUCIBLE`时才运行：
 
@@ -270,17 +279,35 @@ conda run -n py3102 env PYTHONPATH=. \
 cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
 
 conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_test_harness_cli \
-  --validation-experiment /Users/mac/PycharmProjects/pi_harness_runs/mimic_10train_20val_pi_harness_seed666_v4 \
-  --test-experiment /Users/mac/PycharmProjects/pi_harness_runs/mimic_10train_20val_5000test_seed666_v1 \
-  --test-raw /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/test/raw \
-  --test-gold /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/test/reference_private \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --max-declaration-repairs 3 \
-  --max-iters 10000
+  python -m agent.pi_test_preflight_cli \
+  --validation-experiment /absolute/path/to/successful-validation-experiment \
+  --preflight-experiment /absolute/path/to/new-empty-preflight-experiment \
+  --preflight-raw /absolute/path/to/4000-validation/raw \
+  --replay-timeout 1800
 ```
 
-Test Harness只评分一次且不会把分数反馈给任何Agent。直接重放成功时不会创建Test Agent；只有运行声明失败时才启动声明修复。
+预检只检查冻结Pipeline能否在公开大规模输入上退出成功并生成至少一个结构化文件，不读取Gold、不计算质量分数。成功后生成`host/preflight_attestation.json`，预检结果包随即删除。
+
+### 1.4 人工确认后运行一次5000例Test
+
+只有预检返回`SUCCESS`并人工确认attestation后，单独运行：
+
+```bash
+cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
+
+conda run -n py3102 env PYTHONPATH=. \
+  python -m agent.pi_test_harness_cli \
+  --validation-experiment /absolute/path/to/successful-validation-experiment \
+  --preflight-attestation /absolute/path/to/preflight-experiment/host/preflight_attestation.json \
+  --test-experiment /absolute/path/to/new-empty-test-experiment \
+  --test-raw /absolute/path/to/5000-test/raw \
+  --test-gold /absolute/path/to/5000-test/reference_private \
+  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
+  --replay-timeout 1800 \
+  --scoring-timeout 3600
+```
+
+Test Harness不加载模型、Skill、CodeGraph或API Key。Test raw严格执行一次，成功后隐藏评分严格执行一次；执行失败不重试、不评分，低分仍表示`SUCCESS`，因为该状态只说明执行和评分完整完成。
 
 ### 2. Validation Loop 与自动 Test
 

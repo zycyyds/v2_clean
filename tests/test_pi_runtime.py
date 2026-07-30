@@ -102,33 +102,13 @@ def test_pi_agent_config_rejects_invalid_inputs(tmp_path: Path) -> None:
         ).normalized()
 
 
-def test_test_declaration_toolkit_has_no_bash_and_only_writes_runner_spec(tmp_path: Path) -> None:
-    from agentscope.message import ToolResultState
+def test_pi_runtime_has_no_test_declaration_configuration(tmp_path: Path) -> None:
+    config = PiAgentConfig(workdir=tmp_path)
 
-    frozen = tmp_path / "frozen"
-    frozen.mkdir()
-    runner_spec = tmp_path / "runner_spec.json"
-    toolkit = build_pi_toolkit(
-        tmp_path,
-        tool_profile="test_declaration",
-        read_roots=(frozen, tmp_path),
-        runner_spec_path=runner_spec,
-    )
-
-    async def exercise():
-        schemas = await toolkit.get_tool_schemas()
-        write = await toolkit.get_tool("Write")
-        allowed = await write.call(file_path=str(runner_spec), content="{}\n")
-        with pytest.raises(PermissionError, match="only runner_spec.json"):
-            await write.call(file_path=str(tmp_path / "adapt.py"), content="bad\n")
-        return schemas, allowed
-
-    schemas, allowed = asyncio.run(exercise())
-    assert {schema["function"]["name"] for schema in schemas} == {
-        "Read", "Glob", "Grep", "Write", "Edit"
-    }
-    assert allowed.state is not ToolResultState.ERROR
-    assert not (tmp_path / "adapt.py").exists()
+    assert not hasattr(config, "tool_profile")
+    assert not hasattr(config, "runner_spec_path")
+    with pytest.raises(TypeError):
+        PiAgentConfig(workdir=tmp_path, runner_spec_path=tmp_path / "runner_spec.json")
 
 
 def test_pi_compression_policy_matches_m3_pi_defaults() -> None:
