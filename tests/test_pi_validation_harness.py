@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import sys
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from agent.pi_harness import (
     PiValidationHarness,
     PiValidationHarnessConfig,
     ReplayExecution,
+    ReplayProcessReapError,
+    _kill_and_reap_process_group,
 )
 
 
@@ -107,6 +113,18 @@ class InterruptingWorker(FakeWorker):
     async def interrupt(self) -> None:
         self.interrupted = True
         self.events.append("interrupt")
+
+
+class BlockingCloseWorker(FakeWorker):
+    def __init__(self, workdir: Path) -> None:
+        super().__init__(workdir)
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_started.set()
+        await self.release_close.wait()
+        self.closed = True
 
 
 def _report(score: float) -> dict:
@@ -290,9 +308,49 @@ def test_harness_emits_low_frequency_phase_updates(tmp_path: Path) -> None:
     assert "[Harness] independent replay: status=SUCCESS score=0.700000" in updates
 
 
-def test_cancelled_turn_replays_best_and_closes_same_worker(tmp_path: Path) -> None:
+def test_cancelled_turn_preserves_best_without_replay_and_closes_worker(
+    tmp_path: Path,
+) -> None:
     config = replace(_config(tmp_path), max_rounds=3, patience=3)
     worker = InterruptingWorker(config.experiment_dir / "agent_workdir")
+    replay_calls = 0
+
+    async def replay(source: Path) -> ReplayExecution:
+        nonlocal replay_calls
+        replay_calls += 1
+        raise AssertionError("interruption must not start independent replay")
+
+    harness = PiValidationHarness(
+        config,
+        worker=worker,
+        scorer=lambda *_args, **_kwargs: _report(0.7),
+        replay_runner=replay,
+        sandbox_probe=lambda *_args, **_kwargs: None,
+    )
+
+    result = asyncio.run(harness.run("initial task"))
+
+    assert result.status == "INTERRUPTED"
+    assert result.stop_reason == "keyboard_interrupt"
+    assert result.rounds == 1
+    assert result.best_score == 0.7
+    assert result.reproducible_score == 0.0
+    assert replay_calls == 0
+    assert (config.experiment_dir / "host/best_snapshot").is_dir()
+    assert not any((config.experiment_dir / "host/replay").iterdir())
+    assert worker.interrupted
+    assert worker.closed
+    assert worker.events == ["start", "turn", "turn_cancelled", "interrupt"]
+    report = json.loads((config.experiment_dir / "host/run_report.json").read_text())
+    assert report["status"] == "INTERRUPTED"
+    assert report["reproducible_score"] == 0.0
+
+
+def test_cancellation_during_worker_close_finishes_cleanup_and_reports_interrupted(
+    tmp_path: Path,
+) -> None:
+    config = replace(_config(tmp_path), max_rounds=1)
+    worker = BlockingCloseWorker(config.experiment_dir / "agent_workdir")
 
     async def replay(source: Path) -> ReplayExecution:
         return ReplayExecution(
@@ -313,18 +371,67 @@ def test_cancelled_turn_replays_best_and_closes_same_worker(tmp_path: Path) -> N
         sandbox_probe=lambda *_args, **_kwargs: None,
     )
 
-    result = asyncio.run(harness.run("initial task"))
+    async def exercise():
+        task = asyncio.create_task(harness.run("initial task"))
+        await worker.close_started.wait()
+        task.cancel()
+        worker.release_close.set()
+        return await task
 
-    assert result.status == "INTERRUPTED_REPLAYED"
-    assert result.stop_reason == "keyboard_interrupt"
+    result = asyncio.run(exercise())
+
+    assert result.status == "INTERRUPTED"
     assert result.rounds == 1
     assert result.best_score == 0.7
-    assert result.reproducible_score == 0.7
-    assert worker.interrupted
+    assert result.reproducible_score == 0.0
     assert worker.closed
-    assert worker.events == ["start", "turn", "turn_cancelled", "interrupt"]
     report = json.loads((config.experiment_dir / "host/run_report.json").read_text())
-    assert report["status"] == "INTERRUPTED_REPLAYED"
+    assert report["status"] == "INTERRUPTED"
+
+
+def test_replay_reap_failure_is_reported() -> None:
+    class FakeProcess:
+        pid = 12345
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(60)
+
+        def kill(self) -> None:
+            return None
+
+        async def wait(self):
+            await asyncio.sleep(60)
+
+    async def exercise() -> None:
+        with pytest.raises(RuntimeError, match="Replay process did not exit after SIGKILL"):
+            await _kill_and_reap_process_group(FakeProcess(), timeout=0.001)  # type: ignore[arg-type]
+
+    asyncio.run(exercise())
+
+
+def test_replay_reap_failure_preserves_runtime_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    harness = PiValidationHarness(config, sandbox_probe=lambda *_args, **_kwargs: None)
+    harness._prepare()
+
+    async def fail_to_reap(_source: Path, replay_root: Path):
+        (replay_root / "process.marker").write_text("still-owned", encoding="utf-8")
+        raise ReplayProcessReapError("Replay process did not exit after SIGKILL")
+
+    monkeypatch.setattr(harness, "_run_replay_in_directory", fail_to_reap)
+
+    with pytest.raises(ReplayProcessReapError):
+        asyncio.run(harness._run_replay(source))
+
+    replay_roots = list((config.experiment_dir / "host/runtime").glob("replay-*"))
+    assert len(replay_roots) == 1
+    assert (replay_roots[0] / "process.marker").read_text(encoding="utf-8") == "still-owned"
 
 
 def test_sandbox_probe_failure_closes_worker_without_starting_attempt(tmp_path: Path) -> None:
@@ -529,6 +636,89 @@ def test_clean_replay_preserves_pipeline_bundle_and_authorizes_train_raw(
     assert config.train_reference.resolve() in read_roots
     assert config.validation_raw.resolve() in read_roots
     assert config.validation_gold.resolve() not in read_roots
+
+
+def test_cancelled_replay_kills_and_reaps_process_group(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import agent.pi_harness as harness_module
+
+    config = _config(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "build.py").write_text("# unused\n", encoding="utf-8")
+    (source / "submission.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "result_root": "result_package",
+                "replay": {
+                    "argv": [
+                        "python",
+                        "build.py",
+                        "--raw",
+                        "{raw_root}",
+                        "--out",
+                        "{output_dir}",
+                    ],
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    marker = tmp_path / "replay.pid"
+    original_create_subprocess_exec = asyncio.create_subprocess_exec
+    process_holder = {}
+
+    async def fake_create_subprocess_exec(*_command, **kwargs):
+        program = (
+            "import os, pathlib, time; "
+            f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+            "time.sleep(60)"
+        )
+        process = await original_create_subprocess_exec(
+            sys.executable,
+            "-c",
+            program,
+            cwd=kwargs["cwd"],
+            env=kwargs["env"],
+            stdout=kwargs["stdout"],
+            stderr=kwargs["stderr"],
+            start_new_session=True,
+        )
+        process_holder["process"] = process
+        return process
+
+    monkeypatch.setattr(harness_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    harness = PiValidationHarness(config, sandbox_probe=lambda *_args, **_kwargs: None)
+    harness._prepare()
+
+    async def exercise() -> None:
+        task = asyncio.create_task(harness._run_replay(source))
+        for _ in range(100):
+            if marker.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert marker.exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    process = None
+    try:
+        asyncio.run(exercise())
+        process = process_holder["process"]
+        with pytest.raises(ProcessLookupError):
+            os.killpg(process.pid, 0)
+        assert process.returncode is not None
+    finally:
+        process = process or process_holder.get("process")
+        if process is not None and process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_real_independent_replay_denies_gold_network_and_host_write(tmp_path: Path) -> None:

@@ -3,9 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from agent.pi_worker_client import (
     JsonlWorkerClient,
@@ -99,7 +103,115 @@ def test_jsonl_worker_client_reuses_one_process(tmp_path: Path) -> None:
         assert (await client.request("run_turn", prompt="second"))["prompt"] == "second"
         assert client.process is process
         await client.close()
+        await client.close()
         assert process is not None and process.returncode == 0
+        assert client.process is None
+
+    asyncio.run(exercise())
+
+
+def test_worker_interrupt_escalates_to_sigterm_and_reaps(tmp_path: Path) -> None:
+    marker = tmp_path / "sigterm.txt"
+    script = tmp_path / "ignore_sigint.py"
+    script.write_text(
+        "import json, signal, sys\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        f"def stop(*_args): Path({str(marker)!r}).write_text('term'); raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "print(json.dumps({'event': 'ready'}), flush=True)\n"
+        "for _line in sys.stdin: pass\n",
+        encoding="utf-8",
+    )
+
+    async def exercise() -> tuple[float, int | None]:
+        client = JsonlWorkerClient(
+            command=[sys.executable, "-u", str(script)],
+            cwd=tmp_path,
+            env={},
+            shutdown_timeout=0.05,
+        )
+        await client.start()
+        process = client.process
+        assert process is not None
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(client.interrupt(), timeout=1.0)
+        finally:
+            if process.returncode is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+        return time.monotonic() - started, process.returncode
+
+    elapsed, returncode = asyncio.run(exercise())
+
+    assert elapsed < 1.0
+    assert marker.read_text(encoding="utf-8") == "term"
+    assert returncode is not None
+
+
+def test_worker_close_escalates_to_sigkill_and_is_idempotent(tmp_path: Path) -> None:
+    script = tmp_path / "ignore_shutdown.py"
+    script.write_text(
+        "import json, signal, sys, time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print(json.dumps({'event': 'ready'}), flush=True)\n"
+        "for line in sys.stdin:\n"
+        " request = json.loads(line)\n"
+        " if request.get('command') == 'close': time.sleep(60)\n",
+        encoding="utf-8",
+    )
+
+    async def exercise() -> tuple[float, int | None]:
+        client = JsonlWorkerClient(
+            command=[sys.executable, "-u", str(script)],
+            cwd=tmp_path,
+            env={},
+            shutdown_timeout=0.05,
+        )
+        await client.start()
+        process = client.process
+        assert process is not None
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(client.close(), timeout=1.0)
+            await client.close()
+        finally:
+            if process.returncode is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+        return time.monotonic() - started, process.returncode
+
+    elapsed, returncode = asyncio.run(exercise())
+
+    assert elapsed < 1.0
+    assert returncode == -signal.SIGKILL
+
+
+def test_worker_keeps_process_handle_when_sigkill_cannot_be_reaped(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        client = JsonlWorkerClient(
+            command=[sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            env={},
+        )
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+
+        process = FakeProcess()
+        client.process = process  # type: ignore[assignment]
+        client._signal_process_group = lambda *_args: None  # type: ignore[method-assign]
+
+        async def never_exits(_process) -> bool:
+            return False
+
+        client._wait_for_exit = never_exits  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="did not exit after SIGKILL"):
+            await client.interrupt(force=True)
+        assert client.process is process
 
     asyncio.run(exercise())
 

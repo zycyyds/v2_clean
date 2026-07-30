@@ -122,15 +122,18 @@ class JsonlWorkerClient:
         env: dict[str, str] | None,
         output: TextIO | None = None,
         startup_timeout: float = 60.0,
+        shutdown_timeout: float = 5.0,
     ) -> None:
         self.command = list(command)
         self.cwd = Path(cwd).resolve()
         self.env = env
         self.output = output or sys.stderr
         self.startup_timeout = startup_timeout
+        self.shutdown_timeout = shutdown_timeout
         self.process: asyncio.subprocess.Process | None = None
         self._request_id = 0
         self._lock = asyncio.Lock()
+        self._shutdown_lock = asyncio.Lock()
         self._stderr_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -180,28 +183,99 @@ class JsonlWorkerClient:
         await self.request("clear_file_cache")
 
     async def close(self) -> None:
-        process = self.process
-        if process is None:
-            return
-        if process.returncode is None:
-            try:
-                await self.request("close")
-            except (BrokenPipeError, ConnectionError, RuntimeError):
-                process.terminate()
-            await process.wait()
-        if self._stderr_task is not None:
-            await self._stderr_task
-        self.process = None
+        async with self._shutdown_lock:
+            process = self.process
+            if process is None:
+                return
+            if process.returncode is None:
+                try:
+                    await asyncio.wait_for(
+                        self.request("close"),
+                        timeout=self.shutdown_timeout,
+                    )
+                    if not await self._wait_for_exit(process):
+                        await self._terminate_with_escalation(process)
+                except (
+                    asyncio.TimeoutError,
+                    BrokenPipeError,
+                    ConnectionError,
+                    RuntimeError,
+                ):
+                    await self._terminate_with_escalation(process)
+            await self._finalize_process(process)
 
     async def interrupt(self, *, force: bool = False) -> None:
-        process = self.process
-        if process is None or process.returncode is not None:
-            return
-        if force:
-            os.killpg(process.pid, signal.SIGKILL)
-        else:
-            os.killpg(process.pid, signal.SIGINT)
-        await process.wait()
+        async with self._shutdown_lock:
+            process = self.process
+            if process is None:
+                return
+            if process.returncode is None:
+                if force:
+                    self._signal_process_group(process, signal.SIGKILL)
+                    if not await self._wait_for_exit(process):
+                        raise RuntimeError("Pi worker did not exit after SIGKILL")
+                else:
+                    await self._terminate_with_escalation(process)
+            await self._finalize_process(process)
+
+    async def _terminate_with_escalation(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        for requested_signal in (signal.SIGINT, signal.SIGTERM):
+            if process.returncode is not None:
+                return
+            self._signal_process_group(process, requested_signal)
+            if await self._wait_for_exit(process):
+                return
+        if process.returncode is None:
+            self._signal_process_group(process, signal.SIGKILL)
+            if not await self._wait_for_exit(process):
+                raise RuntimeError("Pi worker did not exit after SIGKILL")
+
+    async def _wait_for_exit(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> bool:
+        if process.returncode is not None:
+            return True
+        try:
+            await asyncio.wait_for(
+                process.wait(),
+                timeout=self.shutdown_timeout,
+            )
+        except asyncio.TimeoutError:
+            return False
+        return True
+
+    @staticmethod
+    def _signal_process_group(
+        process: asyncio.subprocess.Process,
+        requested_signal: signal.Signals,
+    ) -> None:
+        try:
+            os.killpg(process.pid, requested_signal)
+        except ProcessLookupError:
+            pass
+
+    async def _finalize_process(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        stderr_task = self._stderr_task
+        if stderr_task is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(stderr_task),
+                    timeout=self.shutdown_timeout,
+                )
+            except asyncio.TimeoutError:
+                stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
+        if self.process is process and process.returncode is not None:
+            self.process = None
+        if process.returncode is not None:
+            self._stderr_task = None
 
     async def _read_message(self) -> dict[str, Any]:
         if self.process is None or self.process.stdout is None:

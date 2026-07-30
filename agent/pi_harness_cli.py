@@ -4,9 +4,45 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import signal
 from pathlib import Path
+from typing import Awaitable, TypeVar
 
 from agent.pi_harness import PiValidationHarness, PiValidationHarnessConfig
+
+
+_ResultT = TypeVar("_ResultT")
+_TERMINAL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+async def _run_with_terminal_signals(
+    operation: Awaitable[_ResultT],
+) -> tuple[_ResultT, signal.Signals | None]:
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    if task is None:
+        raise RuntimeError("terminal signal handling requires a current asyncio task")
+    received: signal.Signals | None = None
+    installed: list[signal.Signals] = []
+
+    def cancel(signum: signal.Signals) -> None:
+        nonlocal received
+        if received is None:
+            received = signum
+            task.cancel()
+
+    try:
+        for signum in _TERMINAL_SIGNALS:
+            try:
+                loop.add_signal_handler(signum, cancel, signum)
+            except (NotImplementedError, RuntimeError):
+                continue
+            installed.append(signum)
+        result = await operation
+        return result, received
+    finally:
+        for signum in installed:
+            loop.remove_signal_handler(signum)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -51,7 +87,7 @@ async def _run(args: argparse.Namespace) -> int:
             replay_timeout_seconds=args.replay_timeout,
         ),
     )
-    result = await harness.run(prompt)
+    result, received_signal = await _run_with_terminal_signals(harness.run(prompt))
     print(
         json.dumps(
             {
@@ -68,6 +104,8 @@ async def _run(args: argparse.Namespace) -> int:
             indent=2,
         ),
     )
+    if received_signal is not None:
+        return 128 + int(received_signal)
     if result.status == "SUCCESS_REPRODUCIBLE":
         return 0
     if result.status.startswith("INTERRUPTED"):

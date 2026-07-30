@@ -45,6 +45,10 @@ ALLOWED_REPLAY_PLACEHOLDERS = {
 }
 SNAPSHOT_EXCLUDES = {".agent_runs"}
 _PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
+
+
+class ReplayProcessReapError(RuntimeError):
+    """Raised when a killed replay process cannot be reaped in time."""
 _SHELL_LAUNCHERS = {"bash", "dash", "env", "fish", "ksh", "sh", "zsh"}
 
 
@@ -200,6 +204,44 @@ def render_replay_argv(
             + ", ".join(unavailable),
         )
     return [item.format_map(values) for item in submission.replay_argv]
+
+
+async def _kill_and_reap_process_group(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 5.0,
+) -> tuple[bytes, bytes]:
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        return await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise ReplayProcessReapError("Replay process did not exit after SIGKILL")
+        return b"", b""
+
+
+async def _close_worker_without_losing_cancellation(worker: Any) -> bool:
+    """Finish bounded worker cleanup and report cancellation during cleanup."""
+    close_task = asyncio.create_task(worker.close())
+    cancelled = False
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    await close_task
+    return cancelled
 
 
 def record_round_score(
@@ -495,32 +537,43 @@ class PiValidationHarness:
                     await self.worker.interrupt()
                 except Exception:
                     pass
-            interrupted_replay: ReplayExecution | None = None
-            if self.best_snapshot.is_dir():
-                interrupted_replay = await self.replay_runner(self.best_snapshot)
             result = PiHarnessResult(
-                status=(
-                    "INTERRUPTED_REPLAYED"
-                    if interrupted_replay is not None
-                    and self._replay_is_acceptable(interrupted_replay, progress.best_score)
-                    else "INTERRUPTED"
-                ),
+                status="INTERRUPTED",
                 stop_reason="keyboard_interrupt",
                 rounds=progress.round_index,
                 repair_rounds=repair_rounds,
                 best_score=max(progress.best_score, 0.0),
-                reproducible_score=interrupted_replay.score if interrupted_replay else 0.0,
+                reproducible_score=0.0,
                 best_snapshot=self.best_snapshot,
                 reproducible_snapshot=self.best_snapshot,
             )
             self._atomic_json(self.host_dir / "run_report.json", self._run_report_payload(result))
             return result
         finally:
+            cancelled_during_cleanup = False
             if self.worker is not None:
-                await self.worker.close()
+                cancelled_during_cleanup = await _close_worker_without_losing_cancellation(
+                    self.worker,
+                )
             if self._worker_log_handle is not None:
                 self._worker_log_handle.close()
                 self._worker_log_handle = None
+            if cancelled_during_cleanup:
+                result = PiHarnessResult(
+                    status="INTERRUPTED",
+                    stop_reason="keyboard_interrupt",
+                    rounds=progress.round_index,
+                    repair_rounds=repair_rounds,
+                    best_score=max(progress.best_score, 0.0),
+                    reproducible_score=0.0,
+                    best_snapshot=self.best_snapshot,
+                    reproducible_snapshot=self.best_snapshot,
+                )
+                self._atomic_json(
+                    self.host_dir / "run_report.json",
+                    self._run_report_payload(result),
+                )
+                return result
 
     def _prepare(self, prompt: str = "") -> None:
         if not self.experiment_dir.exists():
@@ -750,10 +803,15 @@ class PiValidationHarness:
         replay_root = Path(
             tempfile.mkdtemp(prefix="replay-", dir=runtime_root),
         )
+        remove_replay_root = True
         try:
             return await self._run_replay_in_directory(source, replay_root)
+        except ReplayProcessReapError:
+            remove_replay_root = False
+            raise
         finally:
-            shutil.rmtree(replay_root, ignore_errors=True)
+            if remove_replay_root:
+                shutil.rmtree(replay_root, ignore_errors=True)
 
     async def _run_replay_in_directory(
         self,
@@ -848,8 +906,7 @@ class PiValidationHarness:
                 timeout=self.config.replay_timeout_seconds,
             )
         except asyncio.TimeoutError:
-            os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = await process.communicate()
+            stdout, stderr = await _kill_and_reap_process_group(process)
             return ReplayExecution(
                 status="TIMEOUT",
                 returncode=process.returncode,
@@ -859,6 +916,9 @@ class PiValidationHarness:
                 result_root=submission.result_root,
                 score_report=None,
             )
+        except asyncio.CancelledError:
+            await _kill_and_reap_process_group(process)
+            raise
         stdout_text = stdout.decode(errors="replace")[-8000:]
         stderr_text = stderr.decode(errors="replace")[-8000:]
         if process.returncode != 0:
