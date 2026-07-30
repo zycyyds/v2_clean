@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import signal
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,35 @@ from agent.pi_test_harness import (
     TestReplayExecution,
     _communicate_with_escalation,
 )
+
+
+API_KEY_SENTINEL = "GOLD_VALUE_MUST_NOT_LEAK"
+API_KEY_NAMES = (
+    "OPENAI_API_KEY",
+    "MINIMAX_API_KEY",
+    "ANTHROPIC_API_KEY",
+)
+
+
+def _xfail_if_sandbox_exec_is_blocked() -> None:
+    probe = subprocess.run(
+        [
+            "/usr/bin/sandbox-exec",
+            "-p",
+            "(version 1)\n(allow default)",
+            "/usr/bin/true",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = f"{probe.stdout}\n{probe.stderr}"
+    if (
+        probe.returncode != 0
+        and "sandbox_apply" in output
+        and "Operation not permitted" in output
+    ):
+        pytest.xfail("outer Codex sandbox blocks nested sandbox-exec")
 
 
 def _validation_fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -864,7 +894,12 @@ def test_real_preflight_and_test_replay_deny_private_inputs_and_network(
 )
 def test_real_direct_test_replay_allows_only_frozen_public_inputs_and_result_write(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _xfail_if_sandbox_exec_is_blocked()
+    for name in API_KEY_NAMES:
+        monkeypatch.setenv(name, API_KEY_SENTINEL)
+
     validation, train_reference = _validation_fixture(tmp_path)
     config = _test_config(tmp_path, None)
     source = validation / "host/reproducible_snapshot"
@@ -898,7 +933,12 @@ def test_real_direct_test_replay_allows_only_frozen_public_inputs_and_result_wri
     ]
     submission_path.write_text(json.dumps(submission), encoding="utf-8")
     (source / "scripts/build.py").write_text(
-        "import argparse,pathlib,socket\n"
+        "import argparse,os,pathlib,socket\n"
+        f"sentinel={API_KEY_SENTINEL!r}\n"
+        f"api_key_names={API_KEY_NAMES!r}\n"
+        "assert all(name not in os.environ for name in api_key_names)\n"
+        "assert all('API_KEY' not in key or value != sentinel "
+        "for key,value in os.environ.items())\n"
         "p=argparse.ArgumentParser(); p.add_argument('--train-reference'); "
         "p.add_argument('--raw'); p.add_argument('--out'); a=p.parse_args()\n"
         "checks=[]\n"
@@ -932,14 +972,6 @@ def test_real_direct_test_replay_allows_only_frozen_public_inputs_and_result_wri
         return ScoreExecution("SUCCESS", 0, "", 0.1, _score_report(0.75))
 
     result = asyncio.run(PiTestHarness(config, score_runner=score_runner).run())
-    if result.status == "REPLAY_FAILED":
-        run_report = json.loads(
-            (config.test_experiment / "host/run_report.json").read_text(encoding="utf-8"),
-        )
-        replay_stderr = str((run_report.get("replay") or {}).get("stderr") or "")
-        if "sandbox_apply" in replay_stderr and "Operation not permitted" in replay_stderr:
-            pytest.xfail("outer Codex sandbox blocks nested sandbox-exec")
-
     assert result.status == "SUCCESS"
     assert result.preflight_status == "NOT_RUN"
     assert result.test_execution_count == 1
