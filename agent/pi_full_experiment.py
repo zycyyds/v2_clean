@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -43,6 +44,37 @@ class PiFullExperimentResult:
 
 ValidationRunner = Callable[[str], Awaitable[PiHarnessResult]]
 TestRunner = Callable[[], Awaitable[PiTestHarnessResult]]
+
+VALIDATION_STATUSES = frozenset(
+    {"SUCCESS_REPRODUCIBLE", "INTERRUPTED", "FAILED", "REPLAY_FAILED"},
+)
+TEST_STATUSES = frozenset(
+    {
+        "SUCCESS",
+        "PREFLIGHT_FAILED",
+        "REPLAY_FAILED",
+        "SCORING_FAILED",
+        "INTERRUPTED",
+        "CLEANUP_FAILED",
+    },
+)
+FULL_STATUSES = TEST_STATUSES | {"VALIDATION_FAILED"}
+PHASES = frozenset(
+    {"validation", "preflight", "test_replay", "scoring", "complete"},
+)
+REPLAY_STATUSES = frozenset(
+    {
+        "SUCCESS",
+        "INVALID_SOURCE",
+        "INVALID_SUBMISSION",
+        "TIMEOUT",
+        "EXECUTION_FAILED",
+        "INVALID_OUTPUT",
+        "INTERRUPTED",
+        "CLEANUP_FAILED",
+    },
+)
+SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 
 class PiFullExperiment:
@@ -126,17 +158,20 @@ class PiFullExperiment:
         )
         payload: dict[str, Any] = {
             "schema_version": 1,
-            "status": self._redact_text(status),
-            "phase": self._redact_text(phase),
-            "validation_experiment": self._redact_text(
+            "status": _known_text(status, FULL_STATUSES, "UNKNOWN"),
+            "phase": _known_text(phase, PHASES, "unknown"),
+            "validation_experiment": self._redact_path_text(
                 str(self.config.validation.experiment_dir.expanduser().resolve()),
             ),
-            "test_experiment": self._redact_text(
+            "test_experiment": self._redact_path_text(
                 str(self.config.test_experiment.expanduser().resolve()),
             ),
             "validation": {
-                "status": self._redact_text(validation.status),
-                "stop_reason": self._redact_text(validation.stop_reason),
+                "status": _known_text(
+                    validation.status,
+                    VALIDATION_STATUSES,
+                    "UNKNOWN",
+                ),
                 "rounds": validation.rounds,
                 "repair_rounds": validation.repair_rounds,
                 "best_score": validation.best_score,
@@ -166,14 +201,16 @@ class PiFullExperiment:
         if test is None:
             return None
         return {
-            "status": self._redact_text(test.status),
-            "phase": self._redact_text(test.phase),
+            "status": _known_text(test.status, TEST_STATUSES, "UNKNOWN"),
+            "phase": _known_text(test.phase, PHASES, "unknown"),
             "scored": test.scored,
             "score": test.score,
-            "replay_status": self._redact_text(test.replay_status),
-            "frozen_snapshot_sha256": self._redact_text(
-                test.frozen_snapshot_sha256,
+            "replay_status": _known_text(
+                test.replay_status,
+                REPLAY_STATUSES,
+                "UNKNOWN",
             ),
+            "frozen_snapshot_sha256": _sha256_text(test.frozen_snapshot_sha256),
             "frozen_snapshot": self._public_path(
                 test.frozen_snapshot,
                 self.config.test_experiment,
@@ -193,9 +230,9 @@ class PiFullExperiment:
             path.expanduser().resolve().relative_to(public_root.expanduser().resolve())
         except (OSError, RuntimeError, ValueError):
             return ""
-        return self._redact_text(str(path))
+        return self._redact_path_text(str(path))
 
-    def _redact_text(self, text: str) -> str:
+    def _redact_path_text(self, text: str) -> str:
         hidden_roots = (
             self.config.validation.validation_gold.expanduser().resolve(),
             self.config.test_gold.expanduser().resolve(),
@@ -204,6 +241,16 @@ class PiFullExperiment:
         for root in sorted((str(path) for path in hidden_roots), key=len, reverse=True):
             redacted = redacted.replace(root, "<hidden>")
         return redacted
+
+
+def _known_text(value: str, allowed: frozenset[str], fallback: str) -> str:
+    return value if isinstance(value, str) and value in allowed else fallback
+
+
+def _sha256_text(value: str) -> str:
+    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+        return ""
+    return value
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:

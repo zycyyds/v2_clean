@@ -68,7 +68,7 @@ def _test_result(
         score=score,
         test_execution_count=1,
         replay_status="SUCCESS" if phase != "test_replay" else status,
-        frozen_snapshot_sha256="frozen-sha256",
+        frozen_snapshot_sha256="a" * 64,
         frozen_snapshot=experiment / "host/frozen_snapshot",
         result_package=experiment / "host/test_result_package",
         preflight_status="NOT_RUN",
@@ -205,14 +205,19 @@ def test_combined_report_is_host_only_complete_and_gold_free(tmp_path: Path) -> 
     assert result.report_path == expected_path.resolve()
     report_text = result.report_path.read_text(encoding="utf-8")
     report = json.loads(report_text)
+    assert report["status"] == "SUCCESS"
+    assert report["phase"] == "complete"
+    assert report["validation"]["status"] == "SUCCESS_REPRODUCIBLE"
     assert report["validation"]["rounds"] == 3
     assert report["validation"]["best_score"] == 0.91
     assert report["validation"]["reproducible_score"] == 0.9
     assert report["test"]["status"] == "SUCCESS"
+    assert report["test"]["phase"] == "complete"
+    assert report["test"]["replay_status"] == "SUCCESS"
     assert report["test"]["score"] == 0.88
     assert report["test_execution_count"] == 1
     assert report["scoring_execution_count"] == 1
-    assert report["test"]["frozen_snapshot_sha256"] == "frozen-sha256"
+    assert report["test"]["frozen_snapshot_sha256"] == "a" * 64
     assert report["validation"]["reproducible_snapshot"] == str(
         result.validation_result.reproducible_snapshot,
     )
@@ -274,10 +279,80 @@ def test_combined_report_rejects_injected_gold_paths_and_redacts_free_text(
     assert report["validation"]["reproducible_snapshot"] == ""
     assert report["test"]["frozen_snapshot"] == ""
     assert report["test"]["result_package"] == ""
-    assert report["validation"]["stop_reason"] == "blocked by <hidden>"
-    assert report["test"]["replay_status"] == "failed near <hidden>"
+    assert "stop_reason" not in report["validation"]
+    assert report["test"]["replay_status"] == "UNKNOWN"
     assert str(validation_gold) not in report_text
     assert str(test_gold) not in report_text
+    assert sentinel not in report_text
+
+
+def test_combined_report_constrains_untrusted_test_text_fields(tmp_path: Path) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+    validation_result = replace(
+        _validation_result(tmp_path),
+        stop_reason=sentinel,
+    )
+    test_result = replace(
+        _test_result(tmp_path, score=None),
+        status=f"FAILED_{sentinel}",
+        phase=f"phase_{sentinel}",
+        replay_status=sentinel,
+        frozen_snapshot_sha256=sentinel,
+    )
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return validation_result
+
+    async def run_test() -> PiTestHarnessResult:
+        return test_result
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert "stop_reason" not in report["validation"]
+    assert report["status"] == "UNKNOWN"
+    assert report["phase"] == "unknown"
+    assert report["test"]["status"] == "UNKNOWN"
+    assert report["test"]["phase"] == "unknown"
+    assert report["test"]["replay_status"] == "UNKNOWN"
+    assert report["test"]["frozen_snapshot_sha256"] == ""
+    assert sentinel not in report_text
+
+
+def test_combined_report_constrains_unknown_validation_status(tmp_path: Path) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return replace(
+            _validation_result(tmp_path),
+            status=sentinel,
+            stop_reason=sentinel,
+        )
+
+    async def run_test() -> PiTestHarnessResult:
+        raise AssertionError("Test must not start")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert report["validation"]["status"] == "UNKNOWN"
+    assert "stop_reason" not in report["validation"]
     assert sentinel not in report_text
 
 
