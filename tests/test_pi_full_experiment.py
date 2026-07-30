@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -212,6 +213,11 @@ def test_combined_report_is_host_only_complete_and_gold_free(tmp_path: Path) -> 
     assert report["test_execution_count"] == 1
     assert report["scoring_execution_count"] == 1
     assert report["test"]["frozen_snapshot_sha256"] == "frozen-sha256"
+    assert report["validation"]["reproducible_snapshot"] == str(
+        result.validation_result.reproducible_snapshot,
+    )
+    assert report["test"]["frozen_snapshot"] == str(result.test_result.frozen_snapshot)
+    assert report["test"]["result_package"] == str(result.test_result.result_package)
     assert report["validation_duration_seconds"] >= 0.0
     assert report["test_duration_seconds"] >= 0.0
     assert report["duration_seconds"] >= 0.0
@@ -220,6 +226,59 @@ def test_combined_report_is_host_only_complete_and_gold_free(tmp_path: Path) -> 
     assert str(config.validation.validation_gold.resolve()) not in report_text
     assert str(config.test_gold.resolve()) not in report_text
     assert "GOLD_VALUE_MUST_NOT_LEAK" not in report_text
+
+
+def test_combined_report_rejects_injected_gold_paths_and_redacts_free_text(
+    tmp_path: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+    validation_gold = config.validation.validation_gold.resolve()
+    test_gold = config.test_gold.resolve()
+    validation_result = replace(
+        _validation_result(tmp_path),
+        stop_reason=f"blocked by {validation_gold}",
+        best_snapshot=validation_gold / sentinel / "best_snapshot",
+        reproducible_snapshot=validation_gold / sentinel / "reproducible_snapshot",
+    )
+    test_result = replace(
+        _test_result(
+            tmp_path,
+            status="REPLAY_FAILED",
+            phase="test_replay",
+            score=None,
+        ),
+        replay_status=f"failed near {test_gold}",
+        frozen_snapshot=test_gold / sentinel / "frozen_snapshot",
+        result_package=test_gold / sentinel / "test_result_package",
+    )
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return validation_result
+
+    async def run_test() -> PiTestHarnessResult:
+        return test_result
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert result.status == "REPLAY_FAILED"
+    assert result.report_path.is_file()
+    assert report["validation"]["reproducible_snapshot"] == ""
+    assert report["test"]["frozen_snapshot"] == ""
+    assert report["test"]["result_package"] == ""
+    assert report["validation"]["stop_reason"] == "blocked by <hidden>"
+    assert report["test"]["replay_status"] == "failed near <hidden>"
+    assert str(validation_gold) not in report_text
+    assert str(test_gold) not in report_text
+    assert sentinel not in report_text
 
 
 def test_default_runners_reuse_existing_harnesses_without_preflight(

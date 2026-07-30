@@ -126,20 +126,25 @@ class PiFullExperiment:
         )
         payload: dict[str, Any] = {
             "schema_version": 1,
-            "status": status,
-            "phase": phase,
-            "validation_experiment": str(
-                self.config.validation.experiment_dir.expanduser().resolve(),
+            "status": self._redact_text(status),
+            "phase": self._redact_text(phase),
+            "validation_experiment": self._redact_text(
+                str(self.config.validation.experiment_dir.expanduser().resolve()),
             ),
-            "test_experiment": str(self.config.test_experiment.expanduser().resolve()),
+            "test_experiment": self._redact_text(
+                str(self.config.test_experiment.expanduser().resolve()),
+            ),
             "validation": {
-                "status": validation.status,
-                "stop_reason": validation.stop_reason,
+                "status": self._redact_text(validation.status),
+                "stop_reason": self._redact_text(validation.stop_reason),
                 "rounds": validation.rounds,
                 "repair_rounds": validation.repair_rounds,
                 "best_score": validation.best_score,
                 "reproducible_score": validation.reproducible_score,
-                "reproducible_snapshot": str(validation.reproducible_snapshot),
+                "reproducible_snapshot": self._public_path(
+                    validation.reproducible_snapshot,
+                    self.config.validation.experiment_dir,
+                ),
             },
             "test": self._test_payload(test),
             "test_execution_count": test.test_execution_count if test is not None else 0,
@@ -157,22 +162,48 @@ class PiFullExperiment:
             report_path=self.report_path,
         )
 
-    @staticmethod
-    def _test_payload(test: PiTestHarnessResult | None) -> dict[str, Any] | None:
+    def _test_payload(self, test: PiTestHarnessResult | None) -> dict[str, Any] | None:
         if test is None:
             return None
         return {
-            "status": test.status,
-            "phase": test.phase,
+            "status": self._redact_text(test.status),
+            "phase": self._redact_text(test.phase),
             "scored": test.scored,
             "score": test.score,
-            "replay_status": test.replay_status,
-            "frozen_snapshot_sha256": test.frozen_snapshot_sha256,
-            "frozen_snapshot": str(test.frozen_snapshot),
-            "result_package": str(test.result_package) if test.result_package else "",
+            "replay_status": self._redact_text(test.replay_status),
+            "frozen_snapshot_sha256": self._redact_text(
+                test.frozen_snapshot_sha256,
+            ),
+            "frozen_snapshot": self._public_path(
+                test.frozen_snapshot,
+                self.config.test_experiment,
+            ),
+            "result_package": self._public_path(
+                test.result_package,
+                self.config.test_experiment,
+            ),
             "replay_duration_seconds": test.replay_duration_seconds,
             "scoring_duration_seconds": test.scoring_duration_seconds,
         }
+
+    def _public_path(self, path: Path | None, public_root: Path) -> str:
+        if path is None:
+            return ""
+        try:
+            path.expanduser().resolve().relative_to(public_root.expanduser().resolve())
+        except (OSError, RuntimeError, ValueError):
+            return ""
+        return self._redact_text(str(path))
+
+    def _redact_text(self, text: str) -> str:
+        hidden_roots = (
+            self.config.validation.validation_gold.expanduser().resolve(),
+            self.config.test_gold.expanduser().resolve(),
+        )
+        redacted = text
+        for root in sorted((str(path) for path in hidden_roots), key=len, reverse=True):
+            redacted = redacted.replace(root, "<hidden>")
+        return redacted
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
