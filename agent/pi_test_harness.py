@@ -42,11 +42,11 @@ class PiTestPreflightConfig:
 class PiTestHarnessConfig:
     project_root: Path
     validation_experiment: Path
+    preflight_attestation: Path | None
     test_experiment: Path
     test_raw: Path
     test_gold: Path
     evaluation_manifest: Path
-    preflight_attestation: Path | None = None
     replay_timeout_seconds: float = 1_800.0
     scoring_timeout_seconds: float = 3_600.0
 
@@ -628,7 +628,11 @@ class PiTestHarness:
             frozen_snapshot_sha256=frozen_hash,
             frozen_snapshot=self.frozen_snapshot,
             result_package=result_package,
-            preflight_status="SUCCESS",
+            preflight_status=(
+                "SUCCESS"
+                if self.config.preflight_attestation is not None
+                else "NOT_RUN"
+            ),
             replay_duration_seconds=replay.duration_seconds if replay else 0.0,
             scoring_duration_seconds=scoring.duration_seconds if scoring else 0.0,
         )

@@ -220,11 +220,40 @@ def test_test_replay_and_hidden_scoring_each_run_once(tmp_path: Path) -> None:
     assert result.scored is True
     assert result.score == 0.42
     assert result.test_execution_count == 1
+    assert result.preflight_status == "SUCCESS"
     assert len(replay_requests) == 1
     assert replay_requests[0].phase == "test_replay"
     assert replay_requests[0].raw_root == config.test_raw.resolve()
     assert score_calls == 1
     assert (config.test_experiment / "host/score_report.json").is_file()
+    report = json.loads(
+        (config.test_experiment / "host/run_report.json").read_text(encoding="utf-8"),
+    )
+    assert report["preflight_status"] == "SUCCESS"
+
+
+def test_test_config_preserves_preflight_attestation_positional_field(
+    tmp_path: Path,
+) -> None:
+    expected = _test_config(tmp_path, None)
+
+    config = PiTestHarnessConfig(
+        expected.project_root,
+        expected.validation_experiment,
+        None,
+        expected.test_experiment,
+        expected.test_raw,
+        expected.test_gold,
+        expected.evaluation_manifest,
+        expected.replay_timeout_seconds,
+        expected.scoring_timeout_seconds,
+    )
+
+    assert config.preflight_attestation is None
+    assert config.test_experiment == expected.test_experiment
+    assert config.test_raw == expected.test_raw
+    assert config.test_gold == expected.test_gold
+    assert config.evaluation_manifest == expected.evaluation_manifest
 
 
 def test_direct_test_writes_started_marker_before_replay(tmp_path: Path) -> None:
@@ -257,6 +286,7 @@ def test_direct_test_writes_started_marker_before_replay(tmp_path: Path) -> None
     )
 
     assert result.status == "SUCCESS"
+    assert result.preflight_status == "NOT_RUN"
     assert len(replay_requests) == 1
     manifest = json.loads(
         (config.test_experiment / "host/run_manifest.json").read_text(encoding="utf-8"),
@@ -264,6 +294,10 @@ def test_direct_test_writes_started_marker_before_replay(tmp_path: Path) -> None
     assert manifest["preflight_attestation_sha256"] == ""
     assert manifest["preflight_raw_identity"] == {}
     assert str(config.test_gold.resolve()) not in json.dumps(manifest)
+    report = json.loads(
+        (config.test_experiment / "host/run_report.json").read_text(encoding="utf-8"),
+    )
+    assert report["preflight_status"] == "NOT_RUN"
     marker = json.loads(
         (config.test_experiment / "host/test_started.json").read_text(encoding="utf-8"),
     )
@@ -319,6 +353,17 @@ def test_test_replay_failure_is_not_retried_or_scored(tmp_path: Path) -> None:
     assert result.scored is False
     assert result.score is None
     assert result.test_execution_count == 1
+    assert replay_calls == 1
+    assert score_calls == 0
+    assert (config.test_experiment / "host/test_started.json").is_file()
+
+    second_harness = PiTestHarness(
+        config,
+        replay_runner=replay,
+        score_runner=score_runner,
+    )
+    with pytest.raises(ValueError, match="experiment directory must be new and empty"):
+        asyncio.run(second_harness.run())
     assert replay_calls == 1
     assert score_calls == 0
 
