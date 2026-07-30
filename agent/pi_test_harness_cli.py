@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from agent.pi_harness_cli import _run_with_terminal_signals
@@ -70,6 +71,17 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run(parse_args(argv)))
     except KeyboardInterrupt:
         return 130
+    except Exception:
+        print(
+            json.dumps(
+                {
+                    "status": "CLI_FAILED",
+                    "error_code": "TEST_HARNESS_EXCEPTION",
+                },
+            ),
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":

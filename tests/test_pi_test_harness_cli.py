@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,3 +99,24 @@ def test_test_cli_explicitly_passes_optional_attestation_to_config(
 
     assert asyncio.run(cli._run(cli.parse_args(argv))) == 0
     assert captured["config"].preflight_attestation == expected
+
+
+def test_main_redacts_regular_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fail(_args) -> int:
+        raise ValueError("GOLD_VALUE_MUST_NOT_LEAK /private/test/gold")
+
+    monkeypatch.setattr(cli, "parse_args", lambda _argv: SimpleNamespace())
+    monkeypatch.setattr(cli, "_run", fail)
+
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "CLI_FAILED",
+        "error_code": "TEST_HARNESS_EXCEPTION",
+    }
+    assert "GOLD_VALUE_MUST_NOT_LEAK" not in captured.err
+    assert "/private/test/gold" not in captured.err

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from agent.pi_full_experiment import PiFullExperiment, PiFullExperimentConfig
@@ -68,34 +69,41 @@ async def _run(args: argparse.Namespace) -> int:
         ),
     )
     result, received_signal = await _run_with_terminal_signals(experiment.run(prompt))
-    print(json.dumps(_cli_payload(result), ensure_ascii=False, indent=2))
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    print(
+        json.dumps(
+            _cli_payload(report, result.report_path),
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
     if received_signal is not None or result.status == "INTERRUPTED":
         return 130
     return 0 if result.status == "SUCCESS" else 1
 
 
-def _cli_payload(result) -> dict:
-    validation = result.validation_result
-    test = result.test_result
+def _cli_payload(report: dict, report_path: Path) -> dict:
+    validation = report["validation"]
+    test = report["test"]
     return {
-        "status": result.status,
-        "phase": result.phase,
+        "status": report["status"],
+        "phase": report["phase"],
         "validation": {
-            "rounds": validation.rounds,
-            "best_score": validation.best_score,
-            "reproducible_score": validation.reproducible_score,
+            "rounds": validation["rounds"],
+            "best_score": validation["best_score"],
+            "reproducible_score": validation["reproducible_score"],
         },
         "test": (
             {
-                "status": test.status,
-                "score": test.score,
-                "test_execution_count": test.test_execution_count,
-                "frozen_snapshot_sha256": test.frozen_snapshot_sha256,
+                "status": test["status"],
+                "score": test["score"],
+                "test_execution_count": report["test_execution_count"],
+                "frozen_snapshot_sha256": test["frozen_snapshot_sha256"],
             }
             if test is not None
             else None
         ),
-        "report_path": str(result.report_path),
+        "report_path": str(report_path),
     }
 
 
@@ -104,6 +112,17 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run(parse_args(argv)))
     except KeyboardInterrupt:
         return 130
+    except Exception:
+        print(
+            json.dumps(
+                {
+                    "status": "CLI_FAILED",
+                    "error_code": "FULL_EXPERIMENT_EXCEPTION",
+                },
+            ),
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":

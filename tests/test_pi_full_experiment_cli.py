@@ -29,24 +29,47 @@ def _argv(prompt_file: Path) -> list[str]:
     ]
 
 
-def _result(*, status: str = "SUCCESS") -> SimpleNamespace:
+def _combined_report(*, status: str = "SUCCESS") -> dict:
+    test = (
+        {
+            "status": "SUCCESS",
+            "score": 0.89,
+            "frozen_snapshot_sha256": "a" * 64,
+        }
+        if status == "SUCCESS"
+        else None
+    )
+    return {
+        "status": status,
+        "phase": "complete" if status == "SUCCESS" else "validation",
+        "validation": {
+            "rounds": 4,
+            "best_score": 0.93,
+            "reproducible_score": 0.91,
+        },
+        "test": test,
+        "test_execution_count": 1 if test is not None else 0,
+    }
+
+
+def _result(report_path: Path, *, status: str = "SUCCESS") -> SimpleNamespace:
     validation = SimpleNamespace(
-        rounds=4,
-        best_score=0.93,
-        reproducible_score=0.91,
+        rounds="GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
+        best_score="GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
+        reproducible_score="GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
     )
     test = SimpleNamespace(
-        status="SUCCESS",
-        score=0.89,
-        test_execution_count=1,
-        frozen_snapshot_sha256="a" * 64,
+        status="GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
+        score="GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
+        test_execution_count="GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
+        frozen_snapshot_sha256="invalid GOLD_VALUE_MUST_NOT_LEAK /private/test/gold",
     )
     return SimpleNamespace(
         status=status,
         phase="complete" if status == "SUCCESS" else "test_replay",
         validation_result=validation,
         test_result=test,
-        report_path=Path("/runs/validation/host/full_experiment_report.json"),
+        report_path=report_path,
     )
 
 
@@ -100,6 +123,8 @@ def test_run_builds_full_config_reads_prompt_once_and_prints_public_payload(
 ) -> None:
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("run the complete experiment", encoding="utf-8")
+    report_path = tmp_path / "full_experiment_report.json"
+    report_path.write_text(json.dumps(_combined_report()), encoding="utf-8")
     captured: dict[str, object] = {"run_calls": 0}
 
     class FakeExperiment:
@@ -109,7 +134,7 @@ def test_run_builds_full_config_reads_prompt_once_and_prints_public_payload(
         async def run(self, prompt: str):
             captured["run_calls"] = int(captured["run_calls"]) + 1
             captured["prompt"] = prompt
-            return _result()
+            return _result(report_path)
 
     async def fake_signal_wrapper(operation):
         captured["operation"] = operation
@@ -161,10 +186,43 @@ def test_run_builds_full_config_reads_prompt_once_and_prints_public_payload(
             "test_execution_count": 1,
             "frozen_snapshot_sha256": "a" * 64,
         },
-        "report_path": "/runs/validation/host/full_experiment_report.json",
+        "report_path": str(report_path),
     }
+    assert "GOLD_VALUE_MUST_NOT_LEAK" not in output
     assert "/private/validation/gold" not in output
     assert "/private/test/gold" not in output
+
+
+def test_run_projects_none_test_from_combined_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("prompt", encoding="utf-8")
+    report_path = tmp_path / "full_experiment_report.json"
+    report_path.write_text(
+        json.dumps(_combined_report(status="VALIDATION_FAILED")),
+        encoding="utf-8",
+    )
+
+    class FakeExperiment:
+        def __init__(self, _config) -> None:
+            pass
+
+        async def run(self, _prompt: str):
+            return _result(report_path, status="VALIDATION_FAILED")
+
+    async def fake_signal_wrapper(operation):
+        return await operation, None
+
+    monkeypatch.setattr(cli, "PiFullExperiment", FakeExperiment)
+    monkeypatch.setattr(cli, "_run_with_terminal_signals", fake_signal_wrapper)
+
+    assert asyncio.run(cli._run(cli.parse_args(_argv(prompt_file)))) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["test"] is None
+    assert "test_execution_count" not in payload
 
 
 @pytest.mark.parametrize(
@@ -185,13 +243,18 @@ def test_run_maps_terminal_outcomes_to_exit_codes(
 ) -> None:
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("prompt", encoding="utf-8")
+    report_path = tmp_path / "full_experiment_report.json"
+    report_path.write_text(
+        json.dumps(_combined_report(status=status)),
+        encoding="utf-8",
+    )
 
     class FakeExperiment:
         def __init__(self, _config) -> None:
             pass
 
         async def run(self, _prompt: str):
-            return _result(status=status)
+            return _result(report_path, status=status)
 
     async def fake_signal_wrapper(operation):
         return await operation, received_signal
@@ -210,3 +273,24 @@ def test_main_maps_keyboard_interrupt_to_130(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(cli, "_run", interrupt)
 
     assert cli.main([]) == 130
+
+
+def test_main_redacts_regular_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fail(_args) -> int:
+        raise ValueError("GOLD_VALUE_MUST_NOT_LEAK /private/test/gold")
+
+    monkeypatch.setattr(cli, "parse_args", lambda _argv: SimpleNamespace())
+    monkeypatch.setattr(cli, "_run", fail)
+
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "CLI_FAILED",
+        "error_code": "FULL_EXPERIMENT_EXCEPTION",
+    }
+    assert "GOLD_VALUE_MUST_NOT_LEAK" not in captured.err
+    assert "/private/test/gold" not in captured.err
