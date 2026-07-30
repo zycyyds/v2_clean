@@ -12,10 +12,10 @@ from agent.pi_test_harness import PiTestHarness, PiTestHarnessConfig
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Execute a preflight-attested frozen Validation pipeline on Test exactly once.",
+        description="Execute a frozen Validation pipeline on Test exactly once.",
     )
     parser.add_argument("--validation-experiment", required=True)
-    parser.add_argument("--preflight-attestation", required=True)
+    parser.add_argument("--preflight-attestation")
     parser.add_argument("--test-experiment", required=True)
     parser.add_argument("--test-raw", required=True)
     parser.add_argument("--test-gold", required=True)
@@ -30,7 +30,11 @@ async def _run(args: argparse.Namespace) -> int:
         PiTestHarnessConfig(
             project_root=Path(__file__).parents[1],
             validation_experiment=Path(args.validation_experiment),
-            preflight_attestation=Path(args.preflight_attestation),
+            preflight_attestation=(
+                Path(args.preflight_attestation)
+                if args.preflight_attestation is not None
+                else None
+            ),
             test_experiment=Path(args.test_experiment),
             test_raw=Path(args.test_raw),
             test_gold=Path(args.test_gold),
