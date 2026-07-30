@@ -429,6 +429,152 @@ def test_test_raw_must_be_disjoint_from_validation_visible_data(
 @pytest.mark.parametrize(
     "public_name",
     [
+        "project_agent",
+        "project_lib",
+        "experiment_dir",
+        "skill_dir",
+        "python_root",
+        "system_root",
+        "shell_root",
+    ],
+)
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "private_parent", "private_child", "symlink"],
+)
+def test_test_raw_must_be_disjoint_from_validation_agent_recursive_roots(
+    tmp_path: Path,
+    public_name: str,
+    relationship: str,
+) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    skill_dir = tmp_path / "skills/one"
+    private_root = Path("/nonexistent-pi-topology-private")
+    visible_data_root = Path("/nonexistent-pi-topology-visible")
+    validation = replace(
+        config.validation,
+        project_root=project,
+        experiment_dir=tmp_path / "validation_experiment_root/experiment",
+        train_raw=visible_data_root / "train/raw",
+        train_reference=visible_data_root / "train/reference",
+        validation_raw=visible_data_root / "validation/raw",
+        skill_dirs=(skill_dir,),
+        validation_gold=private_root / "validation_gold",
+    )
+    config = replace(config, test_gold=private_root / "test_gold")
+    candidates = {
+        "project_agent": project / "agent",
+        "project_lib": project / "lib",
+        "experiment_dir": validation.experiment_dir,
+        "skill_dir": skill_dir,
+        "python_root": Path(sys.prefix),
+        "system_root": Path("/usr/bin"),
+        "shell_root": Path("/private/var/select"),
+    }
+    test_raw = _overlapping_path(
+        candidates[public_name],
+        relationship,
+        tmp_path,
+    )
+
+    _assert_topology_rejected(
+        replace(config, validation=validation, test_raw=test_raw),
+    )
+
+
+@pytest.mark.parametrize(
+    "literal_name",
+    ["project_root", "config_loader", "model_config", "executable", "devnull"],
+)
+def test_test_raw_rejects_exact_validation_agent_literal_paths(
+    tmp_path: Path,
+    literal_name: str,
+) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    validation = replace(config.validation, project_root=project)
+    literals = {
+        "project_root": project,
+        "config_loader": project / "config_loader.py",
+        "model_config": project / "model_config.yaml",
+        "executable": Path(sys.executable),
+        "devnull": Path("/dev/null"),
+    }
+
+    _assert_topology_rejected(
+        replace(
+            config,
+            validation=validation,
+            test_raw=literals[literal_name],
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_test_raw",
+    [Path("private/test_raw"), Path("workflow/private/test_raw")],
+)
+def test_project_private_test_raw_is_not_rejected(
+    tmp_path: Path,
+    relative_test_raw: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    validation = replace(config.validation, project_root=project)
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        return _test_result(tmp_path)
+
+    result = asyncio.run(
+        PiFullExperiment(
+            replace(
+                config,
+                validation=validation,
+                test_raw=project / relative_test_raw,
+            ),
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    assert calls == ["validation", "test"]
+    assert result.status == "SUCCESS"
+
+
+def test_test_raw_may_overlap_test_experiment(tmp_path: Path) -> None:
+    config = _full_config(tmp_path)
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        return _test_result(tmp_path)
+
+    result = asyncio.run(
+        PiFullExperiment(
+            replace(config, test_raw=config.test_experiment),
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    assert calls == ["validation", "test"]
+    assert result.status == "SUCCESS"
+
+
+@pytest.mark.parametrize(
+    "public_name",
+    [
         "train_raw",
         "train_reference",
         "validation_raw",

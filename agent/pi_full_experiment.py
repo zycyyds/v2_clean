@@ -128,13 +128,12 @@ def validate_full_experiment_role_topology(
     )
     if recursive_paths_overlap(validation.validation_gold, config.test_gold):
         raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
-    for validation_visible_data in (
-        validation.train_raw,
-        validation.train_reference,
-        validation.validation_raw,
-    ):
-        if recursive_paths_overlap(config.test_raw, validation_visible_data):
-            raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
+    require_path_isolated(
+        config.test_raw,
+        recursive_roots,
+        literal_paths=literal_paths,
+        error_message=FULL_ROLE_TOPOLOGY_ERROR,
+    )
     require_path_isolated(
         validation.validation_gold,
         (*recursive_roots, config.test_raw, config.test_experiment),
