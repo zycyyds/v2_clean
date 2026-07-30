@@ -268,6 +268,9 @@ def test_sandboxed_launch_uses_marker_and_never_authorizes_gold(tmp_path: Path) 
     assert str(gold.resolve()) not in profile
     assert "model_config.local.yaml" not in profile
     assert '(subpath "/private/var/select")' in profile
+    for literal_file in (project / "config_loader.py", project / "model_config.yaml"):
+        assert f'(allow file-read* (literal "{literal_file.resolve()}"))' in profile
+        assert f'(subpath "{literal_file.resolve()}")' not in profile
 
 
 def test_real_sandbox_probe_denies_gold_python_shell_and_symlink(tmp_path: Path) -> None:

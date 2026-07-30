@@ -24,7 +24,11 @@ from agent.pi_harness import (
     snapshot_agent_workdir,
     validate_plain_directory_tree,
 )
-from agent.pi_harness_sandbox import build_macos_sandbox_profile
+from agent.pi_harness_sandbox import (
+    build_macos_sandbox_profile,
+    require_test_gold_isolated,
+    sandbox_visible_recursive_roots,
+)
 from workflow.pi_harness_evaluation import SCORER_VERSION
 from workflow.reference_evaluation import IGNORED_PACKAGE_FILES, STRUCTURED_SUFFIXES
 
@@ -104,17 +108,6 @@ class PiTestHarnessResult:
 
 ReplayRunner = Callable[[ReplayRequest], Awaitable[TestReplayExecution]]
 ScoreRunner = Callable[[Path, Path, Path, float], Awaitable[ScoreExecution]]
-
-TEST_GOLD_OVERLAP_ERROR = "unsafe Test Gold path overlap"
-
-
-def require_test_gold_isolated(test_gold: Path, public_paths: tuple[Path, ...]) -> None:
-    gold = test_gold.expanduser().resolve(strict=False)
-    for public_path in public_paths:
-        public = public_path.expanduser().resolve(strict=False)
-        if gold == public or gold in public.parents or public in gold.parents:
-            raise ValueError(TEST_GOLD_OVERLAP_ERROR)
-
 
 class PiTestPreflight:
     """Run a frozen Validation pipeline on large public Validation raw data."""
@@ -297,17 +290,21 @@ class PiTestHarness:
         source_snapshot = validation / "host/reproducible_snapshot"
         require_test_gold_isolated(
             self.config.test_gold,
-            (
+            recursive_roots=sandbox_visible_recursive_roots(
                 self.config.test_raw,
                 source_snapshot,
                 self.config.test_experiment,
-                self.config.project_root,
+                include_shell_state=True,
             ),
+            literal_paths=(Path(sys.executable), Path("/dev/null")),
         )
         source, train_reference, source_hash = _load_validation_bundle(
             self.config.validation_experiment,
         )
-        require_test_gold_isolated(self.config.test_gold, (train_reference,))
+        require_test_gold_isolated(
+            self.config.test_gold,
+            recursive_roots=(train_reference,),
+        )
         attestation = (
             _load_attestation(self.config.preflight_attestation, source_hash)
             if self.config.preflight_attestation is not None
@@ -508,20 +505,13 @@ class PiTestHarness:
             profile.write_text(
                 build_macos_sandbox_profile(
                     executable=Path(sys.executable),
-                    read_roots=[
+                    read_roots=sandbox_visible_recursive_roots(
                         self.config.project_root.resolve() / "agent",
                         self.config.project_root.resolve() / "workflow",
                         result_root,
                         gold_root,
                         evaluation_manifest,
-                        Path(sys.prefix),
-                        Path(sys.base_prefix),
-                        Path("/System"),
-                        Path("/usr"),
-                        Path("/bin"),
-                        Path("/sbin"),
-                        Path("/private/etc"),
-                    ],
+                    ),
                     write_roots=[home, scratch, Path("/dev/null")],
                     allow_network=False,
                     traversal_roots=[self.config.project_root.resolve()],
@@ -732,19 +722,12 @@ async def _run_frozen_replay(request: ReplayRequest) -> TestReplayExecution:
         profile.write_text(
             build_macos_sandbox_profile(
                 executable=Path(sys.executable),
-                read_roots=[
+                read_roots=sandbox_visible_recursive_roots(
                     workdir,
                     request.raw_root,
                     request.train_reference,
-                    Path(sys.prefix),
-                    Path(sys.base_prefix),
-                    Path("/System"),
-                    Path("/usr"),
-                    Path("/bin"),
-                    Path("/sbin"),
-                    Path("/private/etc"),
-                    Path("/private/var/select"),
-                ],
+                    include_shell_state=True,
+                ),
                 write_roots=[workdir, home, scratch, Path("/dev/null")],
                 allow_network=False,
             ),

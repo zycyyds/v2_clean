@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-from agent.pi_harness_sandbox import build_macos_sandbox_profile
+from agent.pi_harness_sandbox import (
+    build_macos_sandbox_profile,
+    sandbox_visible_recursive_roots,
+)
 
 
 @dataclass(frozen=True)
@@ -42,23 +45,15 @@ def build_sandboxed_worker_launch(config: SandboxedWorkerConfig) -> WorkerLaunch
     for directory in (workdir, runtime, home, scratch):
         directory.mkdir(parents=True, exist_ok=True)
 
-    read_roots = [
+    read_roots = sandbox_visible_recursive_roots(
         project / "agent",
         project / "lib",
-        project / "config_loader.py",
-        project / "model_config.yaml",
-        Path(sys.prefix),
-        Path(sys.base_prefix),
-        Path("/System"),
-        Path("/usr"),
-        Path("/bin"),
-        Path("/sbin"),
-        Path("/private/etc"),
-        Path("/private/var/select"),
         workdir,
         *config.public_read_roots,
         *config.skill_dirs,
-    ]
+        include_shell_state=True,
+    )
+    literal_read_paths = [project / "config_loader.py", project / "model_config.yaml"]
     profile_path = runtime / "agent.sb"
     profile_path.write_text(
         build_macos_sandbox_profile(
@@ -67,6 +62,7 @@ def build_sandboxed_worker_launch(config: SandboxedWorkerConfig) -> WorkerLaunch
             write_roots=[workdir, home, scratch, Path("/dev/null")],
             allow_network=True,
             traversal_roots=[project],
+            literal_read_paths=[path for path in literal_read_paths if path.exists()],
         ),
         encoding="utf-8",
     )

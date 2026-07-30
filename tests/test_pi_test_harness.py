@@ -386,7 +386,7 @@ def test_same_test_experiment_cannot_replay_twice(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "public_path",
-    ["test_raw", "train_reference", "source_snapshot", "test_experiment", "project_root"],
+    ["test_raw", "train_reference", "source_snapshot", "test_experiment"],
 )
 @pytest.mark.parametrize("relationship", ["same", "gold_parent", "gold_child", "symlink"])
 def test_test_gold_overlap_stops_standalone_harness_before_pipeline(
@@ -401,7 +401,6 @@ def test_test_gold_overlap_stops_standalone_harness_before_pipeline(
         "train_reference": train_reference,
         "source_snapshot": validation / "host/reproducible_snapshot",
         "test_experiment": config.test_experiment,
-        "project_root": config.project_root,
     }
     public = candidates[public_path]
     if relationship == "same":
@@ -440,6 +439,117 @@ def test_test_gold_overlap_stops_standalone_harness_before_pipeline(
     assert score_calls == 0
     assert not (config.test_experiment / "host").exists()
     assert not (config.test_experiment / "host/test_started.json").exists()
+
+
+@pytest.mark.parametrize(
+    "sandbox_root",
+    [
+        Path(sys.prefix),
+        Path(sys.base_prefix),
+        Path("/System"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/private/etc"),
+        Path("/private/var/select"),
+    ],
+)
+def test_system_sandbox_root_overlap_stops_standalone_before_pipeline(
+    tmp_path: Path,
+    sandbox_root: Path,
+) -> None:
+    _validation_fixture(tmp_path)
+    config = replace(
+        _test_config(tmp_path, None),
+        test_gold=sandbox_root / "private-test-gold",
+    )
+    replay_calls = 0
+    score_calls = 0
+
+    async def replay(_request: ReplayRequest) -> TestReplayExecution:
+        nonlocal replay_calls
+        replay_calls += 1
+        raise AssertionError("Test replay must not start")
+
+    async def score(*_args, **_kwargs) -> ScoreExecution:
+        nonlocal score_calls
+        score_calls += 1
+        raise AssertionError("Pipeline scoring must not start")
+
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(
+            PiTestHarness(config, replay_runner=replay, score_runner=score).run(),
+        )
+
+    assert str(exc_info.value) == "unsafe Test Gold path overlap"
+    assert str(config.test_gold.resolve(strict=False)) not in str(exc_info.value)
+    assert replay_calls == 0
+    assert score_calls == 0
+    assert not (config.test_experiment / "host").exists()
+
+
+@pytest.mark.parametrize(
+    "relative_gold",
+    [Path("private/test_gold"), Path("workflow/private/test_gold")],
+)
+def test_project_private_gold_is_not_rejected_by_standalone_guard(
+    tmp_path: Path,
+    relative_gold: Path,
+) -> None:
+    _validation_fixture(tmp_path)
+    project = tmp_path / "project"
+    test_gold = project / relative_gold
+    test_gold.mkdir(parents=True)
+    config = replace(
+        _test_config(tmp_path, None),
+        project_root=project,
+        test_gold=test_gold,
+    )
+    replay_requests: list[ReplayRequest] = []
+    score_calls = 0
+
+    async def score(*_args, **_kwargs) -> ScoreExecution:
+        nonlocal score_calls
+        score_calls += 1
+        return ScoreExecution("SUCCESS", 0, "", 0.1, _score_report(0.5))
+
+    result = asyncio.run(
+        PiTestHarness(
+            config,
+            replay_runner=_successful_replay(replay_requests),
+            score_runner=score,
+        ).run(),
+    )
+
+    assert result.status == "SUCCESS"
+    assert len(replay_requests) == 1
+    assert score_calls == 1
+
+
+def test_standalone_guard_rejects_exact_replay_literal_path(tmp_path: Path) -> None:
+    _validation_fixture(tmp_path)
+    config = replace(_test_config(tmp_path, None), test_gold=Path("/dev/null"))
+    replay_calls = 0
+    score_calls = 0
+
+    async def replay(_request: ReplayRequest) -> TestReplayExecution:
+        nonlocal replay_calls
+        replay_calls += 1
+        raise AssertionError("Test replay must not start")
+
+    async def score(*_args, **_kwargs) -> ScoreExecution:
+        nonlocal score_calls
+        score_calls += 1
+        raise AssertionError("Pipeline scoring must not start")
+
+    with pytest.raises(ValueError, match="^unsafe Test Gold path overlap$"):
+        asyncio.run(
+            PiTestHarness(config, replay_runner=replay, score_runner=score).run(),
+        )
+
+    assert replay_calls == 0
+    assert score_calls == 0
+    assert not (config.test_experiment / "host").exists()
 
 
 def test_test_replay_failure_is_not_retried_or_scored(tmp_path: Path) -> None:

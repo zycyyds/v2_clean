@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -163,7 +164,8 @@ def test_validation_non_success_never_starts_test(
         "validation_raw",
         "experiment_dir",
         "skill_dir",
-        "project_root",
+        "project_agent",
+        "project_lib",
         "test_raw",
         "test_experiment",
     ],
@@ -184,7 +186,8 @@ def test_test_gold_overlap_stops_full_experiment_before_validation(
         "validation_raw": validation.validation_raw,
         "experiment_dir": validation.experiment_dir,
         "skill_dir": skill_dir,
-        "project_root": validation.project_root,
+        "project_agent": validation.project_root / "agent",
+        "project_lib": validation.project_root / "lib",
         "test_raw": config.test_raw,
         "test_experiment": config.test_experiment,
     }
@@ -226,6 +229,111 @@ def test_test_gold_overlap_stops_full_experiment_before_validation(
     assert not (config.validation.experiment_dir / "host").exists()
     assert not (config.test_experiment / "host").exists()
     assert not (config.test_experiment / "host/test_started.json").exists()
+
+
+@pytest.mark.parametrize(
+    "sandbox_root",
+    [
+        Path(sys.prefix),
+        Path(sys.base_prefix),
+        Path("/System"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/private/etc"),
+        Path("/private/var/select"),
+    ],
+)
+def test_system_sandbox_root_overlap_stops_full_experiment_before_validation(
+    tmp_path: Path,
+    sandbox_root: Path,
+) -> None:
+    config = replace(
+        _full_config(tmp_path),
+        test_gold=sandbox_root / "private-test-gold",
+    )
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        raise AssertionError("Validation must not start")
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        raise AssertionError("Test must not start")
+
+    experiment = PiFullExperiment(
+        config,
+        validation_runner=run_validation,
+        test_runner=run_test,
+    )
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(experiment.run("prompt"))
+
+    assert calls == []
+    assert str(exc_info.value) == "unsafe Test Gold path overlap"
+    assert str(config.test_gold.resolve(strict=False)) not in str(exc_info.value)
+    assert not experiment.report_path.exists()
+    assert not (config.validation.experiment_dir / "host").exists()
+    assert not (config.test_experiment / "host").exists()
+
+
+@pytest.mark.parametrize("filename", ["config_loader.py", "model_config.yaml"])
+def test_full_guard_rejects_exact_validation_worker_literal_file(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    config = replace(
+        config,
+        validation=replace(config.validation, project_root=project),
+        test_gold=project / filename,
+    )
+    calls: list[str] = []
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        raise AssertionError("Validation must not start")
+
+    experiment = PiFullExperiment(config, validation_runner=run_validation)
+    with pytest.raises(ValueError, match="^unsafe Test Gold path overlap$"):
+        asyncio.run(experiment.run("prompt"))
+
+    assert calls == []
+    assert not experiment.report_path.exists()
+
+
+def test_project_private_gold_is_not_rejected_by_full_guard(tmp_path: Path) -> None:
+    config = _full_config(tmp_path)
+    project = tmp_path / "project"
+    config = replace(
+        config,
+        validation=replace(config.validation, project_root=project),
+        test_gold=project / "private/test_gold",
+    )
+    calls: list[str] = []
+    validation_result = _validation_result(tmp_path)
+    test_result = _test_result(tmp_path)
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        calls.append("validation")
+        return validation_result
+
+    async def run_test() -> PiTestHarnessResult:
+        calls.append("test")
+        return test_result
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    assert calls == ["validation", "test"]
+    assert result.status == "SUCCESS"
 
 
 @pytest.mark.parametrize(

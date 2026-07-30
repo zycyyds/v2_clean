@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,11 +17,14 @@ from agent.pi_harness import (
     PiValidationHarness,
     PiValidationHarnessConfig,
 )
+from agent.pi_harness_sandbox import (
+    require_test_gold_isolated,
+    sandbox_visible_recursive_roots,
+)
 from agent.pi_test_harness import (
     PiTestHarness,
     PiTestHarnessConfig,
     PiTestHarnessResult,
-    require_test_gold_isolated,
 )
 
 
@@ -111,15 +115,24 @@ class PiFullExperiment:
         validation_config = self.config.validation
         require_test_gold_isolated(
             self.config.test_gold,
-            (
+            recursive_roots=sandbox_visible_recursive_roots(
+                validation_config.project_root / "agent",
+                validation_config.project_root / "lib",
                 validation_config.train_raw,
                 validation_config.train_reference,
                 validation_config.validation_raw,
                 validation_config.experiment_dir,
                 *validation_config.skill_dirs,
-                validation_config.project_root,
                 self.config.test_raw,
                 self.config.test_experiment,
+                include_shell_state=True,
+            ),
+            literal_paths=(
+                validation_config.project_root,
+                validation_config.project_root / "config_loader.py",
+                validation_config.project_root / "model_config.yaml",
+                Path(sys.executable),
+                Path("/dev/null"),
             ),
         )
         started = time.monotonic()

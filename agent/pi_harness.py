@@ -19,7 +19,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from agent.pi_harness_sandbox import build_macos_sandbox_profile
+from agent.pi_harness_sandbox import (
+    build_macos_sandbox_profile,
+    sandbox_visible_recursive_roots,
+)
 from agent.pi_worker_client import (
     JsonlWorkerClient,
     SandboxedWorkerConfig,
@@ -855,19 +858,12 @@ class PiValidationHarness:
         profile.write_text(
             build_macos_sandbox_profile(
                 executable=Path(sys.executable),
-                read_roots=[
+                read_roots=sandbox_visible_recursive_roots(
                     replay_workdir,
                     self.config.validation_raw,
                     self.config.train_raw,
                     self.config.train_reference,
-                    Path(sys.prefix),
-                    Path(sys.base_prefix),
-                    Path("/System"),
-                    Path("/usr"),
-                    Path("/bin"),
-                    Path("/sbin"),
-                    Path("/private/etc"),
-                ],
+                ),
                 write_roots=[replay_workdir, home, scratch, Path("/dev/null")],
                 allow_network=False,
             ),
