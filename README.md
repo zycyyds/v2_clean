@@ -110,27 +110,18 @@ Pi式Validation Harness使用一个持续Agent：
 - `run_manifest.json`记录Git提交与dirty diff哈希、Prompt/数据/评估manifest哈希、split keys哈希、模型公开配置、API槽位数量、Skill状态和评分器版本，不记录Key值或指纹。
 - 每轮私有报告记录Agent与评分耗时、token、模型/ReAct/工具调用、工具错误、API failover、压缩和流事件/block ID摘要。
 
-Validation完成后，Test分成两个完全无Agent的宿主阶段。先在4000例公开Validation raw上预检冻结的`reproducible_snapshot`；人工确认预检成功后，正式Test才允许对5000例Test raw执行冻结Pipeline一次，并由独立无模型评分子进程读取隐藏Gold一次。Test分数只报告给用户，不会返回Agent，也不会触发修复或重试。
+Pi主流程由`agent.pi_full_experiment_cli`自动串联：
 
-```bash
-conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_test_preflight_cli \
-  --validation-experiment /absolute/path/to/validation-experiment \
-  --preflight-experiment /absolute/path/to/new-empty-preflight-experiment \
-  --preflight-raw /absolute/path/to/validation/raw \
-  --replay-timeout 1800
-
-conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_test_harness_cli \
-  --validation-experiment /absolute/path/to/validation-experiment \
-  --preflight-attestation /absolute/path/to/preflight-experiment/host/preflight_attestation.json \
-  --test-experiment /absolute/path/to/new-empty-test-experiment \
-  --test-raw /absolute/path/to/test/raw \
-  --test-gold /absolute/path/to/test/reference_private \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --replay-timeout 1800 \
-  --scoring-timeout 3600
+```text
+Validation persistent Agent loop
+  -> SUCCESS_REPRODUCIBLE
+  -> 宿主自动冻结best为reproducible_snapshot
+  -> 无人工确认自动执行Test一次
+  -> hidden score一次
+  -> host/full_experiment_report.json combined report
 ```
+
+该主流程不要求4000例preflight，也不要求`preflight_attestation`。Test完全由宿主执行，不创建或调用Agent；Test分数不会反馈给Agent，不触发修复或重试。冻结Pipeline只对Test raw执行一次，执行成功后隐藏评分只执行一次；`host/test_started.json`和`host/scoring_started.json`分别在两个阶段开始前落盘，用于一次性审计。
 
 原有`reference-guided-*`命令仍保留旧parity架构：宿主管理attempt，每个attempt创建全新的Agent和AgentState，冻结best后进入原有Test流程。两条链路互不共享上下文或实验目录。
 
@@ -234,84 +225,80 @@ conda run -n py3102 env PYTHONPATH=. \
 
 输出包含`split_manifest.json`、`split_validation_report.json`及三个`split_record.json`。已有输出目录只有在身份完全一致时才复用；count、父目录或seed不同会被拒绝。
 
-### 1.2 运行无Skill的10:20 Validation
+### 1.2 运行Pi自动全实验
 
 先在普通终端验证真实Worker能够在macOS沙盒中导入，且沙盒不会授权
 `agent_tools/`、`workflow/`或private Gold：
 
 ```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
 conda run -n py3102 env PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 \
   pytest -p no:cacheprovider -q \
   tests/test_pi_worker_client.py::test_real_project_worker_import_respects_runtime_code_boundary
 ```
 
-看到`1 passed`后再启动真实实验。失败实验目录不得复用；下面的`v2`是修复
-Worker导入边界后的全新实验身份。
+看到`1 passed`后再启动真实实验。Validation和Test实验目录都必须是新的空目录；失败实验目录不得复用。以下变量均为通用占位符：
 
 ```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
 conda run -n py3102 env PYTHONPATH=. \
-  python -m agent.pi_harness_cli \
-  --experiment-dir /Users/mac/PycharmProjects/pi_harness_runs/mimic_10train_20val_pi_harness_seed666_v4 \
-  --train-raw /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/train/raw \
-  --train-reference /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/train/reference \
-  --validation-raw /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/validation/raw \
-  --validation-gold /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/validation/reference_private \
-  --dataset-manifest /Users/mac/PycharmProjects/v2_clean/datasets/mimic_icu_mortality_v3_1_nested_10train_20val_5000test_parentseed_1759733077/split_manifest.json \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
-  --prompt-file prompts/pi_harness_mimic_smoke.md \
-  --max-rounds 5 \
+  python -m agent.pi_full_experiment_cli \
+  --experiment-dir "${EXPERIMENT_ROOT}/validation" \
+  --train-raw "${TRAIN_RAW}" \
+  --train-reference "${TRAIN_REFERENCE}" \
+  --validation-raw "${VALIDATION_RAW}" \
+  --validation-gold "${VALIDATION_GOLD}" \
+  --evaluation-manifest "${EVALUATION_MANIFEST}" \
+  --dataset-manifest "${DATASET_MANIFEST}" \
+  --prompt-file "${PROMPT_FILE}" \
+  --max-rounds 20 \
   --patience 3 \
   --target-score 1.0 \
-  --max-iters 10000
+  --max-iters 10000 \
+  --replay-timeout 1800 \
+  --test-experiment "${EXPERIMENT_ROOT}/test" \
+  --test-raw "${TEST_RAW}" \
+  --test-gold "${TEST_GOLD}" \
+  --test-replay-timeout 1800 \
+  --test-scoring-timeout 3600
 ```
 
-不传`--skills-dir`即为无Skill实验；Pi式Harness当前也不注册CodeGraph。
+不传`--skills-dir`即为无Skill实验；Pi式Harness当前也不注册CodeGraph。只有Validation返回`SUCCESS_REPRODUCIBLE`，主流程才会自动冻结best、启动一次Test、执行一次隐藏评分并写出combined report；不需要人工确认。
 
-### 1.3 冻结后先运行4000例公开预检
+### 1.3 可选规模预检
 
-只有上一条Validation实验最终状态为`SUCCESS_REPRODUCIBLE`时才运行：
+`agent.pi_test_preflight_cli`保留为可选的大规模输入诊断工具，不是主流程门禁。它不读取Gold、不计算质量分数，也不要求固定使用4000例；仅检查冻结Pipeline能否在给定raw输入上退出成功并生成至少一个结构化文件。
 
 ```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
 conda run -n py3102 env PYTHONPATH=. \
   python -m agent.pi_test_preflight_cli \
-  --validation-experiment /absolute/path/to/successful-validation-experiment \
-  --preflight-experiment /absolute/path/to/new-empty-preflight-experiment \
-  --preflight-raw /absolute/path/to/4000-validation/raw \
+  --validation-experiment "${SUCCESSFUL_VALIDATION_EXPERIMENT}" \
+  --preflight-experiment "${NEW_PREFLIGHT_EXPERIMENT}" \
+  --preflight-raw "${PREFLIGHT_RAW}" \
   --replay-timeout 1800
 ```
 
-预检只检查冻结Pipeline能否在公开大规模输入上退出成功并生成至少一个结构化文件，不读取Gold、不计算质量分数。成功后生成`host/preflight_attestation.json`，预检结果包随即删除。
+成功时该工具生成`host/preflight_attestation.json`并删除预检结果包。主流程不会读取该attestation。
 
-### 1.4 人工确认后运行一次5000例Test
+### 1.4 可选standalone Test Harness
 
-只有预检返回`SUCCESS`并人工确认attestation后，单独运行：
+仅需单独评估已有`SUCCESS_REPRODUCIBLE` Validation实验时，才直接调用`agent.pi_test_harness_cli`。`--preflight-attestation`是可选参数；下面的直接Test示例不提供它，也不需要人工确认。
 
 ```bash
-cd /Users/mac/PycharmProjects/v2_clean-agentscope2-pi-runtime
-
 conda run -n py3102 env PYTHONPATH=. \
   python -m agent.pi_test_harness_cli \
-  --validation-experiment /absolute/path/to/successful-validation-experiment \
-  --preflight-attestation /absolute/path/to/preflight-experiment/host/preflight_attestation.json \
-  --test-experiment /absolute/path/to/new-empty-test-experiment \
-  --test-raw /absolute/path/to/5000-test/raw \
-  --test-gold /absolute/path/to/5000-test/reference_private \
-  --evaluation-manifest evaluation_manifests/mimic_icu_mortality_v3_1.json \
+  --validation-experiment "${SUCCESSFUL_VALIDATION_EXPERIMENT}" \
+  --test-experiment "${NEW_TEST_EXPERIMENT}" \
+  --test-raw "${TEST_RAW}" \
+  --test-gold "${TEST_GOLD}" \
+  --evaluation-manifest "${EVALUATION_MANIFEST}" \
   --replay-timeout 1800 \
   --scoring-timeout 3600
 ```
 
-Test Harness不加载模型、Skill、CodeGraph或API Key。Test raw严格执行一次，成功后隐藏评分严格执行一次；执行失败不重试、不评分，低分仍表示`SUCCESS`，因为该状态只说明执行和评分完整完成。
+如需附带可选预检证明，可额外传入`--preflight-attestation "${PREFLIGHT_ATTESTATION}"`。standalone Test Harness同样不加载模型、Skill、CodeGraph或API Key，不创建或调用Agent，也不向Agent反馈分数。Test raw严格执行一次，成功后隐藏评分严格执行一次；执行失败不重试、不评分，低分仍表示`SUCCESS`，因为该状态只说明执行和评分完整完成。
 
-### 2. Validation Loop 与自动 Test
+### 2. 旧版reference-guided Validation Loop
 
-任务Prompt模板位于 [`prompts/reference_guided_loop_template.md`](prompts/reference_guided_loop_template.md)。每次实验必须使用新的空目录：
+以下是保留的旧parity工作流，不是上述Pi自动全实验主流程。任务Prompt模板位于 [`prompts/reference_guided_loop_template.md`](prompts/reference_guided_loop_template.md)。每次实验必须使用新的空目录：
 
 ```bash
 python main.py \
@@ -333,7 +320,7 @@ python main.py \
 --target-score 0.99        达到目标分数后冻结best并进入Test
 ```
 
-Validation自然停止或第一次收到 `Ctrl+C` 后，宿主从正式 best 创建 checkpoint，并启动独立 Test Agent。Test不能修改冻结Pipeline；业务结果由宿主运行冻结入口后评分。
+旧版Validation自然停止或第一次收到 `Ctrl+C` 后，宿主从正式best创建checkpoint，并启动该旧链路的独立Test Agent。该旧版行为不适用于`agent.pi_full_experiment_cli`；Pi主流程的Test完全由宿主执行，不创建Agent。
 
 ### 3. 构造纠错数据划分
 
@@ -433,7 +420,7 @@ python main.py ... --enable-codegraph "<PROMPT>"
 
 - `.codegraph`数据库和日志仅保存在本机，不进入Git。
 - 模型侧只看到 `CodeGraphExplore(query, max_files)`，不能覆盖项目路径。
-- Test Agent不连接CodeGraph。
+- 旧版`reference-guided-*` Test Agent不连接CodeGraph；Pi主流程Test不创建Agent。
 - MCP启动失败发生在attempt创建前；单次查询失败时Agent可以回退到 `Read/Grep`。
 
 ## 门禁与结果
