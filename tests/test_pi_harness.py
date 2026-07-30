@@ -50,6 +50,8 @@ def test_submission_accepts_dynamic_paths_and_renders_placeholders(tmp_path: Pat
                 "argv": [
                     "python",
                     "scripts/build.py",
+                    "--train-raw",
+                    "{train_raw}",
                     "--raw",
                     "{raw_root}",
                     "--train-reference",
@@ -66,6 +68,7 @@ def test_submission_accepts_dynamic_paths_and_renders_placeholders(tmp_path: Pat
     assert submission.result_root == workdir / "outputs/package"
     assert render_replay_argv(
         submission,
+        train_raw=Path("/public/train/raw"),
         raw_root=Path("/public/validation/raw"),
         train_reference=Path("/public/train/reference"),
         output_dir=Path("/tmp/replay-output"),
@@ -73,6 +76,8 @@ def test_submission_accepts_dynamic_paths_and_renders_placeholders(tmp_path: Pat
     ) == [
         "python",
         "scripts/build.py",
+        "--train-raw",
+        "/public/train/raw",
         "--raw",
         "/public/validation/raw",
         "--train-reference",
@@ -80,6 +85,42 @@ def test_submission_accepts_dynamic_paths_and_renders_placeholders(tmp_path: Pat
         "--out",
         str(Path("/tmp/replay-output").resolve()),
     ]
+
+
+def test_replay_rejects_train_raw_placeholder_when_context_does_not_authorize_it(
+    tmp_path: Path,
+) -> None:
+    workdir = tmp_path / "agent_workdir"
+    workdir.mkdir()
+    _write_submission(
+        workdir / "submission.json",
+        {
+            "schema_version": 1,
+            "result_root": "result_package",
+            "replay": {
+                "argv": [
+                    "python",
+                    "scripts/build.py",
+                    "--train-raw",
+                    "{train_raw}",
+                    "--raw",
+                    "{raw_root}",
+                    "--out",
+                    "{output_dir}",
+                ],
+            },
+        },
+    )
+    submission = load_submission(workdir)
+
+    with pytest.raises(ValueError, match="placeholder unavailable.*train_raw"):
+        render_replay_argv(
+            submission,
+            raw_root=Path("/public/test/raw"),
+            train_reference=Path("/public/train/reference"),
+            output_dir=Path("/tmp/test-output"),
+            workdir=Path("/tmp/test-workdir"),
+        )
 
 
 @pytest.mark.parametrize(

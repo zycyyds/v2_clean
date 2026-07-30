@@ -38,6 +38,7 @@ from workflow.pi_harness_evaluation import (
 SCORE_TOLERANCE = 1e-6
 ALLOWED_REPLAY_PLACEHOLDERS = {
     "raw_root",
+    "train_raw",
     "train_reference",
     "output_dir",
     "workdir",
@@ -177,6 +178,7 @@ def render_replay_argv(
     train_reference: Path,
     output_dir: Path,
     workdir: Path,
+    train_raw: Path | None = None,
 ) -> list[str]:
     values = {
         "raw_root": str(raw_root.resolve()),
@@ -184,6 +186,19 @@ def render_replay_argv(
         "output_dir": str(output_dir.resolve()),
         "workdir": str(workdir.resolve()),
     }
+    if train_raw is not None:
+        values["train_raw"] = str(train_raw.resolve())
+    requested = {
+        name
+        for item in submission.replay_argv
+        for name in _PLACEHOLDER.findall(item)
+    }
+    unavailable = sorted(requested - values.keys())
+    if unavailable:
+        raise ValueError(
+            "placeholder unavailable in this replay context: "
+            + ", ".join(unavailable),
+        )
     return [item.format_map(values) for item in submission.replay_argv]
 
 
@@ -683,8 +698,9 @@ class PiValidationHarness:
             f"Agent workdir: {self.agent_workdir}\n"
             "Create reproducible scripts and current validation results. Before ending this turn, "
             "write submission.json with schema_version=1, a relative result_root, and replay.argv "
-            "as a JSON string array. Use {raw_root}, {train_reference}, {output_dir}, and optionally "
-            "{workdir}; do not use a shell command string. Hidden gold and host reports are not "
+            "as a JSON string array. Use {raw_root}, {train_raw}, {train_reference}, "
+            "{output_dir}, and optionally {workdir}; do not use a shell command string. "
+            "Hidden gold and host reports are not "
             "available to you. The host will return aggregate and per-file scores after the turn."
         )
 
@@ -784,6 +800,7 @@ class PiValidationHarness:
                 read_roots=[
                     replay_workdir,
                     self.config.validation_raw,
+                    self.config.train_raw,
                     self.config.train_reference,
                     Path(sys.prefix),
                     Path(sys.base_prefix),
@@ -801,6 +818,7 @@ class PiValidationHarness:
         argv = render_replay_argv(
             submission,
             raw_root=self.config.validation_raw,
+            train_raw=self.config.train_raw,
             train_reference=self.config.train_reference,
             output_dir=submission.result_root,
             workdir=replay_workdir,

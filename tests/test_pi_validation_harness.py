@@ -440,6 +440,97 @@ def test_replay_removes_temporary_directory_after_invalid_source(tmp_path: Path)
     assert not list((config.experiment_dir / "host/runtime").glob("replay-*"))
 
 
+def test_clean_replay_preserves_pipeline_bundle_and_authorizes_train_raw(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import agent.pi_harness as harness_module
+
+    config = _config(tmp_path)
+    (config.train_raw / "data.csv").write_text("id,value\n1,dirty\n", encoding="utf-8")
+    (config.train_reference / "data.csv").write_text(
+        "id,value\n1,clean\n",
+        encoding="utf-8",
+    )
+    (config.validation_raw / "data.csv").write_text(
+        "id,value\n1,gold\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "rules").mkdir()
+    (source / "result_package").mkdir()
+    (source / "scripts/build.py").write_text("# replayed pipeline\n", encoding="utf-8")
+    (source / "rules/mapping.json").write_text('{"dirty": "clean"}', encoding="utf-8")
+    (source / "result_package/data.csv").write_text("stale", encoding="utf-8")
+    (source / "submission.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "result_root": "result_package",
+                "replay": {
+                    "argv": [
+                        "python",
+                        "scripts/build.py",
+                        "--train-raw",
+                        "{train_raw}",
+                        "--train-reference",
+                        "{train_reference}",
+                        "--raw",
+                        "{raw_root}",
+                        "--out",
+                        "{output_dir}",
+                    ],
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_profile(**kwargs) -> str:
+        captured["read_roots"] = tuple(Path(item).resolve() for item in kwargs["read_roots"])
+        return "(version 1)\n(allow default)\n"
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        replay_workdir = Path(kwargs["cwd"])
+        assert (replay_workdir / "rules/mapping.json").read_text(encoding="utf-8")
+        assert not (replay_workdir / "result_package").exists()
+        output = Path(command[command.index("--out") + 1])
+        output.mkdir(parents=True)
+        (output / "data.csv").write_text("id,value\n1,gold\n", encoding="utf-8")
+        return FakeProcess()
+
+    monkeypatch.setattr(harness_module, "build_macos_sandbox_profile", fake_profile)
+    monkeypatch.setattr(harness_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    harness = PiValidationHarness(config, sandbox_probe=lambda *_args, **_kwargs: None)
+    harness._prepare()
+
+    replay = asyncio.run(
+        harness._run_replay_in_directory(source, config.experiment_dir / "host/replay-test"),
+    )
+
+    assert replay.status == "SUCCESS"
+    assert replay.score == 1.0
+    command = captured["command"]
+    assert str(config.train_raw.resolve()) in command
+    assert str(config.train_reference.resolve()) in command
+    assert str(config.validation_raw.resolve()) in command
+    read_roots = captured["read_roots"]
+    assert config.train_raw.resolve() in read_roots
+    assert config.train_reference.resolve() in read_roots
+    assert config.validation_raw.resolve() in read_roots
+    assert config.validation_gold.resolve() not in read_roots
+
+
 def test_real_independent_replay_denies_gold_network_and_host_write(tmp_path: Path) -> None:
     if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
         return
