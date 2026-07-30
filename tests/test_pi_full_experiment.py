@@ -470,6 +470,41 @@ def test_validation_gold_must_be_disjoint_from_agent_recursive_roots(
     )
 
 
+@pytest.mark.parametrize("public_name", ["test_raw", "test_experiment"])
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "private_parent", "private_child", "symlink"],
+)
+def test_validation_gold_must_be_disjoint_from_test_replay_roots(
+    tmp_path: Path,
+    public_name: str,
+    relationship: str,
+) -> None:
+    config = _full_config(tmp_path)
+    if public_name == "test_raw":
+        config = replace(config, test_raw=tmp_path / "test_raw_root/raw")
+    else:
+        config = replace(
+            config,
+            test_experiment=tmp_path / "test_experiment_root/experiment",
+        )
+    validation_gold = _overlapping_path(
+        getattr(config, public_name),
+        relationship,
+        tmp_path,
+    )
+
+    _assert_topology_rejected(
+        replace(
+            config,
+            validation=replace(
+                config.validation,
+                validation_gold=validation_gold,
+            ),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "sandbox_root",
     [

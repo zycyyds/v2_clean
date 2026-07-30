@@ -264,6 +264,58 @@ def test_cli_rejects_prompt_gold_overlap_before_reading_prompt(
     assert not (Path(args.test_experiment) / "host").exists()
 
 
+@pytest.mark.parametrize(
+    "relationship",
+    ["same", "prompt_parent", "prompt_child", "symlink"],
+)
+def test_cli_rejects_prompt_test_raw_overlap_before_reading_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    relationship: str,
+) -> None:
+    test_raw = tmp_path / "test/raw"
+    if relationship == "same":
+        prompt_file = test_raw
+    elif relationship == "prompt_parent":
+        prompt_file = test_raw.parent
+    elif relationship == "prompt_child":
+        prompt_file = test_raw / "prompt.txt"
+    else:
+        test_raw.mkdir(parents=True)
+        prompt_file = tmp_path / "test-raw-prompt-link"
+        prompt_file.symlink_to(test_raw, target_is_directory=True)
+    args = _safe_cli_args(tmp_path, prompt_file)
+    args.test_raw = str(test_raw)
+    prompt_reads: list[Path] = []
+    experiment_calls = 0
+
+    def forbidden_read(path: Path, *_args, **_kwargs) -> str:
+        prompt_reads.append(path)
+        raise AssertionError("prompt must not be read")
+
+    class FakeExperiment:
+        def __init__(self, _config) -> None:
+            nonlocal experiment_calls
+            experiment_calls += 1
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    monkeypatch.setattr(cli, "parse_args", lambda _argv: args)
+    monkeypatch.setattr(cli, "PiFullExperiment", FakeExperiment)
+
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "status": "CLI_FAILED",
+        "error_code": "FULL_EXPERIMENT_EXCEPTION",
+    }
+    assert prompt_reads == []
+    assert experiment_calls == 0
+    assert not (Path(args.experiment_dir) / "host").exists()
+    assert not (Path(args.test_experiment) / "host").exists()
+
+
 def test_cli_validates_role_topology_before_reading_safe_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

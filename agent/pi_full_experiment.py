@@ -137,14 +137,18 @@ def validate_full_experiment_role_topology(
             raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
     require_path_isolated(
         validation.validation_gold,
-        recursive_roots,
+        (*recursive_roots, config.test_raw, config.test_experiment),
         literal_paths=literal_paths,
         error_message=FULL_ROLE_TOPOLOGY_ERROR,
     )
 
     if prompt_file is not None:
-        for gold_root in (validation.validation_gold, config.test_gold):
-            if recursive_paths_overlap(prompt_file, gold_root):
+        for private_input in (
+            validation.validation_gold,
+            config.test_gold,
+            config.test_raw,
+        ):
+            if recursive_paths_overlap(prompt_file, private_input):
                 raise ValueError(FULL_ROLE_TOPOLOGY_ERROR)
 
 
