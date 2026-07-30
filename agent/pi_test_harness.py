@@ -42,11 +42,11 @@ class PiTestPreflightConfig:
 class PiTestHarnessConfig:
     project_root: Path
     validation_experiment: Path
-    preflight_attestation: Path
     test_experiment: Path
     test_raw: Path
     test_gold: Path
     evaluation_manifest: Path
+    preflight_attestation: Path | None = None
     replay_timeout_seconds: float = 1_800.0
     scoring_timeout_seconds: float = 3_600.0
 
@@ -286,7 +286,11 @@ class PiTestHarness:
         source, train_reference, source_hash = _load_validation_bundle(
             self.config.validation_experiment,
         )
-        attestation = _load_attestation(self.config.preflight_attestation, source_hash)
+        attestation = (
+            _load_attestation(self.config.preflight_attestation, source_hash)
+            if self.config.preflight_attestation is not None
+            else {}
+        )
         _require_directory(self.config.test_raw, "Test raw")
         _require_directory(self.config.test_gold, "Test Gold")
         _require_file(self.config.evaluation_manifest, "evaluation manifest")
@@ -305,8 +309,10 @@ class PiTestHarness:
                 "schema_version": 1,
                 "mode": "strict_one_shot_test",
                 "validation_experiment": str(self.config.validation_experiment.resolve()),
-                "preflight_attestation_sha256": _file_sha256(
-                    self.config.preflight_attestation,
+                "preflight_attestation_sha256": (
+                    _file_sha256(self.config.preflight_attestation)
+                    if self.config.preflight_attestation is not None
+                    else ""
                 ),
                 "preflight_raw_identity": attestation.get("preflight_raw_identity", {}),
                 "test_raw": str(self.config.test_raw.resolve()),
@@ -327,6 +333,14 @@ class PiTestHarness:
             runtime_root=self.host_dir / "replay_runtime",
             retained_result_root=self.host_dir / "test_result_package",
             timeout_seconds=self.config.replay_timeout_seconds,
+        )
+        _atomic_json(
+            self.host_dir / "test_started.json",
+            {
+                "schema_version": 1,
+                "frozen_snapshot_sha256": frozen_hash,
+                "started_at_unix": time.time(),
+            },
         )
         self._host_line("Test replay started")
         try:

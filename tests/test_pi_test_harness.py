@@ -82,7 +82,7 @@ def _preflight_config(tmp_path: Path) -> PiTestPreflightConfig:
     )
 
 
-def _test_config(tmp_path: Path, attestation: Path) -> PiTestHarnessConfig:
+def _test_config(tmp_path: Path, attestation: Path | None) -> PiTestHarnessConfig:
     validation = tmp_path / "validation_experiment"
     test_raw = tmp_path / "dataset/test/raw"
     test_gold = tmp_path / "dataset/test/reference_private"
@@ -98,11 +98,11 @@ def _test_config(tmp_path: Path, attestation: Path) -> PiTestHarnessConfig:
     return PiTestHarnessConfig(
         project_root=Path(__file__).parents[1],
         validation_experiment=validation,
-        preflight_attestation=attestation,
         test_experiment=tmp_path / "test_experiment",
         test_raw=test_raw,
         test_gold=test_gold,
         evaluation_manifest=manifest,
+        preflight_attestation=attestation,
         replay_timeout_seconds=10.0,
         scoring_timeout_seconds=10.0,
     )
@@ -225,6 +225,70 @@ def test_test_replay_and_hidden_scoring_each_run_once(tmp_path: Path) -> None:
     assert replay_requests[0].raw_root == config.test_raw.resolve()
     assert score_calls == 1
     assert (config.test_experiment / "host/score_report.json").is_file()
+
+
+def test_direct_test_writes_started_marker_before_replay(tmp_path: Path) -> None:
+    _validation_fixture(tmp_path)
+    config = _test_config(tmp_path, None)
+    replay_requests: list[ReplayRequest] = []
+
+    async def replay(request: ReplayRequest) -> TestReplayExecution:
+        marker = json.loads(
+            (config.test_experiment / "host/test_started.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        assert marker["schema_version"] == 1
+        assert marker["frozen_snapshot_sha256"] == directory_sha256(
+            config.validation_experiment / "host/reproducible_snapshot",
+        )
+        assert isinstance(marker["started_at_unix"], float)
+        return await _successful_replay(replay_requests)(request)
+
+    async def score_runner(*_args, **_kwargs) -> ScoreExecution:
+        return ScoreExecution("SUCCESS", 0, "", 0.1, _score_report(0.31))
+
+    result = asyncio.run(
+        PiTestHarness(
+            config,
+            replay_runner=replay,
+            score_runner=score_runner,
+        ).run(),
+    )
+
+    assert result.status == "SUCCESS"
+    assert len(replay_requests) == 1
+    manifest = json.loads(
+        (config.test_experiment / "host/run_manifest.json").read_text(encoding="utf-8"),
+    )
+    assert manifest["preflight_attestation_sha256"] == ""
+    assert manifest["preflight_raw_identity"] == {}
+    assert str(config.test_gold.resolve()) not in json.dumps(manifest)
+    marker = json.loads(
+        (config.test_experiment / "host/test_started.json").read_text(encoding="utf-8"),
+    )
+    assert str(config.test_gold.resolve()) not in json.dumps(marker)
+
+
+def test_same_test_experiment_cannot_replay_twice(tmp_path: Path) -> None:
+    _validation_fixture(tmp_path)
+    config = _test_config(tmp_path, None)
+    replay_requests: list[ReplayRequest] = []
+
+    async def score_runner(*_args, **_kwargs) -> ScoreExecution:
+        return ScoreExecution("SUCCESS", 0, "", 0.1, _score_report(0.31))
+
+    harness = PiTestHarness(
+        config,
+        replay_runner=_successful_replay(replay_requests),
+        score_runner=score_runner,
+    )
+    first = asyncio.run(harness.run())
+
+    assert first.status == "SUCCESS"
+    with pytest.raises(ValueError, match="experiment directory must be new and empty"):
+        asyncio.run(harness.run())
+    assert len(replay_requests) == 1
 
 
 def test_test_replay_failure_is_not_retried_or_scored(tmp_path: Path) -> None:
