@@ -207,6 +207,7 @@ def test_combined_report_is_host_only_complete_and_gold_free(tmp_path: Path) -> 
     report = json.loads(report_text)
     assert report["status"] == "SUCCESS"
     assert report["phase"] == "complete"
+    assert report["error_code"] == ""
     assert report["validation"]["status"] == "SUCCESS_REPRODUCIBLE"
     assert report["validation"]["rounds"] == 3
     assert report["validation"]["best_score"] == 0.91
@@ -317,6 +318,8 @@ def test_combined_report_constrains_untrusted_test_text_fields(tmp_path: Path) -
 
     report_text = result.report_path.read_text(encoding="utf-8")
     report = json.loads(report_text)
+    assert result.status == "UNKNOWN"
+    assert result.phase == "unknown"
     assert "stop_reason" not in report["validation"]
     assert report["status"] == "UNKNOWN"
     assert report["phase"] == "unknown"
@@ -325,6 +328,195 @@ def test_combined_report_constrains_untrusted_test_text_fields(tmp_path: Path) -
     assert report["test"]["replay_status"] == "UNKNOWN"
     assert report["test"]["frozen_snapshot_sha256"] == ""
     assert sentinel not in report_text
+
+
+def test_validation_exception_writes_fixed_failure_without_starting_test(
+    tmp_path: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+    test_calls = 0
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        raise RuntimeError(
+            f"{sentinel} {config.validation.validation_gold.resolve()} "
+            f"{config.test_gold.resolve()}",
+        )
+
+    async def run_test() -> PiTestHarnessResult:
+        nonlocal test_calls
+        test_calls += 1
+        raise AssertionError("Test must not start")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert test_calls == 0
+    assert result.status == report["status"] == "VALIDATION_FAILED"
+    assert result.phase == report["phase"] == "validation"
+    assert report["error_code"] == "VALIDATION_EXCEPTION"
+    assert sentinel not in report_text
+    assert str(config.validation.validation_gold.resolve()) not in report_text
+    assert str(config.test_gold.resolve()) not in report_text
+
+
+def test_validation_cancellation_writes_fixed_interrupted_report(
+    tmp_path: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+    test_calls = 0
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        raise asyncio.CancelledError(
+            f"{sentinel} {config.validation.validation_gold.resolve()}",
+        )
+
+    async def run_test() -> PiTestHarnessResult:
+        nonlocal test_calls
+        test_calls += 1
+        raise AssertionError("Test must not start")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert test_calls == 0
+    assert result.status == report["status"] == "INTERRUPTED"
+    assert result.phase == report["phase"] == "validation"
+    assert report["error_code"] == "VALIDATION_CANCELLED"
+    assert sentinel not in report_text
+    assert str(config.validation.validation_gold.resolve()) not in report_text
+
+
+@pytest.mark.parametrize("marker_exists", [False, True])
+def test_test_exception_uses_started_marker_for_execution_count(
+    tmp_path: Path,
+    marker_exists: bool,
+) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+    test_calls = 0
+    marker = config.test_experiment / "host/test_started.json"
+    if marker_exists:
+        marker.parent.mkdir(parents=True)
+        marker.write_text("{}\n", encoding="utf-8")
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        nonlocal test_calls
+        test_calls += 1
+        raise RuntimeError(f"{sentinel} {config.test_gold.resolve()}")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert test_calls == 1
+    assert result.status == report["status"] == "REPLAY_FAILED"
+    assert result.phase == report["phase"] == "test_replay"
+    assert report["error_code"] == "TEST_EXCEPTION"
+    assert report["test_execution_count"] == int(marker_exists)
+    assert result.test_result is not None
+    assert result.test_result.test_execution_count == int(marker_exists)
+    assert sentinel not in report_text
+    assert str(config.test_gold.resolve()) not in report_text
+
+
+def test_test_cancellation_writes_fixed_interrupted_report_without_retry(
+    tmp_path: Path,
+) -> None:
+    config = _full_config(tmp_path)
+    sentinel = "GOLD_VALUE_MUST_NOT_LEAK"
+    test_calls = 0
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        nonlocal test_calls
+        test_calls += 1
+        raise asyncio.CancelledError(f"{sentinel} {config.test_gold.resolve()}")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert test_calls == 1
+    assert result.status == report["status"] == "INTERRUPTED"
+    assert result.phase == report["phase"] == "test_replay"
+    assert report["error_code"] == "TEST_CANCELLED"
+    assert report["test_execution_count"] == 0
+    assert sentinel not in report_text
+    assert str(config.test_gold.resolve()) not in report_text
+
+
+def test_public_paths_are_serialized_in_resolved_form(tmp_path: Path) -> None:
+    config = _full_config(tmp_path)
+    validation_result = replace(
+        _validation_result(tmp_path),
+        reproducible_snapshot=(
+            config.validation.experiment_dir
+            / "host/temporary/../reproducible_snapshot"
+        ),
+    )
+    test_result = replace(
+        _test_result(tmp_path),
+        frozen_snapshot=config.test_experiment / "host/temporary/../frozen_snapshot",
+        result_package=config.test_experiment / "host/temporary/../test_result_package",
+    )
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return validation_result
+
+    async def run_test() -> PiTestHarnessResult:
+        return test_result
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["validation"]["reproducible_snapshot"] == str(
+        validation_result.reproducible_snapshot.resolve(),
+    )
+    assert report["test"]["frozen_snapshot"] == str(
+        test_result.frozen_snapshot.resolve(),
+    )
+    assert report["test"]["result_package"] == str(
+        test_result.result_package.resolve(),
+    )
 
 
 def test_combined_report_constrains_unknown_validation_status(tmp_path: Path) -> None:

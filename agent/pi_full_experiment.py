@@ -1,6 +1,7 @@
 """Host-only sequencing for the Validation and one-shot Test harnesses."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -75,6 +76,16 @@ REPLAY_STATUSES = frozenset(
     },
 )
 SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
+ERROR_CODES = frozenset(
+    {
+        "",
+        "UNKNOWN",
+        "VALIDATION_EXCEPTION",
+        "VALIDATION_CANCELLED",
+        "TEST_EXCEPTION",
+        "TEST_CANCELLED",
+    },
+)
 
 
 class PiFullExperiment:
@@ -98,7 +109,32 @@ class PiFullExperiment:
     async def run(self, prompt: str) -> PiFullExperimentResult:
         started = time.monotonic()
         validation_started = time.monotonic()
-        validation = await self.validation_runner(prompt)
+        try:
+            validation = await self.validation_runner(prompt)
+        except asyncio.CancelledError:
+            validation = self._validation_terminal("INTERRUPTED", "validation_cancelled")
+            return self._finish(
+                status="INTERRUPTED",
+                phase="validation",
+                validation=validation,
+                test=None,
+                validation_duration=time.monotonic() - validation_started,
+                test_duration=0.0,
+                duration=time.monotonic() - started,
+                error_code="VALIDATION_CANCELLED",
+            )
+        except Exception:
+            validation = self._validation_terminal("FAILED", "validation_exception")
+            return self._finish(
+                status="VALIDATION_FAILED",
+                phase="validation",
+                validation=validation,
+                test=None,
+                validation_duration=time.monotonic() - validation_started,
+                test_duration=0.0,
+                duration=time.monotonic() - started,
+                error_code="VALIDATION_EXCEPTION",
+            )
         validation_duration = time.monotonic() - validation_started
 
         if validation.status != "SUCCESS_REPRODUCIBLE":
@@ -113,7 +149,32 @@ class PiFullExperiment:
             )
 
         test_started = time.monotonic()
-        test = await self.test_runner()
+        try:
+            test = await self.test_runner()
+        except asyncio.CancelledError:
+            test = self._test_terminal("INTERRUPTED", "INTERRUPTED")
+            return self._finish(
+                status="INTERRUPTED",
+                phase="test_replay",
+                validation=validation,
+                test=test,
+                validation_duration=validation_duration,
+                test_duration=time.monotonic() - test_started,
+                duration=time.monotonic() - started,
+                error_code="TEST_CANCELLED",
+            )
+        except Exception:
+            test = self._test_terminal("REPLAY_FAILED", "EXECUTION_FAILED")
+            return self._finish(
+                status="REPLAY_FAILED",
+                phase="test_replay",
+                validation=validation,
+                test=test,
+                validation_duration=validation_duration,
+                test_duration=time.monotonic() - test_started,
+                duration=time.monotonic() - started,
+                error_code="TEST_EXCEPTION",
+            )
         test_duration = time.monotonic() - test_started
         return self._finish(
             status="SUCCESS" if test.status == "SUCCESS" else test.status,
@@ -123,6 +184,37 @@ class PiFullExperiment:
             validation_duration=validation_duration,
             test_duration=test_duration,
             duration=time.monotonic() - started,
+        )
+
+    def _validation_terminal(self, status: str, stop_reason: str) -> PiHarnessResult:
+        host_dir = self.config.validation.experiment_dir.expanduser().resolve() / "host"
+        return PiHarnessResult(
+            status=status,
+            stop_reason=stop_reason,
+            rounds=0,
+            repair_rounds=0,
+            best_score=0.0,
+            reproducible_score=0.0,
+            best_snapshot=host_dir / "best_snapshot",
+            reproducible_snapshot=host_dir / "reproducible_snapshot",
+        )
+
+    def _test_terminal(self, status: str, replay_status: str) -> PiTestHarnessResult:
+        host_dir = self.config.test_experiment.expanduser().resolve() / "host"
+        execution_count = int((host_dir / "test_started.json").exists())
+        return PiTestHarnessResult(
+            status=status,
+            phase="test_replay",
+            scored=False,
+            score=None,
+            test_execution_count=execution_count,
+            replay_status=replay_status,
+            frozen_snapshot_sha256="",
+            frozen_snapshot=host_dir / "frozen_snapshot",
+            result_package=None,
+            preflight_status="NOT_RUN",
+            replay_duration_seconds=0.0,
+            scoring_duration_seconds=0.0,
         )
 
     async def _run_validation(self, prompt: str) -> PiHarnessResult:
@@ -152,14 +244,18 @@ class PiFullExperiment:
         validation_duration: float,
         test_duration: float,
         duration: float,
+        error_code: str = "",
     ) -> PiFullExperimentResult:
+        normalized_status = _known_text(status, FULL_STATUSES, "UNKNOWN")
+        normalized_phase = _known_text(phase, PHASES, "unknown")
         scoring_execution_count = (
             1 if test is not None and test.phase in {"scoring", "complete"} else 0
         )
         payload: dict[str, Any] = {
             "schema_version": 1,
-            "status": _known_text(status, FULL_STATUSES, "UNKNOWN"),
-            "phase": _known_text(phase, PHASES, "unknown"),
+            "status": normalized_status,
+            "phase": normalized_phase,
+            "error_code": _known_text(error_code, ERROR_CODES, "UNKNOWN"),
             "validation_experiment": self._redact_path_text(
                 str(self.config.validation.experiment_dir.expanduser().resolve()),
             ),
@@ -190,8 +286,8 @@ class PiFullExperiment:
         }
         _atomic_json(self.report_path, payload)
         return PiFullExperimentResult(
-            status=status,
-            phase=phase,
+            status=normalized_status,
+            phase=normalized_phase,
             validation_result=validation,
             test_result=test,
             report_path=self.report_path,
@@ -227,10 +323,11 @@ class PiFullExperiment:
         if path is None:
             return ""
         try:
-            path.expanduser().resolve().relative_to(public_root.expanduser().resolve())
+            resolved = path.expanduser().resolve()
+            resolved.relative_to(public_root.expanduser().resolve())
         except (OSError, RuntimeError, ValueError):
             return ""
-        return self._redact_path_text(str(path))
+        return self._redact_path_text(str(resolved))
 
     def _redact_path_text(self, text: str) -> str:
         hidden_roots = (
