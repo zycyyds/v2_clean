@@ -304,6 +304,35 @@ def test_direct_test_writes_started_marker_before_replay(tmp_path: Path) -> None
     assert str(config.test_gold.resolve()) not in json.dumps(marker)
 
 
+def test_scoring_started_marker_exists_before_score_runner(tmp_path: Path) -> None:
+    _validation_fixture(tmp_path)
+    config = _test_config(tmp_path, None)
+    expected_hash = directory_sha256(
+        config.validation_experiment / "host/reproducible_snapshot",
+    )
+
+    async def score_runner(*_args, **_kwargs) -> ScoreExecution:
+        marker_path = config.test_experiment / "host/scoring_started.json"
+        marker_text = marker_path.read_text(encoding="utf-8")
+        marker = json.loads(marker_text)
+        assert marker["schema_version"] == 1
+        assert marker["frozen_snapshot_sha256"] == expected_hash
+        assert isinstance(marker["started_at_unix"], float)
+        assert str(config.test_gold.resolve()) not in marker_text
+        return ScoreExecution("SUCCESS", 0, "", 0.1, _score_report(0.31))
+
+    result = asyncio.run(
+        PiTestHarness(
+            config,
+            replay_runner=_successful_replay([]),
+            score_runner=score_runner,
+        ).run(),
+    )
+
+    assert result.status == "SUCCESS"
+    assert (config.test_experiment / "host/scoring_started.json").is_file()
+
+
 def test_same_test_experiment_cannot_replay_twice(tmp_path: Path) -> None:
     _validation_fixture(tmp_path)
     config = _test_config(tmp_path, None)
@@ -356,6 +385,7 @@ def test_test_replay_failure_is_not_retried_or_scored(tmp_path: Path) -> None:
     assert replay_calls == 1
     assert score_calls == 0
     assert (config.test_experiment / "host/test_started.json").is_file()
+    assert not (config.test_experiment / "host/scoring_started.json").exists()
 
     second_harness = PiTestHarness(
         config,

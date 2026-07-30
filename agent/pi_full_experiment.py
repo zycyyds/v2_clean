@@ -152,10 +152,10 @@ class PiFullExperiment:
         try:
             test = await self.test_runner()
         except asyncio.CancelledError:
-            test = self._test_terminal("INTERRUPTED", "INTERRUPTED")
+            test = self._test_terminal(cancelled=True)
             return self._finish(
-                status="INTERRUPTED",
-                phase="test_replay",
+                status=test.status,
+                phase=test.phase,
                 validation=validation,
                 test=test,
                 validation_duration=validation_duration,
@@ -164,10 +164,10 @@ class PiFullExperiment:
                 error_code="TEST_CANCELLED",
             )
         except Exception:
-            test = self._test_terminal("REPLAY_FAILED", "EXECUTION_FAILED")
+            test = self._test_terminal(cancelled=False)
             return self._finish(
-                status="REPLAY_FAILED",
-                phase="test_replay",
+                status=test.status,
+                phase=test.phase,
                 validation=validation,
                 test=test,
                 validation_duration=validation_duration,
@@ -199,18 +199,31 @@ class PiFullExperiment:
             reproducible_snapshot=host_dir / "reproducible_snapshot",
         )
 
-    def _test_terminal(self, status: str, replay_status: str) -> PiTestHarnessResult:
+    def _test_terminal(self, *, cancelled: bool) -> PiTestHarnessResult:
         host_dir = self.config.test_experiment.expanduser().resolve() / "host"
-        execution_count = int((host_dir / "test_started.json").exists())
+        test_hash = _start_marker_hash(host_dir / "test_started.json")
+        scoring_hash = _start_marker_hash(host_dir / "scoring_started.json")
+        if scoring_hash:
+            status = "INTERRUPTED" if cancelled else "SCORING_FAILED"
+            phase = "scoring"
+            replay_status = "SUCCESS"
+            execution_count = 1
+            frozen_hash = scoring_hash
+        else:
+            status = "INTERRUPTED" if cancelled else "REPLAY_FAILED"
+            phase = "test_replay"
+            replay_status = "INTERRUPTED" if cancelled else "EXECUTION_FAILED"
+            execution_count = int(bool(test_hash))
+            frozen_hash = test_hash
         return PiTestHarnessResult(
             status=status,
-            phase="test_replay",
+            phase=phase,
             scored=False,
             score=None,
             test_execution_count=execution_count,
             replay_status=replay_status,
-            frozen_snapshot_sha256="",
-            frozen_snapshot=host_dir / "frozen_snapshot",
+            frozen_snapshot_sha256=frozen_hash,
+            frozen_snapshot=Path(),
             result_package=None,
             preflight_status="NOT_RUN",
             replay_duration_seconds=0.0,
@@ -348,6 +361,19 @@ def _sha256_text(value: str) -> str:
     if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
         return ""
     return value
+
+
+def _start_marker_hash(path: Path) -> str:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    schema_version = payload.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        return ""
+    return _sha256_text(payload.get("frozen_snapshot_sha256"))
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:

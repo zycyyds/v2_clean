@@ -388,6 +388,14 @@ class PiTestHarness:
             )
 
         self._host_line("hidden scoring started")
+        _atomic_json(
+            self.host_dir / "scoring_started.json",
+            {
+                "schema_version": 1,
+                "frozen_snapshot_sha256": frozen_hash,
+                "started_at_unix": time.time(),
+            },
+        )
         try:
             score_execution = await self.score_runner(
                 replay.result_root,

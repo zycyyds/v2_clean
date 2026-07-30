@@ -413,7 +413,16 @@ def test_test_exception_uses_started_marker_for_execution_count(
     marker = config.test_experiment / "host/test_started.json"
     if marker_exists:
         marker.parent.mkdir(parents=True)
-        marker.write_text("{}\n", encoding="utf-8")
+        marker.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "frozen_snapshot_sha256": "b" * 64,
+                    "started_at_unix": 1.0,
+                },
+            ),
+            encoding="utf-8",
+        )
 
     async def run_validation(_prompt: str) -> PiHarnessResult:
         return _validation_result(tmp_path)
@@ -440,6 +449,12 @@ def test_test_exception_uses_started_marker_for_execution_count(
     assert report["test_execution_count"] == int(marker_exists)
     assert result.test_result is not None
     assert result.test_result.test_execution_count == int(marker_exists)
+    assert report["test"]["replay_status"] == "EXECUTION_FAILED"
+    assert report["test"]["frozen_snapshot_sha256"] == (
+        "b" * 64 if marker_exists else ""
+    )
+    assert report["test"]["frozen_snapshot"] == ""
+    assert report["test"]["result_package"] == ""
     assert sentinel not in report_text
     assert str(config.test_gold.resolve()) not in report_text
 
@@ -474,8 +489,109 @@ def test_test_cancellation_writes_fixed_interrupted_report_without_retry(
     assert result.phase == report["phase"] == "test_replay"
     assert report["error_code"] == "TEST_CANCELLED"
     assert report["test_execution_count"] == 0
+    assert report["test"]["replay_status"] == "INTERRUPTED"
     assert sentinel not in report_text
     assert str(config.test_gold.resolve()) not in report_text
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_test_failure_after_scoring_marker_recovers_scoring_phase(
+    tmp_path: Path,
+    cancelled: bool,
+) -> None:
+    config = _full_config(tmp_path)
+    frozen_hash = "c" * 64
+    test_calls = 0
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        nonlocal test_calls
+        test_calls += 1
+        host = config.test_experiment / "host"
+        host.mkdir(parents=True)
+        marker = {
+            "schema_version": 1,
+            "frozen_snapshot_sha256": frozen_hash,
+            "started_at_unix": 1.0,
+        }
+        (host / "test_started.json").write_text(
+            json.dumps(marker),
+            encoding="utf-8",
+        )
+        (host / "scoring_started.json").write_text(
+            json.dumps(marker),
+            encoding="utf-8",
+        )
+        if cancelled:
+            raise asyncio.CancelledError("GOLD_VALUE_MUST_NOT_LEAK")
+        raise RuntimeError("GOLD_VALUE_MUST_NOT_LEAK")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report_text = result.report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    expected_status = "INTERRUPTED" if cancelled else "SCORING_FAILED"
+    expected_error = "TEST_CANCELLED" if cancelled else "TEST_EXCEPTION"
+    assert test_calls == 1
+    assert result.status == report["status"] == expected_status
+    assert result.phase == report["phase"] == "scoring"
+    assert report["error_code"] == expected_error
+    assert report["test_execution_count"] == 1
+    assert report["scoring_execution_count"] == 1
+    assert report["test"]["frozen_snapshot_sha256"] == frozen_hash
+    assert report["test"]["replay_status"] == "SUCCESS"
+    assert report["test"]["frozen_snapshot"] == ""
+    assert report["test"]["result_package"] == ""
+    assert "GOLD_VALUE_MUST_NOT_LEAK" not in report_text
+
+
+@pytest.mark.parametrize(
+    "marker_text",
+    [
+        "{",
+        json.dumps({"schema_version": True, "frozen_snapshot_sha256": "d" * 64}),
+        json.dumps({"schema_version": 2, "frozen_snapshot_sha256": "d" * 64}),
+        json.dumps({"schema_version": 1, "frozen_snapshot_sha256": "invalid"}),
+    ],
+)
+def test_test_exception_ignores_invalid_start_markers(
+    tmp_path: Path,
+    marker_text: str,
+) -> None:
+    config = _full_config(tmp_path)
+
+    async def run_validation(_prompt: str) -> PiHarnessResult:
+        return _validation_result(tmp_path)
+
+    async def run_test() -> PiTestHarnessResult:
+        host = config.test_experiment / "host"
+        host.mkdir(parents=True)
+        (host / "test_started.json").write_text(marker_text, encoding="utf-8")
+        (host / "scoring_started.json").write_text(marker_text, encoding="utf-8")
+        raise RuntimeError("failed")
+
+    result = asyncio.run(
+        PiFullExperiment(
+            config,
+            validation_runner=run_validation,
+            test_runner=run_test,
+        ).run("prompt"),
+    )
+
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert result.status == "REPLAY_FAILED"
+    assert result.phase == "test_replay"
+    assert report["test_execution_count"] == 0
+    assert report["scoring_execution_count"] == 0
+    assert report["test"]["frozen_snapshot_sha256"] == ""
 
 
 def test_public_paths_are_serialized_in_resolved_form(tmp_path: Path) -> None:
