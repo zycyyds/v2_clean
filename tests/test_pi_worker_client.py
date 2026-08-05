@@ -287,6 +287,8 @@ def test_real_sandbox_probe_denies_gold_python_shell_and_symlink(tmp_path: Path)
         path.mkdir(parents=True, exist_ok=True)
     (project / "config_loader.py").write_text("", encoding="utf-8")
     (project / "model_config.yaml").write_text("", encoding="utf-8")
+    (train_raw / "raw.csv").write_text("dirty", encoding="utf-8")
+    (train_reference / "reference.csv").write_text("clean", encoding="utf-8")
     (validation_raw / "public.csv").write_text("public", encoding="utf-8")
     (gold / "gold.csv").write_text("secret", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
@@ -296,7 +298,7 @@ def test_real_sandbox_probe_denies_gold_python_shell_and_symlink(tmp_path: Path)
             project_root=project,
             agent_workdir=workdir,
             runtime_root=runtime,
-            public_read_roots=(train_raw, train_reference, validation_raw),
+            public_read_roots=(train_raw.parent, validation_raw),
             skill_dirs=(),
             max_iters=1,
             model_environment={},

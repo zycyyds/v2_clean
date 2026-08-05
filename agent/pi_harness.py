@@ -651,14 +651,17 @@ class PiValidationHarness:
         model_environment = self._model_environment or build_worker_model_environment(
             "react_planner", "MiniMax-M3"
         )
+        train_read_roots = _train_read_roots(
+            self.config.train_raw,
+            self.config.train_reference,
+        )
         launch = build_sandboxed_worker_launch(
             SandboxedWorkerConfig(
                 project_root=self.config.project_root,
                 agent_workdir=self.agent_workdir,
                 runtime_root=self.host_dir / "runtime",
                 public_read_roots=(
-                    self.config.train_raw,
-                    self.config.train_reference,
+                    *train_read_roots,
                     self.config.validation_raw,
                 ),
                 skill_dirs=self.config.skill_dirs,
@@ -979,6 +982,9 @@ async def verify_agent_sandbox_access(
     if launch is None:
         raise RuntimeError("sandbox launch is required for the access probe")
     public_file = _first_regular_file(config.validation_raw)
+    train_raw_file = _first_regular_file(config.train_raw)
+    train_reference_file = _first_regular_file(config.train_reference)
+    train_root = config.train_raw.expanduser().resolve().parent
     gold_file = _first_regular_file(config.validation_gold)
     link = config.experiment_dir.resolve() / "agent_workdir" / ".gold_access_probe"
     link.symlink_to(gold_file)
@@ -989,9 +995,15 @@ async def verify_agent_sandbox_access(
         "    pathlib.Path(p).open('rb').read(1); return True\n"
         "  except OSError:\n"
         "    return False\n"
-        "cat_ok = subprocess.run(['/bin/cat', sys.argv[2]], stdout=subprocess.DEVNULL, "
+        "def enumerable(p):\n"
+        "  try:\n"
+        "    list(pathlib.Path(p).iterdir()); return True\n"
+        "  except OSError:\n"
+        "    return False\n"
+        "cat_ok = subprocess.run(['/bin/cat', sys.argv[5]], stdout=subprocess.DEVNULL, "
         "stderr=subprocess.DEVNULL).returncode == 0\n"
-        "print(json.dumps([readable(sys.argv[1]), readable(sys.argv[2]), readable(sys.argv[3]), cat_ok]))\n"
+        "print(json.dumps([readable(sys.argv[1]), enumerable(sys.argv[2]), readable(sys.argv[3]), "
+        "readable(sys.argv[4]), readable(sys.argv[5]), readable(sys.argv[6]), cat_ok]))\n"
     )
     env = {
         key: value
@@ -1007,6 +1019,9 @@ async def verify_agent_sandbox_access(
             "-c",
             script,
             str(public_file),
+            str(train_root),
+            str(train_raw_file),
+            str(train_reference_file),
             str(gold_file),
             str(link),
             cwd=str(config.experiment_dir / "agent_workdir"),
@@ -1018,7 +1033,7 @@ async def verify_agent_sandbox_access(
         if process.returncode != 0:
             raise RuntimeError(f"sandbox access probe failed: {stderr.decode(errors='replace')[-1000:]}")
         access = json.loads(stdout)
-        if access != [True, False, False, False]:
+        if access != [True, True, True, True, False, False, False]:
             raise RuntimeError(f"sandbox access boundary is unsafe: {access}")
     finally:
         link.unlink(missing_ok=True)
@@ -1029,6 +1044,16 @@ def _first_regular_file(root: Path) -> Path:
         if path.is_file() and not path.is_symlink():
             return path
     raise ValueError(f"directory contains no regular files: {root}")
+
+
+def _train_read_roots(train_raw: Path, train_reference: Path) -> tuple[Path, ...]:
+    """Expose the public train split as one enumerable root when it is sibling-based."""
+
+    raw = train_raw.expanduser().resolve()
+    reference = train_reference.expanduser().resolve()
+    if raw.parent == reference.parent:
+        return (raw.parent,)
+    return (raw, reference)
 
 
 def validate_plain_directory_tree(root: str | Path) -> None:

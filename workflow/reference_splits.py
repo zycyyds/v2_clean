@@ -365,12 +365,25 @@ def copy_mimic_raw_subset(
     split_key: str,
     decompress_gzip: bool = False,
     chunksize: int = 250_000,
+    include_relative_paths: set[str] | None = None,
 ) -> dict[str, Any]:
     source = Path(raw_root).expanduser().resolve()
     target = Path(output_root).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     selected = _selected_mimic_ids(source, keys_path, split_key)
-    files = [path for folder in ("hosp", "icu") for path in sorted((source / folder).rglob("*")) if path.is_file()]
+    normalized_include = {value.replace("\\", "/") for value in include_relative_paths or set()}
+    files = [
+        path
+        for folder in ("hosp", "icu")
+        for path in sorted((source / folder).rglob("*"))
+        if path.is_file()
+        and (not normalized_include or path.relative_to(source).as_posix() in normalized_include)
+    ]
+    if normalized_include:
+        found = {path.relative_to(source).as_posix() for path in files}
+        missing = sorted(normalized_include - found)
+        if missing:
+            raise ValueError(f"requested MIMIC raw tables are missing: {missing}")
     outputs = []
     for path in files:
         relative = path.relative_to(source)
