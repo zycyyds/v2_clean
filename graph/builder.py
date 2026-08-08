@@ -121,19 +121,21 @@ def build_graph(
                         value_meta = {"domain": field_spec.domain, "canonical_value": canonical, "shared": True}
                     else:
                         canonical = raw_value.strip() or "<MISSING>"
-                        value_key = f"row_local.{table}.{column}#{row_number}:{canonical}"
-                        value_meta = {"domain": f"row_local.{table}.{column}", "canonical_value": canonical, "shared": False}
-                    if value_key is None:
-                        cells_handle.write(json.dumps({"row_id": row_id, "table": table, "row_number": row_number, "column": column, "raw_value": raw_value, "value_node_id": None}, ensure_ascii=True, sort_keys=True) + "\n")
-                        continue
-                    value_id = intern("Value", value_key, **value_meta)
+                        # Ordinary cells stay as observations. Materializing
+                        # one Value node per cell makes full MIMIC graphs too large.
+                        value_key = None
+                        value_meta = {}
+
                     relation = f"{table}.{column}"
-                    add_edge(row_id, relation, value_id)
-                    add_edge(value_id, relation, row_id, reverse=True)
-                    frequencies[value_id] += 1
-                    cells_handle.write(json.dumps({"row_id": row_id, "table": table, "row_number": row_number, "column": column, "raw_value": raw_value, "value_node_id": value_id, "relation": relation}, ensure_ascii=True, sort_keys=True) + "\n")
-                    triples_handle.write(json.dumps({"head": row_id, "relation": relation, "tail": value_id, "head_key": row_key, "tail_key": value_key}, ensure_ascii=True, sort_keys=True) + "\n")
-                    triple_count += 1
+                    value_id = None
+                    if field_spec and value_key is not None:
+                        value_id = intern("Value", value_key, **value_meta)
+                        add_edge(row_id, relation, value_id)
+                        add_edge(value_id, relation, row_id, reverse=True)
+                        frequencies[value_id] += 1
+                        triples_handle.write(json.dumps({"head": row_id, "relation": relation, "tail": value_id, "head_key": row_key, "tail_key": value_key}, ensure_ascii=True, sort_keys=True) + "\n")
+                        triple_count += 1
+                    cells_handle.write(json.dumps({"row_id": row_id, "table": table, "row_number": row_number, "column": column, "raw_value": raw_value, "normalized_value": canonical, "value_node_id": value_id, "relation": relation, "shared_domain": field_spec.domain if field_spec else None}, ensure_ascii=True, sort_keys=True) + "\n")
 
     features = np.vstack([node_feature(node, degree=degrees[index], frequency=frequencies[index]) for index, node in enumerate(nodes)]) if nodes else np.empty((0, 64), dtype=np.float32)
     write_jsonl(output_dir / "nodes.jsonl", nodes)

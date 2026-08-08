@@ -32,15 +32,14 @@ def test_typed_shared_values_deduplicate_and_dictionary_links(tmp_path: Path) ->
     values = [node for node in nodes if node["node_type"] == "Value"]
     subject_values = [node for node in values if node["domain"] == "entity.subject_id"]
     item_values = [node for node in values if node["domain"] == "dictionary.icu_item"]
-    local_values = [node for node in values if node["domain"].startswith("row_local.")]
 
     assert len(subject_values) == 1
     assert len(item_values) == 1
-    assert len(local_values) == 2
-    assert manifest["triple_count"] == 9
-    assert manifest["edge_count"] == 18
+    assert len(values) == 4
+    assert manifest["triple_count"] == 7
+    assert manifest["edge_count"] == 14
     edges = np.load(output / "edges.npz")
-    assert edges["edge_index"].shape == (2, 18)
+    assert edges["edge_index"].shape == (2, 14)
     assert (output / "cell_observations.jsonl").exists()
 
 

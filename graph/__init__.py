@@ -1,6 +1,7 @@
 """Typed-Value graph construction for the MIMIC raw tables."""
 
 from .builder import GraphBuildError, build_graph
+from .labels import LabelBuildError, build_labels
 from .schema import DEFAULT_SCHEMA, GraphSchema
 
-__all__ = ["DEFAULT_SCHEMA", "GraphBuildError", "GraphSchema", "build_graph"]
+__all__ = ["DEFAULT_SCHEMA", "GraphBuildError", "GraphSchema", "LabelBuildError", "build_graph", "build_labels"]
