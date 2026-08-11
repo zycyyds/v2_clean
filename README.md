@@ -453,6 +453,40 @@ Correction输出：
 
 Correction门禁验证完整文件、schema、gzip可解析性、key覆盖以及没有额外/缺失业务文件。隐藏评估进一步区分正确修复、漏修、错误修复、额外误改和干净数据保留率。
 
+## 图节点 Embedding
+
+图Embedding使用独立环境，避免PyTorch改变Pi Runtime的依赖：
+
+```bash
+conda create -n graph-embedding python=3.11 pip -y
+conda run -n graph-embedding python -m pip install -r requirements-graph-embedding.txt
+```
+
+Windows RTX应先按照PyTorch官方安装说明选择与驱动匹配的CUDA构建，并确认：
+
+```bash
+conda run -n graph-embedding python -c "import torch; assert torch.cuda.is_available()"
+```
+
+先使用新目录运行部分测速：
+
+```bash
+conda run -n graph-embedding env PYTHONPATH=. \
+  python -m graph.embedding_cli \
+  --graph-dir <dirty_graph> \
+  --output-dir <new_benchmark_dir> \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --device auto \
+  --batch-size 16 \
+  --max-length 1024 \
+  --storage-dtype float16 \
+  --max-nodes 10000
+```
+
+带`--max-nodes`的结果固定标记为`PARTIAL_BENCHMARK`，不能作为全量Graph Bundle。全量运行删除该参数；中断后使用原命令追加`--resume`。恢复会核对图、模型快照、Tokenizer、运行库、参数、数组形状和全部已提交区块校验和，任何身份变化都会明确拒绝。输出目录有独占锁，不能并发写入。
+
+模型权重、节点Embedding和测速结果均为本地产物，不提交Git。
+
 ## Git 与本地数据边界
 
 以下内容不上传GitHub：

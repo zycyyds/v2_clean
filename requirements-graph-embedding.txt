@@ -1,0 +1,7 @@
+numpy>=1.26,<3
+pandas>=2.2,<3
+torch>=2.5,<3
+transformers>=4.51,<5
+huggingface_hub>=0.34,<2
+safetensors>=0.4,<1
+accelerate>=1,<2
