@@ -28,6 +28,8 @@ BENCHMARK_FILE = "benchmark_report.json"
 CHUNKS_FILE = "chunks.jsonl"
 LOCK_FILE = "embedding.lock"
 BACKEND_IMPLEMENTATION_VERSION = 3
+_WINDOWS_REPLACE_RETRYABLE_ERRORS = {5, 32}
+_ATOMIC_REPLACE_RETRY_DELAYS = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0)
 
 
 class EmbeddingBuildError(ValueError):
@@ -97,7 +99,14 @@ def _directory_artifact_identity(root: Path) -> tuple[str, int]:
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    for delay in (*_ATOMIC_REPLACE_RETRY_DELAYS, None):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in _WINDOWS_REPLACE_RETRYABLE_ERRORS or delay is None:
+                raise
+            time.sleep(delay)
 
 
 def _peak_rss_bytes() -> int | None:

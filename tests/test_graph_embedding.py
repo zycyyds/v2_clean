@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import graph.embedding as embedding
 from graph.embedding import (
     EmbeddingBatch,
     EmbeddingBuildError,
@@ -93,6 +94,31 @@ def _write_graph(root: Path, *, node_count: int = 5, relation_count: int = 3) ->
         "storage": {"nodes": "nodes.jsonl", "relation_texts": "relation_texts.jsonl"},
     }), encoding="utf-8")
     return root
+
+
+def test_atomic_json_retries_windows_sharing_violation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "progress.json"
+    real_replace = os.replace
+    attempts = 0
+    delays: list[float] = []
+
+    def flaky_replace(source: str | Path, target: str | Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            error = PermissionError("synthetic Windows sharing violation")
+            error.winerror = 5
+            raise error
+        real_replace(source, target)
+
+    monkeypatch.setattr(embedding.os, "replace", flaky_replace)
+    monkeypatch.setattr(embedding.time, "sleep", delays.append)
+
+    embedding._atomic_json(destination, {"status": "RUNNING"})
+
+    assert attempts == 3
+    assert delays == [0.025, 0.05]
+    assert json.loads(destination.read_text(encoding="utf-8")) == {"status": "RUNNING"}
 
 
 def test_builds_ordered_float16_memmaps_and_complete_manifest(tmp_path: Path) -> None:
