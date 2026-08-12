@@ -1,0 +1,37 @@
+{
+  "embedding_policy": "freeze_qwen_embedding_v1",
+  "evaluation_protocol": "transductive_full_graph_preassigned_folds",
+  "folds": {
+    "internal_test": [4],
+    "train": [0, 1, 2],
+    "validation": [3]
+  },
+  "formal_seeds": [666, 667, 668],
+  "models": {
+    "fullrow_rgcn": {
+      "batch_size": 64,
+      "fanouts": [16, 8],
+      "hidden_dim": 128,
+      "rgcn_bases": 16,
+      "rgcn_layers": 2,
+      "row_features": "frozen_qwen_v1"
+    },
+    "strict_rgcn": {
+      "batch_size": 64,
+      "fanouts": [16, 8],
+      "hidden_dim": 128,
+      "rgcn_bases": 16,
+      "rgcn_layers": 2,
+      "row_features": "learned_node_type_plus_table"
+    },
+    "triple_mlp": {
+      "batch_size": 256,
+      "hidden_dim": 128,
+      "inputs": ["row_qwen_v1", "forward_relation_qwen_v1", "value_qwen_v1"]
+    }
+  },
+  "selection": {
+    "checkpoint": "maximum_validation_average_precision",
+    "threshold": "maximum_validation_macro_f1_after_checkpoint_selection"
+  }
+}

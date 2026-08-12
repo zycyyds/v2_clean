@@ -39,3 +39,13 @@ Icon?
 .claude/
 .codex_tmp/
 .test_runs/
+
+# Private Cell training caches and model outputs
+cell_training_records.npz
+cell_training_records.json
+cell_training_hashes.json
+cell_graph_cache/
+.cell_training_prepare.lock
+best_checkpoint.pt
+latest_checkpoint.pt
+predictions.csv
