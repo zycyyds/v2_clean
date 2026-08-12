@@ -17,7 +17,7 @@ def main() -> int:
     parser.add_argument(
         "--model-type",
         required=True,
-        choices=("triple_mlp", "fullrow_rgcn", "strict_rgcn"),
+        choices=("triple_mlp", "strict_mlp", "fullrow_rgcn", "strict_rgcn"),
     )
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -26,7 +26,7 @@ def main() -> int:
         "--batch-size",
         type=int,
         default=None,
-        help="Defaults to 256 for triple_mlp and 64 for either R-GCN.",
+        help="Defaults to 256 for either MLP and 64 for either R-GCN.",
     )
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -56,7 +56,7 @@ def main() -> int:
         batch_size=(
             args.batch_size
             if args.batch_size is not None
-            else (256 if args.model_type == "triple_mlp" else 64)
+            else (256 if args.model_type.endswith("_mlp") else 64)
         ),
         hidden_dim=args.hidden_dim,
         learning_rate=args.learning_rate,

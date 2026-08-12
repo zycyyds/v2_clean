@@ -50,6 +50,56 @@ class TripleMLP(nn.Module):
         )
 
 
+class StrictMLP(nn.Module):
+    """Strict R-GCN control that retains self-updates but removes graph messages."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        table_count: int,
+        layer_count: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        if layer_count < 1:
+            raise ValueError("layer_count must be positive")
+        self.node_projection = nn.Linear(input_dim, hidden_dim)
+        self.relation_projection = nn.Linear(input_dim, hidden_dim)
+        self.row_type = nn.Parameter(torch.empty(hidden_dim))
+        self.table_embedding = nn.Embedding(table_count, hidden_dim)
+        self.self_updates = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim, bias=False),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+            for _ in range(layer_count)
+        ])
+        self.head = CellBinaryHead(hidden_dim, dropout)
+        nn.init.normal_(self.row_type, std=0.02)
+
+    def forward(
+        self,
+        table_id: torch.Tensor,
+        relation: torch.Tensor,
+        value: torch.Tensor,
+    ) -> torch.Tensor:
+        if (table_id < 0).any():
+            raise ValueError("strict Row inputs require a table ID")
+        row = self.row_type.unsqueeze(0) + self.table_embedding(table_id)
+        value = self.node_projection(value)
+        for self_update in self.self_updates:
+            row = self_update(row)
+            value = self_update(value)
+        return self.head(
+            row,
+            self.relation_projection(relation),
+            value,
+        )
+
+
 class BasisRGCNLayer(nn.Module):
     def __init__(
         self,

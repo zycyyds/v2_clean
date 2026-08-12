@@ -24,6 +24,13 @@
       "rgcn_layers": 2,
       "row_features": "learned_node_type_plus_table"
     },
+    "strict_mlp": {
+      "batch_size": 256,
+      "hidden_dim": 128,
+      "inputs": ["learned_node_type_plus_table", "forward_relation_qwen_v1", "value_qwen_v1"],
+      "message_passing": false,
+      "self_update_layers": 2
+    },
     "triple_mlp": {
       "batch_size": 256,
       "hidden_dim": 128,

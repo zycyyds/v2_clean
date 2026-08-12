@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from graph.cell_metrics import binary_metrics, select_macro_f1_threshold
-from graph.cell_models import CellRGCN
+from graph.cell_models import CellRGCN, StrictMLP
 from graph.cell_sampling import TargetMaskedNeighborSampler
 from graph.cell_training import TrainingConfig, run_training
 from graph.cell_training_aggregate import (
@@ -293,6 +293,27 @@ def test_rgcn_cpu_forward_backward_is_finite() -> None:
     assert all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in model.parameters())
 
 
+def test_strict_mlp_forward_backward_uses_table_relation_and_value() -> None:
+    model = StrictMLP(
+        input_dim=8, hidden_dim=8, table_count=2, layer_count=2, dropout=0.0
+    )
+    logits = model(
+        torch.tensor([0, 1]),
+        torch.randn(2, 8),
+        torch.randn(2, 8),
+    )
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits, torch.tensor([0.0, 1.0])
+    )
+    loss.backward()
+    assert logits.shape == (2,)
+    assert torch.isfinite(loss)
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
 def test_rgcn_cuda_forward_backward_is_finite() -> None:
     model = CellRGCN(
@@ -358,6 +379,19 @@ def test_internal_test_is_withheld_by_default(tmp_path: Path) -> None:
     assert set(report["folds"]) == {"0", "1", "2", "3"}
 
 
+def test_strict_mlp_training_is_a_no_graph_control(tmp_path: Path) -> None:
+    graph, supervision, embeddings = _fixture(tmp_path)
+    report = run_training(TrainingConfig(
+        graph_dir=str(graph), supervision_dir=str(supervision), embedding_dir=str(embeddings),
+        output_dir=str(tmp_path / "run"), model_type="strict_mlp", seed=666,
+        device="cpu", epochs=1, batch_size=4, hidden_dim=8, patience=1,
+    ))
+    assert report["status"] == "SUCCESS"
+    assert report["sampling"]["graph_message_passing"] is False
+    assert report["sampling"]["target_edge_masking"].startswith("not_applicable")
+    assert not (supervision / "cell_graph_cache").exists()
+
+
 def test_completed_checkpoint_can_be_resumed_with_same_identity(tmp_path: Path) -> None:
     graph, supervision, embeddings = _fixture(tmp_path)
     config = TrainingConfig(
@@ -400,6 +434,7 @@ def test_rgcn_training_smoke_uses_target_masked_sampler(
         rgcn_layers=2, rgcn_bases=2, fanouts=(4, 2),
     ))
     assert report["status"] == "SUCCESS"
+    assert report["sampling"]["graph_message_passing"] is True
     assert report["sampling"]["target_edge_masking"].startswith("exact_forward")
     assert (supervision / "cell_graph_cache" / "manifest.json").is_file()
 

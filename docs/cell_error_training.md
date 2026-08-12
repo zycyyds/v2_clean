@@ -1,7 +1,7 @@
 # Cell error detection training
 
 This pipeline freezes Qwen Embedding v1 and compares `triple_mlp`,
-`fullrow_rgcn`, and `strict_rgcn` under one supervised Cell split.
+`strict_mlp`, `fullrow_rgcn`, and `strict_rgcn` under one supervised Cell split.
 
 ## Protocol
 
@@ -44,6 +44,13 @@ For either R-GCN, change `--model-type` to `fullrow_rgcn` or `strict_rgcn`.
 Their default batch size is 64 and fanout is `16,8`.
 The shared default hidden dimension is 128; CUDA uses vectorized Fast-R-GCN-style
 messages while CPU tests retain a low-memory relation-grouped implementation.
+
+`strict_mlp` is the matched-input no-graph control for `strict_rgcn`. It uses a
+learned Row-type vector plus table embedding, frozen forward-Relation Qwen, and
+frozen target-Value Qwen. Its node path retains the same number of self-update
+layers as the R-GCN, but it does not sample neighbors or read graph edges.
+Comparing `strict_rgcn` with `strict_mlp` estimates the contribution of graph
+message passing without giving either model the full-Row Qwen embedding.
 
 After model and hyperparameters are frozen, run seeds 666, 667, and 668 into
 three new output directories and add `--evaluate-internal-test`. Do not reuse

@@ -15,7 +15,7 @@ import torch
 from torch import nn
 
 from .cell_metrics import binary_metrics, select_macro_f1_threshold
-from .cell_models import CellRGCN, TripleMLP
+from .cell_models import CellRGCN, StrictMLP, TripleMLP
 from .cell_sampling import TargetMaskedNeighborSampler
 from .cell_training_data import (
     CellRecords,
@@ -31,6 +31,8 @@ TRAIN_FOLDS = (0, 1, 2)
 VALIDATION_FOLDS = (3,)
 TEST_FOLDS = (4,)
 EVALUATION_SAMPLING_EPOCH = 0
+RGCN_MODEL_TYPES = frozenset(("fullrow_rgcn", "strict_rgcn"))
+MLP_MODEL_TYPES = frozenset(("triple_mlp", "strict_mlp"))
 
 
 class CellTrainingError(ValueError):
@@ -60,7 +62,7 @@ class TrainingConfig:
     resume: bool = False
 
     def validate(self) -> None:
-        if self.model_type not in {"triple_mlp", "fullrow_rgcn", "strict_rgcn"}:
+        if self.model_type not in MLP_MODEL_TYPES | RGCN_MODEL_TYPES:
             raise CellTrainingError(f"unsupported model type: {self.model_type}")
         if self.seed < 0 or self.epochs < 1 or self.batch_size < 1:
             raise CellTrainingError("seed, epochs and batch_size must be valid positive values")
@@ -68,7 +70,7 @@ class TrainingConfig:
             raise CellTrainingError("invalid optimizer or hidden dimension configuration")
         if not 0 <= self.dropout < 1 or self.patience < 1:
             raise CellTrainingError("dropout and patience are invalid")
-        if self.model_type != "triple_mlp" and len(self.fanouts) != self.rgcn_layers:
+        if self.model_type in RGCN_MODEL_TYPES and len(self.fanouts) != self.rgcn_layers:
             raise CellTrainingError("R-GCN fanout count must match layer count")
 
 
@@ -153,6 +155,14 @@ def _batches(indices: np.ndarray, batch_size: int, *, rng: np.random.Generator |
 def _build_model(config: TrainingConfig, data: PreparedCellTrainingData, table_count: int) -> nn.Module:
     if config.model_type == "triple_mlp":
         return TripleMLP(data.identity.embedding_dimension, config.hidden_dim, config.dropout)
+    if config.model_type == "strict_mlp":
+        return StrictMLP(
+            data.identity.embedding_dimension,
+            config.hidden_dim,
+            table_count,
+            config.rgcn_layers,
+            config.dropout,
+        )
     return CellRGCN(
         data.identity.embedding_dimension,
         config.hidden_dim,
@@ -181,14 +191,41 @@ class _BatchForward:
         ).to(device)
         self.sampler: TargetMaskedNeighborSampler | None = None
         self.metadata = None
-        if config.model_type != "triple_mlp":
+        self.table_by_relation: np.ndarray | None = None
+        self.tables: tuple[str, ...] = ()
+        if config.model_type in RGCN_MODEL_TYPES:
             graph, metadata = prepare_graph_cache(data)
             self.metadata = metadata
             self.sampler = TargetMaskedNeighborSampler(graph, metadata, fanouts=config.fanouts)
+        elif config.model_type == "strict_mlp":
+            self.tables = tuple(
+                sorted(str(name) for name in data.graph_manifest.get("table_counts", {}))
+            )
+            if not self.tables:
+                raise CellTrainingError("strict_mlp requires graph table metadata")
+            table_map = {name: index for index, name in enumerate(self.tables)}
+            relation_ids_path = data.graph_dir / "relation_ids.json"
+            try:
+                relation_ids = json.loads(relation_ids_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CellTrainingError("strict_mlp cannot read relation IDs") from exc
+            self.table_by_relation = np.full(data.identity.relation_count, -1, dtype=np.int64)
+            for relation_name, relation_id in relation_ids.items():
+                forward_name = str(relation_name).removesuffix("__rev")
+                table_name, separator, _ = forward_name.rpartition(".")
+                if separator and table_name in table_map:
+                    self.table_by_relation[int(relation_id)] = table_map[table_name]
+            supervised_relations = np.unique(data.records.relation_id)
+            if (self.table_by_relation[supervised_relations] < 0).any():
+                raise CellTrainingError(
+                    "strict_mlp cannot map a supervised relation to its Row table"
+                )
 
     @property
     def table_count(self) -> int:
-        return len(self.metadata.tables) if self.metadata is not None else 1
+        if self.metadata is not None:
+            return len(self.metadata.tables)
+        return len(self.tables) if self.tables else 1
 
     def __call__(
         self,
@@ -208,6 +245,20 @@ class _BatchForward:
             ).to(self.device)
             logits = model(row, relation, value)
             labels = torch.from_numpy(records.label[record_indices].astype(np.float32)).to(self.device)
+            return logits, labels
+
+        if self.config.model_type == "strict_mlp":
+            assert self.table_by_relation is not None
+            relation_ids = records.relation_id[record_indices]
+            table_id = torch.from_numpy(self.table_by_relation[relation_ids]).to(self.device)
+            relation = torch.from_numpy(self.store.relation_rows(relation_ids)).to(self.device)
+            value = torch.from_numpy(
+                self.store.node_rows(records.value_node_id[record_indices])
+            ).to(self.device)
+            logits = model(table_id, relation, value)
+            labels = torch.from_numpy(
+                records.label[record_indices].astype(np.float32)
+            ).to(self.device)
             return logits, labels
 
         assert self.sampler is not None
@@ -595,12 +646,23 @@ def run_training(config: TrainingConfig) -> dict[str, Any]:
             "subject_disjoint_reverified_at_training": False,
         },
         "score_semantics": "dirty_score_not_calibrated_probability",
-        "sampling": {
-            "training": "deterministic_per_seed_epoch_and_observation",
-            "evaluation": "deterministic_per_seed_and_observation",
-            "evaluation_sampling_epoch": EVALUATION_SAMPLING_EPOCH,
-            "target_edge_masking": "exact_forward_and_reverse_edge_ids_before_sampling",
-        },
+        "sampling": (
+            {
+                "graph_message_passing": True,
+                "training": "deterministic_per_seed_epoch_and_observation",
+                "evaluation": "deterministic_per_seed_and_observation",
+                "evaluation_sampling_epoch": EVALUATION_SAMPLING_EPOCH,
+                "target_edge_masking": "exact_forward_and_reverse_edge_ids_before_sampling",
+            }
+            if config.model_type in RGCN_MODEL_TYPES
+            else {
+                "graph_message_passing": False,
+                "training": "not_applicable_no_neighbor_sampling",
+                "evaluation": "not_applicable_no_neighbor_sampling",
+                "evaluation_sampling_epoch": None,
+                "target_edge_masking": "not_applicable_no_graph_edges_used",
+            }
+        ),
         "validation_threshold": threshold,
         "loss": {
             "type": "frequency_weighted_binary_cross_entropy_with_logits",
