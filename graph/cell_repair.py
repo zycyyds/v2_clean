@@ -504,18 +504,20 @@ def build_field_pairs(
     *,
     graph_dir: str | Path,
     supervision_dir: str | Path,
-    raw_dir: str | Path,
+    raw_dir: str | Path | None = None,
     paired_log: str | Path,
     output_dir: str | Path,
     expected_counts: Mapping[str, Mapping[str, int]] | None = EXPECTED_PROTOCOL_COUNTS,
 ) -> dict[str, Any]:
     graph = Path(graph_dir).expanduser().resolve()
     supervision = Path(supervision_dir).expanduser().resolve()
-    raw = Path(raw_dir).expanduser().resolve()
+    raw = Path(raw_dir).expanduser().resolve() if raw_dir is not None else None
     log_path = Path(paired_log).expanduser().resolve()
-    for label, path in (("graph", graph), ("supervision", supervision), ("raw", raw)):
+    for label, path in (("graph", graph), ("supervision", supervision)):
         if not path.is_dir():
             raise CellRepairError(f"{label} directory does not exist: {path}")
+    if raw is not None and not raw.is_dir():
+        raise CellRepairError(f"raw directory does not exist: {raw}")
     if not log_path.is_file():
         raise CellRepairError(f"paired evidence does not exist: {log_path}")
     output = _new_output(output_dir)
@@ -553,13 +555,14 @@ def build_field_pairs(
     if missing:
         raise CellRepairError(f"supervision references missing observations: {missing[:5]}")
 
-    raw_rows = _read_raw_rows(raw, requests)
+    raw_rows = _read_raw_rows(raw, requests) if raw is not None else {}
     raw_table_hashes: dict[str, str] = {}
-    for table in sorted(requests):
-        raw_path = raw / f"{table}.csv"
-        if not raw_path.is_file():
-            raw_path = raw / f"{table}.csv.gz"
-        raw_table_hashes[table] = _sha256(raw_path)
+    if raw is not None:
+        for table in sorted(requests):
+            raw_path = raw / f"{table}.csv"
+            if not raw_path.is_file():
+                raw_path = raw / f"{table}.csv.gz"
+            raw_table_hashes[table] = _sha256(raw_path)
     injection = _read_injection_log(log_path)
     dirty_coordinates: set[tuple[str, int, str]] = set()
     counts = {
@@ -579,11 +582,12 @@ def build_field_pairs(
         row_number = observation["row_number"]
         column = observation["column"]
         current = observation["current"]
-        raw_current = str(raw_rows[(table, row_number)].get(column) or "")
-        if raw_current != current:
-            raise CellRepairError(
-                f"raw/graph value mismatch at {(table, row_number, column)}"
-            )
+        if raw is not None:
+            raw_current = str(raw_rows[(table, row_number)].get(column) or "")
+            if raw_current != current:
+                raise CellRepairError(
+                    f"raw/graph value mismatch at {(table, row_number, column)}"
+                )
         coordinate = _coordinate(table, row_number, column)
         if label == 1:
             counts[split]["dirty"] += 1
@@ -675,6 +679,8 @@ def build_field_pairs(
         "excluded_locator_pair_count": sum(excluded_locator_counts.values()),
         "excluded_locator_fields": dict(sorted(excluded_locator_counts.items())),
         "fields": field_entries,
+        "current_value_source": "cell_observations",
+        "raw_cross_check_enabled": raw is not None,
         "inputs": {
             "supervision_masks_sha256": _sha256(supervision / "supervision_masks.npz"),
             "cell_observations_sha256": _sha256(observations_path),

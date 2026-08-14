@@ -44,7 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     pairs.add_argument("--graph-dir", required=True, type=Path)
     pairs.add_argument("--supervision-dir", required=True, type=Path)
-    pairs.add_argument("--raw-dir", required=True, type=Path)
+    pairs.add_argument(
+        "--raw-dir",
+        type=Path,
+        help="Optional raw directory for an additional raw/graph value cross-check.",
+    )
     pairs.add_argument("--paired-log", required=True, type=Path)
     pairs.add_argument("--output-dir", required=True, type=Path)
 

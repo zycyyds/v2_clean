@@ -337,6 +337,30 @@ def test_build_field_pairs_is_complete_train_only_and_redacted(tmp_path: Path) -
         assert entry["serialized_bytes"] == (output / entry["path"]).stat().st_size
 
 
+def test_build_field_pairs_without_raw_uses_graph_values_and_preserves_evidence(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    checked = _build_pairs(paths, tmp_path / "checked-pairs")
+    unchecked = tmp_path / "graph-pairs"
+    manifest = build_field_pairs(
+        graph_dir=paths["graph"],
+        supervision_dir=paths["supervision"],
+        paired_log=paths["log"],
+        output_dir=unchecked,
+        expected_counts=paths["counts"],
+    )
+
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["current_value_source"] == "cell_observations"
+    assert manifest["raw_cross_check_enabled"] is False
+    assert manifest["inputs"]["raw_table_sha256"] == {}
+    for entry in manifest["fields"]:
+        assert (unchecked / entry["path"]).read_bytes() == (
+            checked / entry["path"]
+        ).read_bytes()
+
+
 def test_build_field_pairs_fails_on_counts_and_dirty_mismatch(tmp_path: Path) -> None:
     paths = _fixture(tmp_path)
     with pytest.raises(CellRepairError, match="frozen protocol"):

@@ -52,11 +52,13 @@ MiniMax 仅在 Train 规则合成阶段使用。规则冻结后，Validation、I
 ## 4. Windows 执行顺序
 
 以下命令在 `D:\mimic_graph\v2_clean-graph` 的 `graph-embedding` 环境运行。`--raw-dir`
-必须指向构图时使用的 dirty raw 数据目录，或由 4.1 严格恢复出的逻辑等价副本。
+当前 30,000 个监督 Cell 的证据构建直接使用图中保存的原始字符串。完整 raw 只在最终 Apply
+阶段需要；若要启用额外 raw/graph 交叉检查，可传入原 dirty raw 或由 4.1 恢复的逻辑副本。
 
 ### 4.1 原 dirty raw 缺失时恢复逻辑副本
 
-若构图时的 `raw_dirty_cell_supervised_v2` 已丢失，先检查 D 盘可用空间：
+本节可推迟到最终 Apply 之前。若构图时的 `raw_dirty_cell_supervised_v2` 已丢失，先检查 D 盘
+可用空间：
 
 ```bat
 fsutil volume diskfree D:
@@ -85,13 +87,13 @@ raw，但不承诺与原文件字节级相同，例如 CSV quoting 和换行可�
 python -m graph.cell_repair_cli build-pairs ^
   --graph-dir "D:\mimic_graph\data\graph_dirty_cell_supervised_v2" ^
   --supervision-dir "D:\mimic_graph\private\graph_cell_supervision_v2" ^
-  --raw-dir "D:\mimic_graph\data\raw_dirty_cell_supervised_v2" ^
   --paired-log "D:\mimic_graph\private\graph_cell_supervision_v2\merged_injection_log.csv" ^
   --output-dir "D:\mimic_graph\experiments\fcorr_v1\field_pairs"
 ```
 
 宿主会先审计全部 30,000 个监督 Cell。20,000 个 dirty 必须逐个唯一映射到 injection record，
-当前 raw/graph 值必须等于 `dirty_value`；split 数量必须严格等于上表，任何不一致都会失败关闭。
+`cell_observations.raw_value` 必须等于 `dirty_value`；split 数量必须严格等于上表，任何不一致
+都会失败关闭。若完整 raw 可用，可额外传入 `--raw-dir` 启用 raw/graph 当前值交叉检查。
 
 每个 LLM 可见证据文件只有：
 
