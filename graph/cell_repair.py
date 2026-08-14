@@ -307,6 +307,199 @@ def _protocol_count_map(
     }
 
 
+def _safe_table_path(table: str) -> Path:
+    normalized = str(table).replace("\\", "/")
+    parts = normalized.split("/")
+    if not normalized or normalized.startswith("/") or any(
+        not part or part in {".", ".."} or ":" in part for part in parts
+    ):
+        raise CellRepairError(f"unsafe graph table path: {table}")
+    return Path(*parts)
+
+
+def recover_raw_from_graph(
+    *,
+    graph_dir: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    graph = Path(graph_dir).expanduser().resolve()
+    if not graph.is_dir():
+        raise CellRepairError(f"graph directory does not exist: {graph}")
+    graph_manifest_path = graph / "graph_manifest.json"
+    observations_path = graph / "cell_observations.jsonl"
+    graph_manifest = _read_json(graph_manifest_path, "graph manifest")
+    expected_table_counts = {
+        str(table): int(count)
+        for table, count in (graph_manifest.get("table_counts") or {}).items()
+    }
+    if not expected_table_counts:
+        raise CellRepairError("graph manifest has no table counts")
+    if not observations_path.is_file():
+        raise CellRepairError(f"Cell observations do not exist: {observations_path}")
+    output = _new_output(output_dir)
+
+    current_table: str | None = None
+    current_row_number = 0
+    current_row: dict[str, str] = {}
+    columns: list[str] | None = None
+    handle: Any = None
+    writer: csv.DictWriter | None = None
+    temporary_path: Path | None = None
+    destination_path: Path | None = None
+    table_row_count = 0
+    observation_count = 0
+    observation_digest = hashlib.sha256()
+    completed_tables: dict[str, dict[str, Any]] = {}
+
+    def flush_row() -> None:
+        nonlocal columns, handle, writer, temporary_path, destination_path, table_row_count
+        if current_table is None or not current_row:
+            return
+        row_columns = list(current_row)
+        if columns is None:
+            columns = row_columns
+            table_path = _safe_table_path(current_table)
+            destination_path = output / table_path.parent / f"{table_path.name}.csv"
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = destination_path.with_name(f".{destination_path.name}.recovering")
+            handle = temporary_path.open("w", encoding="utf-8", newline="")
+            writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+            writer.writeheader()
+        elif row_columns != columns:
+            raise CellRepairError(
+                f"Cell observation columns changed in {current_table} row {current_row_number}"
+            )
+        assert writer is not None
+        writer.writerow(current_row)
+        table_row_count += 1
+
+    def finish_table() -> None:
+        nonlocal handle, writer, temporary_path, destination_path
+        if current_table is None:
+            return
+        flush_row()
+        if handle is None or temporary_path is None or destination_path is None or columns is None:
+            raise CellRepairError(f"graph table has no recoverable rows: {current_table}")
+        handle.close()
+        handle = None
+        writer = None
+        expected_rows = expected_table_counts.get(current_table)
+        if expected_rows is None:
+            temporary_path.unlink(missing_ok=True)
+            raise CellRepairError(f"Cell observations contain an unknown table: {current_table}")
+        if table_row_count != expected_rows:
+            temporary_path.unlink(missing_ok=True)
+            raise CellRepairError(
+                f"recovered row count mismatch for {current_table}: "
+                f"expected={expected_rows} actual={table_row_count}"
+            )
+        os.replace(temporary_path, destination_path)
+        completed_tables[current_table] = {
+            "path": destination_path.relative_to(output).as_posix(),
+            "row_count": table_row_count,
+            "column_count": len(columns),
+            "columns": columns,
+            "sha256": _sha256(destination_path),
+            "serialized_bytes": destination_path.stat().st_size,
+        }
+        temporary_path = None
+        destination_path = None
+
+    try:
+        with observations_path.open("rb") as observations_handle:
+            for line_number, raw_line in enumerate(observations_handle, start=1):
+                observation_digest.update(raw_line)
+                if not raw_line.strip():
+                    continue
+                try:
+                    observation = json.loads(raw_line)
+                    table = str(observation["table"])
+                    row_number = int(observation["row_number"])
+                    column = str(observation["column"])
+                    raw_value = observation.get("raw_value")
+                    if raw_value is not None and not isinstance(raw_value, str):
+                        raise TypeError("raw_value must be a string or null")
+                    value = "" if raw_value is None else str(raw_value)
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    raise CellRepairError(
+                        f"invalid Cell observation at line {line_number}"
+                    ) from exc
+                _safe_table_path(table)
+                if table != current_table:
+                    finish_table()
+                    if table not in expected_table_counts:
+                        raise CellRepairError(
+                            f"Cell observations contain an unknown table: {table}"
+                        )
+                    if table in completed_tables:
+                        raise CellRepairError(f"Cell observation table is not contiguous: {table}")
+                    current_table = table
+                    current_row_number = 0
+                    current_row = {}
+                    columns = None
+                    table_row_count = 0
+                if row_number != current_row_number:
+                    if current_row_number:
+                        if row_number != current_row_number + 1:
+                            raise CellRepairError(
+                                f"non-contiguous row numbers in {table}: "
+                                f"previous={current_row_number} current={row_number}"
+                            )
+                        flush_row()
+                    elif row_number != 1:
+                        raise CellRepairError(f"first row number is not 1 in {table}")
+                    current_row_number = row_number
+                    current_row = {}
+                if column in current_row:
+                    raise CellRepairError(
+                        f"duplicate Cell observation column in {table} row {row_number}: {column}"
+                    )
+                current_row[column] = value
+                observation_count += 1
+        finish_table()
+    except Exception:
+        if handle is not None:
+            handle.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        shutil.rmtree(output, ignore_errors=True)
+        raise
+
+    try:
+        if set(completed_tables) != set(expected_table_counts):
+            missing = sorted(set(expected_table_counts) - set(completed_tables))
+            extra = sorted(set(completed_tables) - set(expected_table_counts))
+            raise CellRepairError(
+                f"recovered tables differ from graph manifest: missing={missing} extra={extra}"
+            )
+        expected_observations = graph_manifest.get("observation_count")
+        if expected_observations is not None and observation_count != int(expected_observations):
+            raise CellRepairError(
+                "recovered observation count differs from graph manifest: "
+                f"expected={expected_observations} actual={observation_count}"
+            )
+    except Exception:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
+    report = {
+        "schema_version": REPAIR_SCHEMA_VERSION,
+        "status": "SUCCESS",
+        "workflow": "recover_dirty_raw_from_cell_observations",
+        "source_of_truth": "graph_cell_observations",
+        "raw_root_name": graph_manifest.get("raw_root_name"),
+        "table_count": len(completed_tables),
+        "row_count": sum(item["row_count"] for item in completed_tables.values()),
+        "observation_count": observation_count,
+        "tables": {table: completed_tables[table] for table in sorted(completed_tables)},
+        "inputs": {
+            "graph_manifest_sha256": _sha256(graph_manifest_path),
+            "cell_observations_sha256": observation_digest.hexdigest(),
+        },
+    }
+    _write_json(output / "recovered_raw_manifest.json", report)
+    return report
+
+
 def build_field_pairs(
     *,
     graph_dir: str | Path,

@@ -18,6 +18,7 @@ from graph.cell_repair import (
     build_field_pairs,
     build_repair_targets,
     evaluate_repairs,
+    recover_raw_from_graph,
     run_frozen_rules,
     synthesize_fcorr,
     validate_fcorr,
@@ -60,6 +61,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict[str, dict[str, int]]]:
     raw_rows: list[dict[str, object]] = []
     observations: list[dict[str, object]] = []
     log_rows: list[dict[str, object]] = []
+    supervised_indices: list[int] = []
     labels: list[int] = []
     folds: list[int] = []
 
@@ -81,15 +83,21 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict[str, dict[str, int]]]:
         }
         row[column] = current
         raw_rows.append(row)
-        observation_index = len(observations)
-        observations.append({
-            "row_id": row_number - 1,
-            "table": "icu/events",
-            "row_number": row_number,
-            "column": column,
-            "raw_value": current,
-            "value_node_id": 1000 + observation_index,
-        })
+        observation_index = -1
+        for row_column, raw_value in row.items():
+            index = len(observations)
+            observations.append({
+                "row_id": row_number - 1,
+                "table": "icu/events",
+                "row_number": row_number,
+                "column": row_column,
+                "raw_value": raw_value,
+                "value_node_id": 1000 + index,
+            })
+            if row_column == column:
+                observation_index = index
+        assert observation_index >= 0
+        supervised_indices.append(observation_index)
         labels.append(label)
         folds.append(fold)
         if label:
@@ -152,9 +160,17 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict[str, dict[str, int]]]:
     (graph / "cell_observations.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in observations), encoding="utf-8"
     )
+    (graph / "graph_manifest.json").write_text(
+        json.dumps({
+            "raw_root_name": "raw",
+            "table_counts": {"icu/events": len(raw_rows)},
+            "observation_count": len(observations),
+        }) + "\n",
+        encoding="utf-8",
+    )
     np.savez_compressed(
         supervision / "supervision_masks.npz",
-        cell_indices=np.arange(len(observations), dtype=np.int64),
+        cell_indices=np.asarray(supervised_indices, dtype=np.int64),
         cell_labels=np.asarray(labels, dtype=np.int8),
         cell_folds=np.asarray(folds, dtype=np.int8),
         cell_source=np.asarray([2 if value else 0 for value in labels], dtype=np.int8),
@@ -225,6 +241,68 @@ def _synthesize(paths: dict[str, object], tmp_path: Path) -> Path:
         completion=_good_completion,
     )
     return rules
+
+
+def test_recover_raw_from_graph_round_trips_and_builds_pairs(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    recovered = tmp_path / "recovered"
+    report = recover_raw_from_graph(
+        graph_dir=paths["graph"],
+        output_dir=recovered,
+    )
+
+    assert report["status"] == "SUCCESS"
+    assert report["table_count"] == 1
+    assert report["row_count"] == 25
+    assert report["observation_count"] == 100
+    recovered_table = recovered / "icu" / "events.csv"
+    assert recovered_table.read_bytes() == (Path(paths["raw"]) / "icu" / "events.csv").read_bytes()
+    assert report["tables"]["icu/events"]["sha256"] == _sha256(recovered_table)
+
+    pair_report = build_field_pairs(
+        graph_dir=paths["graph"],
+        supervision_dir=paths["supervision"],
+        raw_dir=recovered,
+        paired_log=paths["log"],
+        output_dir=tmp_path / "recovered-pairs",
+        expected_counts=paths["counts"],
+    )
+    assert pair_report["split_counts"] == paths["counts"]
+    assert pair_report["exported_train_dirty_pair_count"] == 6
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("column_order", "columns changed"),
+        ("non_contiguous_row", "non-contiguous row numbers"),
+        ("duplicate_column", "duplicate Cell observation column"),
+    ],
+)
+def test_recover_raw_from_graph_rejects_inconsistent_observations(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    paths = _fixture(tmp_path)
+    observations_path = Path(paths["graph"]) / "cell_observations.jsonl"
+    observations = [json.loads(line) for line in observations_path.read_text().splitlines()]
+    if mutation == "column_order":
+        observations[4], observations[5] = observations[5], observations[4]
+    elif mutation == "non_contiguous_row":
+        for observation in observations[4:8]:
+            observation["row_number"] = 3
+    else:
+        observations[1]["column"] = observations[0]["column"]
+    observations_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in observations),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / f"bad-recovery-{mutation}"
+    with pytest.raises(CellRepairError, match=message):
+        recover_raw_from_graph(graph_dir=paths["graph"], output_dir=output)
+    assert not output.exists()
 
 
 def test_build_field_pairs_is_complete_train_only_and_redacted(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from .cell_repair import (
     build_repair_targets,
     evaluate_repairs,
     freeze_rule_registry,
+    recover_raw_from_graph,
     run_frozen_rules,
     synthesize_fcorr,
 )
@@ -29,6 +30,13 @@ def _parser() -> argparse.ArgumentParser:
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    recover = subparsers.add_parser(
+        "recover-raw",
+        help="Recover a complete logical dirty raw copy from graph Cell observations.",
+    )
+    recover.add_argument("--graph-dir", required=True, type=Path)
+    recover.add_argument("--output-dir", required=True, type=Path)
 
     pairs = subparsers.add_parser(
         "build-pairs",
@@ -103,7 +111,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     try:
-        if args.command == "build-pairs":
+        if args.command == "recover-raw":
+            report = recover_raw_from_graph(
+                graph_dir=args.graph_dir,
+                output_dir=args.output_dir,
+            )
+        elif args.command == "build-pairs":
             report = build_field_pairs(
                 graph_dir=args.graph_dir,
                 supervision_dir=args.supervision_dir,

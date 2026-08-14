@@ -38,6 +38,7 @@ MiniMax 仅在 Train 规则合成阶段使用。规则冻结后，Validation、I
 
 | 命令 | 主要产物 |
 | --- | --- |
+| `recover-raw` | 从图 Cell observations 恢复的 29 张 dirty CSV、`recovered_raw_manifest.json` |
 | `build-pairs` | `field_pairs_manifest.json`、`fields/<field_id>.json` |
 | `synthesize-fcorr` | 每字段 evidence、对话、原始响应、验收报告、`correction.py` |
 | `freeze-registry` | `rule_registry.json`，通常已由 synthesis 自动生成 |
@@ -51,9 +52,34 @@ MiniMax 仅在 Train 规则合成阶段使用。规则冻结后，Validation、I
 ## 4. Windows 执行顺序
 
 以下命令在 `D:\mimic_graph\v2_clean-graph` 的 `graph-embedding` 环境运行。`--raw-dir`
-必须指向构图时使用的 dirty raw 数据目录。
+必须指向构图时使用的 dirty raw 数据目录，或由 4.1 严格恢复出的逻辑等价副本。
 
-### 4.1 构建字段配对证据
+### 4.1 原 dirty raw 缺失时恢复逻辑副本
+
+若构图时的 `raw_dirty_cell_supervised_v2` 已丢失，先检查 D 盘可用空间：
+
+```bat
+fsutil volume diskfree D:
+```
+
+确认空间足够后，从 `cell_observations.jsonl` 恢复：
+
+```bat
+python -m graph.cell_repair_cli recover-raw ^
+  --graph-dir "D:\mimic_graph\data\graph_dirty_cell_supervised_v2" ^
+  --output-dir "D:\mimic_graph\data\raw_dirty_cell_supervised_v2"
+```
+
+构图阶段为每个 CSV Cell（包括空值）顺序保存了 `table/row_number/column/raw_value`，因此宿主
+可以流式恢复表头、行和字段值。恢复过程不读取 clean 数据或 injection log，也不尝试从当前只
+有 10 张表的 `D:\database\mimic` 拼接缺失表。恢复副本在逻辑内容上等同于构图时的 dirty
+raw，但不承诺与原文件字节级相同，例如 CSV quoting 和换行可能不同。
+
+宿主逐表检查列顺序、行号连续性、manifest 表集合与行数，并记录每张表 SHA256。任一检查失败
+都会删除不完整输出并失败关闭。成功后应确认 `recovered_raw_manifest.json` 中
+`status=SUCCESS`、`table_count=29`。
+
+### 4.2 构建字段配对证据
 
 ```bat
 python -m graph.cell_repair_cli build-pairs ^
@@ -80,7 +106,7 @@ python -m graph.cell_repair_cli build-pairs ^
 
 列表不抽样、不去重，并按监督 observation 的确定性顺序保存。
 
-### 4.2 每字段合成并冻结 F_corr
+### 4.3 每字段合成并冻结 F_corr
 
 ```bat
 set MODEL_NAME=MiniMax-M3
@@ -110,7 +136,7 @@ GIDCL 论文说明 correction 规则采用与 detection 规则类似的错误反
 
 可用 `--field icu/chartevents.valuenum` 限制本次只生成某个字段；该参数可重复。
 
-### 4.3 构建 Strict R-GCN repair targets
+### 4.4 构建 Strict R-GCN repair targets
 
 ```bat
 python -m graph.cell_repair_cli build-targets ^
@@ -123,7 +149,7 @@ python -m graph.cell_repair_cli build-targets ^
 
 目标构建只选择指定 split 中 `prediction=1` 的 Cell，不读取 `label/source/fold` 来决定目标。
 
-### 4.4 无 API 离线执行规则
+### 4.5 无 API 离线执行规则
 
 ```bat
 set OPENAI_API_KEY=
@@ -141,7 +167,7 @@ python -m graph.cell_repair_cli run-rules ^
 加载时会重新校验 synthesis manifest、字段 manifest、证据副本和源码哈希。相同 targets 与
 相同冻结规则必须生成字节级相同的两个 JSONL。
 
-### 4.5 应用到新的 raw 副本
+### 4.6 应用到新的 raw 副本
 
 ```bat
 python -m graph.cell_repair_cli apply ^
@@ -153,7 +179,7 @@ python -m graph.cell_repair_cli apply ^
 输入目录永远不修改。宿主复制完整目录、检查每个 replacement 的当前值前置条件，仅修改 plan
 声明的 Cell，并保持 CSV/CSV.GZ schema、行数、无关字段和无关文件。
 
-### 4.6 Private 隔离评估
+### 4.7 Private 隔离评估
 
 ```bat
 python -m graph.cell_repair_cli evaluate ^
