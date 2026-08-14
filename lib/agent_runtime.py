@@ -9,7 +9,14 @@ from typing import Any
 import httpx
 from agentscope.credential import OpenAICredential
 from agentscope.formatter import OpenAIChatFormatter
-from agentscope.message import Msg, TextBlock, ToolResultBlock, UserMsg
+from agentscope.message import (
+    AssistantMsg,
+    Msg,
+    SystemMsg,
+    TextBlock,
+    ToolResultBlock,
+    UserMsg,
+)
 from agentscope.model import OpenAIChatModel
 from agentscope.tool import ToolResponse
 from pydantic import PrivateAttr
@@ -252,8 +259,15 @@ def create_openai_model_and_formatter(
     context_size_override: int | None = None,
     parallel_tool_calls: bool = False,
     model_name_override: str | None = None,
+    generate_overrides: dict[str, Any] | None = None,
 ):
     cfg = effective_agent_config(agent_key)
+    overrides = dict(generate_overrides or {})
+    unsupported_overrides = set(overrides) - {"temperature", "seed"}
+    if unsupported_overrides:
+        raise ValueError(
+            f"unsupported model generation overrides: {sorted(unsupported_overrides)}",
+        )
     api_keys = _environment_api_keys() or _configured_api_keys(cfg)
     base_url = (
         os.environ.get("OPENAI_API_BASE")
@@ -264,13 +278,17 @@ def create_openai_model_and_formatter(
     parameters: dict[str, Any] = {
         "parallel_tool_calls": parallel_tool_calls,
     }
-    if os.environ.get("AGENT_TEMPERATURE") is not None:
+    if "temperature" in overrides:
+        parameters["temperature"] = float(overrides["temperature"])
+    elif os.environ.get("AGENT_TEMPERATURE") is not None:
         parameters["temperature"] = float(os.environ["AGENT_TEMPERATURE"])
     elif "temperature" in cfg:
         parameters["temperature"] = cfg.get("temperature")
     model_name = model_name_override or resolve_model_name(agent_key, default_model)
     context_size = context_size_override or _model_context_size(model_name)
-    if os.environ.get("AGENT_SEED") is not None:
+    if "seed" in overrides:
+        extra_body = {"seed": int(overrides["seed"])}
+    elif os.environ.get("AGENT_SEED") is not None:
         extra_body = {"seed": int(os.environ["AGENT_SEED"])}
     else:
         extra_body = {"seed": cfg["seed"]} if "seed" in cfg else None
@@ -343,3 +361,11 @@ def make_user_msg(name: str, content: str, metadata: dict[str, Any] | None = Non
     # Keep the protocol-level name stable and preserve the logical sender in
     # metadata for debugging.
     return UserMsg(name="user", content=content, metadata=msg_metadata or None)
+
+
+def make_system_msg(content: str) -> Msg:
+    return SystemMsg(name="system", content=content)
+
+
+def make_assistant_msg(content: str) -> Msg:
+    return AssistantMsg(name="assistant", content=content)

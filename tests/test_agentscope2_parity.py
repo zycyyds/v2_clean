@@ -51,6 +51,50 @@ def test_openai_model_forwards_context_size_and_seed(monkeypatch) -> None:
     assert model.credential.base_url == "https://example.invalid/v1"
 
 
+def test_openai_model_accepts_fcorr_generation_overrides(monkeypatch) -> None:
+    import lib.agent_runtime as runtime
+
+    monkeypatch.setattr(
+        runtime,
+        "effective_agent_config",
+        lambda _key: {
+            "api_key": "test-key",
+            "base_url": "https://example.invalid/v1",
+            "model": "MiniMax-M3",
+            "temperature": 0.7,
+            "seed": 1,
+        },
+    )
+
+    model, _ = runtime.create_openai_model_and_formatter(
+        "react_planner",
+        "fallback",
+        generate_overrides={"temperature": 0.0, "seed": 666},
+    )
+
+    assert model.parameters.temperature == 0.0
+    assert model.extra_body == {"seed": 666}
+
+
+def test_fcorr_message_helpers_preserve_chat_roles() -> None:
+    import lib.agent_runtime as runtime
+
+    formatter = runtime.OpenAIChatFormatter()
+    messages = [
+        runtime.make_system_msg("system"),
+        runtime.make_user_msg("fcorr", "user"),
+        runtime.make_assistant_msg("assistant"),
+    ]
+
+    formatted = asyncio.run(formatter.format(messages))
+
+    assert [message["role"] for message in formatted] == [
+        "system",
+        "user",
+        "assistant",
+    ]
+
+
 def test_openai_model_rotates_to_next_key_after_rate_limit(monkeypatch) -> None:
     from agentscope.message import TextBlock
     from agentscope.model import ChatResponse
