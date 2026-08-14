@@ -17,6 +17,7 @@ from graph.cell_repair import (
     apply_repair_plan,
     build_field_pairs,
     build_repair_targets,
+    evaluate_candidates,
     evaluate_repairs,
     recover_raw_from_graph,
     run_frozen_rules,
@@ -25,17 +26,25 @@ from graph.cell_repair import (
 )
 
 
-AMOUNT_RULE = '''def Correction(input_string):
+AMOUNT_RULE = '''def GenerateCandidates(input_string, row_context):
     if re.fullmatch(r"[1-5]00", input_string):
-        return input_string[:-2]
-    return input_string
+        return [{
+            "value": input_string[:-2],
+            "rule_id": "scale_100",
+            "evidence": "remove two trailing zeros",
+        }]
+    return []
 '''
 
-STATUS_RULE = '''def Correction(input_string):
+STATUS_RULE = '''def GenerateCandidates(input_string, row_context):
     match = re.fullmatch(r"BAD([0-4])", input_string)
     if match:
-        return "active" + match.group(1)
-    return input_string
+        return [{
+            "value": "active" + match.group(1),
+            "rule_id": "status_suffix",
+            "evidence": "preserve numeric suffix",
+        }]
+    return []
 '''
 
 
@@ -79,7 +88,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict[str, dict[str, int]]]:
             "stay_id": str(70_000_000 + row_number),
             "amount": "",
             "status": "",
-            "note": f"fold-private-{fold}",
+            "note": "public-row-context",
         }
         row[column] = current
         raw_rows.append(row)
@@ -333,6 +342,15 @@ def test_build_field_pairs_is_complete_train_only_and_redacted(tmp_path: Path) -
     ):
         assert forbidden not in body
     for entry in manifest["fields"]:
+        evidence = json.loads((output / entry["path"]).read_text())
+        for pair in evidence["dirty_clean_pairs"]:
+            assert "row_context" in pair
+            assert entry["column"] not in pair["row_context"]
+            assert "stay_id" not in pair["row_context"]
+        for example in evidence["clean_examples"]:
+            assert set(example) == {"value", "row_context"}
+            assert entry["column"] not in example["row_context"]
+            assert "stay_id" not in example["row_context"]
         assert entry["sha256"] == _sha256(output / entry["path"])
         assert entry["serialized_bytes"] == (output / entry["path"]).stat().st_size
 
@@ -388,75 +406,88 @@ def test_build_field_pairs_fails_on_counts_and_dirty_mismatch(tmp_path: Path) ->
         )
 
 
-def test_validate_fcorr_covers_regex_mapping_missing_conflict_and_non_string() -> None:
+def test_validate_fcorr_reports_candidate_recall_and_rejects_invalid_lists() -> None:
     evidence = {
         "table": "t",
         "column": "v",
         "dirty_clean_pairs": [
-            {"dirty": "100", "clean": "1"},
-            {"dirty": "BAD", "clean": "good"},
-            {"dirty": "NULL", "clean": ""},
-            {"dirty": "2118/11/27", "clean": "2118-11-27"},
+            {"dirty": "X", "clean": "A", "row_context": {"kind": "alpha"}},
+            {"dirty": "X", "clean": "B", "row_context": {"kind": "beta"}},
+            {"dirty": "X", "clean": "C", "row_context": {"kind": "gamma"}},
         ],
-        "clean_examples": ["5", "good", ""],
+        "clean_examples": [
+            {"value": "A", "row_context": {"kind": "alpha"}},
+            {"value": "B", "row_context": {"kind": "beta"}},
+        ],
     }
-    source = '''def Correction(input_string):
-    mapping = {"BAD": "good", "NULL": ""}
-    match = re.fullmatch(r"(\\d)00", input_string)
-    if match:
-        return match.groups()[0]
-    if re.fullmatch(r"\\d{4}/\\d{2}/\\d{2}", input_string):
-        return input_string.replace("/", "-")
-    return mapping.get(input_string, input_string)
+    source = '''def GenerateCandidates(input_string, row_context):
+    kind = row_context.get("kind", "")
+    if kind == "alpha":
+        return [{"value": "A", "rule_id": "context_kind", "evidence": "kind=alpha"}]
+    if kind == "beta":
+        return [
+            {"value": "A", "rule_id": "fallback", "evidence": "common value"},
+            {"value": "B", "rule_id": "context_kind", "evidence": "kind=beta"},
+        ]
+    return [
+        {"value": "A", "rule_id": "fallback", "evidence": "common value"},
+        {"value": "B", "rule_id": "fallback", "evidence": "alternate value"},
+        {"value": "C", "rule_id": "context_kind", "evidence": "kind=gamma"},
+    ]
 '''
-    report = validate_fcorr(source, evidence)
+    report = validate_fcorr(source, evidence, minimum_recall_at_5=0.85)
     assert report["status"] == "SUCCESS"
-    assert report["metrics"]["exact_match_accuracy"] == 1.0
+    assert report["metrics"]["candidate_recall_at_1"] == pytest.approx(1 / 3)
+    assert report["metrics"]["candidate_recall_at_3"] == 1.0
+    assert report["metrics"]["candidate_recall_at_5"] == 1.0
+    assert report["metrics"]["mean_reciprocal_rank"] == pytest.approx((1 + 1 / 2 + 1 / 3) / 3)
     assert report["metrics"]["clean_preservation_rate"] == 1.0
+    assert report["metrics"]["maximum_candidate_count"] == 3
 
-    conflict = {**evidence, "dirty_clean_pairs": [
-        {"dirty": "X", "clean": "A"},
-        {"dirty": "X", "clean": "B"},
-    ]}
-    report = validate_fcorr("def Correction(input_string):\n    return 'A'\n", conflict)
-    assert report["status"] == "FAILED"
-    assert report["metrics"]["exact_match_accuracy"] == 0.5
-
-    report = validate_fcorr("def Correction(input_string):\n    return 1\n", evidence)
-    assert report["status"] == "FAILED"
-    assert report["metrics"]["clean_runtime_issue_count"] == 3
-
-    changes_clean = validate_fcorr(
-        '''def Correction(input_string):
-    if input_string == "5":
-        return "changed"
-    mapping = {"100": "1", "BAD": "good", "NULL": "", "2118/11/27": "2118-11-27"}
-    return mapping.get(input_string, input_string)
-''',
+    report = validate_fcorr(
+        "def GenerateCandidates(input_string, row_context):\n    return []\n",
         evidence,
     )
-    assert changes_clean["status"] == "SUCCESS"
-    assert changes_clean["metrics"]["clean_preservation_rate"] == pytest.approx(2 / 3)
+    assert report["status"] == "FAILED"
+    assert report["metrics"]["candidate_recall_at_5"] == 0.0
+    assert len(report["missing_candidate_pairs"]) == 3
+
+    report = validate_fcorr(
+        "def GenerateCandidates(input_string, row_context):\n    return 'A'\n",
+        evidence,
+    )
+    assert report["status"] == "FAILED"
+    assert report["metrics"]["runtime_issue_count"] == 5
+
+    too_many = "def GenerateCandidates(input_string, row_context):\n    return " + repr([
+        {"value": str(index), "rule_id": "r", "evidence": "e"}
+        for index in range(6)
+    ]) + "\n"
+    report = validate_fcorr(too_many, evidence)
+    assert report["status"] == "FAILED"
+    assert any("at most 5" in issue for issue in report["issues"])
 
 
 def test_static_sandbox_rejects_import_ids_dynamic_calls_and_multiple_functions() -> None:
     assert any("imports are forbidden" in issue for issue in _static_rule_issues(
-        "def Correction(input_string):\n    import os\n    return input_string\n"
+        "def GenerateCandidates(input_string, row_context):\n    import os\n    return []\n"
     ))
     assert any("suspicious hard-coded identifier" in issue for issue in _static_rule_issues(
-        "def Correction(input_string):\n    return '33976251'\n"
+        "def GenerateCandidates(input_string, row_context):\n"
+        "    return [{'value': '33976251', 'rule_id': 'x', 'evidence': 'x'}]\n"
     ))
     assert any("forbidden call 'open'" in issue for issue in _static_rule_issues(
-        "def Correction(input_string):\n    return open(input_string)\n"
+        "def GenerateCandidates(input_string, row_context):\n    return open(input_string)\n"
     ))
     response = (
-        "```python\ndef Correction(input_string):\n    return input_string\n```\n"
-        "```python\ndef Correction(input_string):\n    return input_string.strip()\n```"
+        "```python\ndef GenerateCandidates(input_string, row_context):\n    return []\n```\n"
+        "```python\ndef GenerateCandidates(input_string, row_context):\n"
+        "    return [{'value': input_string, 'rule_id': 'keep', 'evidence': 'keep'}]\n```"
     )
     with pytest.raises(CellRepairError, match="exactly one"):
         _extract_correction_source(response)
     with pytest.raises(CellRepairError, match="exactly one"):
-        _extract_correction_source("def Correction(:\n    pass")
+        _extract_correction_source("def GenerateCandidates(:\n    pass")
 
 
 def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path: Path) -> None:
@@ -472,7 +503,10 @@ def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path
             messages[-1]["content"],
         ))
         if field_evidence["column"] == "amount" and attempt == 1:
-            return "def Correction(input_string):\n    return input_string\n", "MiniMax-M3"
+            return (
+                "def GenerateCandidates(input_string, row_context):\n    return []\n",
+                "MiniMax-M3",
+            )
         return _good_completion(messages, field_evidence, attempt)
 
     output = tmp_path / "rules"
@@ -485,8 +519,9 @@ def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path
     amount_calls = [call for call in calls if call[0] == "amount"]
     assert amount_calls[1][2] == ["system", "user", "assistant", "user"]
     feedback = json.loads(amount_calls[1][3].split("\n\n", 1)[1])
-    assert len(feedback["wrongly_corrected_pairs"]) == 3
-    assert feedback["previous_function"].startswith("def Correction")
+    assert len(feedback["missing_candidate_pairs"]) == 3
+    assert feedback["previous_function"].startswith("def GenerateCandidates")
+    assert feedback["metrics"]["candidate_recall_at_5"] == 0.0
     status_first = next(call for call in calls if call[0] == "status")
     assert status_first[2] == ["system", "user"]
     assert "BAD3" not in status_first[3] and "BAD4" not in status_first[3]
@@ -504,7 +539,7 @@ def test_synthesis_stops_at_twelve_or_context_limit_and_rejects_wrong_model(
     def never_correct(messages, field_evidence, attempt):
         del messages, field_evidence
         attempts.append(attempt)
-        return "def Correction(input_string):\n    return input_string\n", "MiniMax-M3"
+        return "def GenerateCandidates(input_string, row_context):\n    return []\n", "MiniMax-M3"
 
     rejected = synthesize_fcorr(
         evidence_dir=evidence,
@@ -569,7 +604,42 @@ def test_frozen_registry_rejects_tampering(tmp_path: Path, tampered: str) -> Non
         )
 
 
-def test_offline_target_run_apply_and_private_joint_evaluation(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("schema_version", 2),
+        ("workflow", "gidcl_direct_fcorr_rule_registry"),
+        ("maximum_candidates", 1),
+    ],
+)
+def test_frozen_registry_rejects_protocol_tampering(
+    tmp_path: Path,
+    key: str,
+    value: object,
+) -> None:
+    paths = _fixture(tmp_path)
+    rules = _synthesize(paths, tmp_path)
+    registry_path = rules / "rule_registry.json"
+    registry = json.loads(registry_path.read_text())
+    registry[key] = value
+    registry_path.write_text(json.dumps(registry) + "\n", encoding="utf-8")
+    targets_dir = tmp_path / "targets"
+    build_repair_targets(
+        predictions=paths["predictions"],
+        graph_dir=paths["graph"],
+        split="internal_test",
+        output_dir=targets_dir,
+    )
+
+    with pytest.raises(CellRepairError, match="not frozen for offline execution"):
+        run_frozen_rules(
+            targets=targets_dir / "repair_targets.csv",
+            rule_dir=rules,
+            output_dir=tmp_path / "run",
+        )
+
+
+def test_offline_target_run_and_private_candidate_audit_are_deterministic(tmp_path: Path) -> None:
     paths = _fixture(tmp_path)
     rules = _synthesize(paths, tmp_path)
     targets = tmp_path / "targets"
@@ -581,6 +651,10 @@ def test_offline_target_run_apply_and_private_joint_evaluation(tmp_path: Path) -
         output_dir=targets,
     )
     assert target_manifest["target_count"] == 2
+    target_rows = list(csv.DictReader((targets / "repair_targets.csv").open()))
+    assert all("row_context_json" in row for row in target_rows)
+    assert all("stay_id" not in json.loads(row["row_context_json"]) for row in target_rows)
+    assert all(row["column"] not in json.loads(row["row_context_json"]) for row in target_rows)
 
     first = tmp_path / "run-a"
     second = tmp_path / "run-b"
@@ -590,43 +664,86 @@ def test_offline_target_run_apply_and_private_joint_evaluation(tmp_path: Path) -
     run_frozen_rules(
         targets=targets / "repair_targets.csv", rule_dir=rules, output_dir=second
     )
-    assert first_manifest["action_counts"] == {"replace": 2}
+    assert first_manifest["candidate_count"] == 2
+    assert first_manifest["targets_with_candidates"] == 2
     assert first_manifest["llm_called"] is False
-    assert (first / "repair_values.jsonl").read_bytes() == (
-        second / "repair_values.jsonl"
+    assert (first / "candidate_values.jsonl").read_bytes() == (
+        second / "candidate_values.jsonl"
     ).read_bytes()
-    assert (first / "repair_plan.jsonl").read_bytes() == (
-        second / "repair_plan.jsonl"
-    ).read_bytes()
-
-    original_hash = _sha256(Path(paths["raw"]) / "icu" / "events.csv")
-    repaired = tmp_path / "repaired"
-    apply_report = apply_repair_plan(
-        raw_dir=paths["raw"],
-        repair_plan=first / "repair_plan.jsonl",
-        output_dir=repaired,
+    candidate_rows = [
+        json.loads(line)
+        for line in (first / "candidate_values.jsonl").read_text().splitlines()
+    ]
+    private_keys = {
+        "label",
+        "fold",
+        "error_class",
+        "error_subtype",
+        "injection_seed",
+        "expected_clean",
+        "clean_value",
+        "gold",
+    }
+    assert all(private_keys.isdisjoint(row) for row in candidate_rows)
+    assert all(
+        private_keys.isdisjoint(candidate)
+        for row in candidate_rows
+        for candidate in row["candidates"]
     )
-    assert apply_report["applied_replacement_count"] == 2
-    assert _sha256(Path(paths["raw"]) / "icu" / "events.csv") == original_hash
-    assert (repaired / "unchanged.txt").read_text() == "untouched\n"
 
-    evaluation = evaluate_repairs(
-        repair_values=first / "repair_values.jsonl",
-        repair_plan=first / "repair_plan.jsonl",
+    evaluation = evaluate_candidates(
+        candidate_values=first / "candidate_values.jsonl",
         injection_log=paths["log"],
         predictions=paths["predictions"],
         graph_dir=paths["graph"],
         output_dir=tmp_path / "evaluation",
     )
     metrics = evaluation["metrics"]
-    assert evaluation["evaluation_role"] == "development_audit"
+    assert evaluation["evaluation_role"] == "frozen_audit"
     assert metrics["detector_confusion_matrix"] == {"tp": 1, "fp": 1, "fn": 2, "tn": 1}
-    assert metrics["exact_repairs"] == 1
-    assert metrics["incorrect_repairs"] == 0
-    assert metrics["rule_only_exact_accuracy"] == 1.0
+    assert metrics["rule_candidate_recall_at_1"] == 1.0
+    assert metrics["rule_candidate_recall_at_3"] == 1.0
+    assert metrics["rule_candidate_recall_at_5"] == 1.0
+    assert metrics["joint_candidate_recall_at_5"] == pytest.approx(1 / 3)
+    assert metrics["mean_reciprocal_rank"] == 1.0
     assert metrics["clean_preservation_rate"] == 0.5
-    assert metrics["correction_precision"] == 0.5
-    assert metrics["correction_recall"] == pytest.approx(1 / 3)
+    assert evaluation["selection_performed"] is False
+
+
+def test_validation_and_internal_test_use_identical_frozen_audit_policy(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    rules = _synthesize(paths, tmp_path)
+    reports = {}
+    for split in ("validation", "internal_test"):
+        targets = tmp_path / f"{split}-targets"
+        build_repair_targets(
+            predictions=paths["predictions"],
+            graph_dir=paths["graph"],
+            split=split,
+            output_dir=targets,
+        )
+        candidates = tmp_path / f"{split}-candidates"
+        run_frozen_rules(
+            targets=targets / "repair_targets.csv",
+            rule_dir=rules,
+            output_dir=candidates,
+        )
+        reports[split] = evaluate_candidates(
+            candidate_values=candidates / "candidate_values.jsonl",
+            injection_log=paths["log"],
+            predictions=paths["predictions"],
+            graph_dir=paths["graph"],
+            output_dir=tmp_path / f"{split}-audit",
+        )
+
+    assert reports["validation"]["evaluation_role"] == "frozen_audit"
+    assert reports["internal_test"]["evaluation_role"] == "frozen_audit"
+    assert reports["validation"]["workflow"] == reports["internal_test"]["workflow"]
+    assert set(reports["validation"]["metrics"]) == set(
+        reports["internal_test"]["metrics"]
+    )
+    assert reports["validation"]["selection_performed"] is False
+    assert reports["internal_test"]["selection_performed"] is False
 
 
 def test_apply_supports_gzip_and_changes_only_declared_cell(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from .cell_repair import (
     apply_repair_plan,
     build_field_pairs,
     build_repair_targets,
+    evaluate_candidates,
     evaluate_repairs,
     freeze_rule_registry,
     recover_raw_from_graph,
@@ -25,8 +26,8 @@ def _print_report(report: dict[str, Any]) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Build Train-only field pairs, synthesize GIDCL-style F_corr functions, "
-            "and execute frozen Cell repairs."
+            "Build Train-only field evidence, synthesize multi-candidate F_corr functions, "
+            "and execute frozen candidate audits."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -54,7 +55,10 @@ def _parser() -> argparse.ArgumentParser:
 
     synthesize = subparsers.add_parser(
         "synthesize-fcorr",
-        help="Use MiniMax M3 to synthesize and Train-validate one F_corr per field.",
+        help=(
+            "Use MiniMax M3 to synthesize and Train-validate one multi-candidate "
+            "F_corr per field."
+        ),
     )
     synthesize.add_argument("--evidence-dir", required=True, type=Path)
     synthesize.add_argument("--output-dir", required=True, type=Path)
@@ -79,13 +83,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     targets.add_argument("--predictions", required=True, type=Path)
     targets.add_argument("--graph-dir", required=True, type=Path)
-    targets.add_argument("--raw-dir", required=True, type=Path)
+    targets.add_argument(
+        "--raw-dir",
+        type=Path,
+        help="Optional raw directory for an additional raw/graph value cross-check.",
+    )
     targets.add_argument("--split", required=True)
     targets.add_argument("--output-dir", required=True, type=Path)
 
     run = subparsers.add_parser(
         "run-rules",
-        help="Run frozen field F_corr functions offline without model access.",
+        help="Run frozen field F_corr functions to emit up to five candidates per target.",
     )
     run.add_argument("--targets", required=True, type=Path)
     run.add_argument("--rule-dir", required=True, type=Path)
@@ -93,7 +101,10 @@ def _parser() -> argparse.ArgumentParser:
 
     apply = subparsers.add_parser(
         "apply",
-        help="Apply declared replacements to a new raw-data copy.",
+        help=(
+            "Apply a later selector's declared replacements; candidate generation "
+            "does not emit them."
+        ),
     )
     apply.add_argument("--raw-dir", required=True, type=Path)
     apply.add_argument("--repair-plan", required=True, type=Path)
@@ -101,7 +112,10 @@ def _parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser(
         "evaluate",
-        help="Run host-private rule and detector-repair evaluation for one split.",
+        help=(
+            "Evaluate a later selector's final repair plan; use evaluate-candidates "
+            "in this stage."
+        ),
     )
     evaluate.add_argument("--repair-values", required=True, type=Path)
     evaluate.add_argument("--repair-plan", required=True, type=Path)
@@ -109,6 +123,16 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--predictions", required=True, type=Path)
     evaluate.add_argument("--graph-dir", required=True, type=Path)
     evaluate.add_argument("--output-dir", required=True, type=Path)
+
+    evaluate_candidates_parser = subparsers.add_parser(
+        "evaluate-candidates",
+        help="Run a host-private frozen candidate Recall@1/3/5 audit for one split.",
+    )
+    evaluate_candidates_parser.add_argument("--candidate-values", required=True, type=Path)
+    evaluate_candidates_parser.add_argument("--injection-log", required=True, type=Path)
+    evaluate_candidates_parser.add_argument("--predictions", required=True, type=Path)
+    evaluate_candidates_parser.add_argument("--graph-dir", required=True, type=Path)
+    evaluate_candidates_parser.add_argument("--output-dir", required=True, type=Path)
     return parser
 
 
@@ -158,10 +182,18 @@ def main() -> int:
                 repair_plan=args.repair_plan,
                 output_dir=args.output_dir,
             )
-        else:
+        elif args.command == "evaluate":
             report = evaluate_repairs(
                 repair_values=args.repair_values,
                 repair_plan=args.repair_plan,
+                injection_log=args.injection_log,
+                predictions=args.predictions,
+                graph_dir=args.graph_dir,
+                output_dir=args.output_dir,
+            )
+        else:
+            report = evaluate_candidates(
+                candidate_values=args.candidate_values,
                 injection_log=args.injection_log,
                 predictions=args.predictions,
                 graph_dir=args.graph_dir,

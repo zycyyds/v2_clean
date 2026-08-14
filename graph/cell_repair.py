@@ -17,10 +17,12 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 
-PAIR_SCHEMA_VERSION = 2
-RULE_SCHEMA_VERSION = 2
-REPAIR_SCHEMA_VERSION = 2
-FCORR_MINIMUM_ACCURACY = 0.85
+PAIR_SCHEMA_VERSION = 3
+RULE_SCHEMA_VERSION = 3
+REPAIR_SCHEMA_VERSION = 3
+FCORR_MINIMUM_RECALL_AT_5 = 0.85
+MAX_CANDIDATES = 5
+CANDIDATE_KEYS = {"value", "rule_id", "evidence"}
 TRAIN_FOLDS = (0, 1, 2)
 FOLD_SPLITS = {0: "train", 1: "train", 2: "train", 3: "validation", 4: "internal_test"}
 EXPECTED_PROTOCOL_COUNTS = {
@@ -35,6 +37,10 @@ LOCATION_COLUMNS = {
     "stay_id",
     "canonical_stay_id",
     "patient_id",
+    "row_id",
+    "row_number",
+    "raw_row_index",
+    "observation_index",
 }
 PRIVATE_MARKERS = (
     "reference_private",
@@ -500,6 +506,49 @@ def recover_raw_from_graph(
     return report
 
 
+def _read_graph_rows(
+    observations_path: Path,
+    requests: Mapping[str, set[int]],
+) -> dict[tuple[str, int], dict[str, str]]:
+    rows: dict[tuple[str, int], dict[str, str]] = defaultdict(dict)
+    with observations_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            observation = json.loads(line)
+            table = str(observation["table"])
+            row_number = int(observation["row_number"])
+            if row_number not in requests.get(table, set()):
+                continue
+            column = str(observation["column"])
+            key = (table, row_number)
+            if column in rows[key]:
+                raise CellRepairError(
+                    f"duplicate row context column at {(table, row_number, column)}"
+                )
+            rows[key][column] = str(observation.get("raw_value") or "")
+    missing = sorted(
+        (table, row_number)
+        for table, row_numbers in requests.items()
+        for row_number in row_numbers
+        if (table, row_number) not in rows
+    )
+    if missing:
+        raise CellRepairError(f"missing graph row context: {missing[:5]}")
+    return rows
+
+
+def _public_row_context(
+    rows: Mapping[tuple[str, int], Mapping[str, str]],
+    table: str,
+    row_number: int,
+    target_column: str,
+) -> dict[str, str]:
+    return {
+        column: str(rows[(table, row_number)][column])
+        for column in sorted(rows[(table, row_number)])
+        if column != target_column and column.lower() not in LOCATION_COLUMNS
+    }
+
+
 def build_field_pairs(
     *,
     graph_dir: str | Path,
@@ -555,6 +604,7 @@ def build_field_pairs(
     if missing:
         raise CellRepairError(f"supervision references missing observations: {missing[:5]}")
 
+    row_values = _read_graph_rows(observations_path, requests)
     raw_rows = _read_raw_rows(raw, requests) if raw is not None else {}
     raw_table_hashes: dict[str, str] = {}
     if raw is not None:
@@ -606,13 +656,21 @@ def build_field_pairs(
                     groups[(table, column)]["dirty_clean_pairs"].append({
                         "dirty": current,
                         "clean": str(truth["clean_value"]),
+                        "row_context": _public_row_context(
+                            row_values, table, row_number, column
+                        ),
                     })
         else:
             counts[split]["clean"] += 1
             if coordinate in injection:
                 raise CellRepairError(f"clean Cell unexpectedly appears in paired evidence: {coordinate}")
             if split == "train" and column.lower() not in LOCATION_COLUMNS:
-                groups[(table, column)]["clean_examples"].append(current)
+                groups[(table, column)]["clean_examples"].append({
+                    "value": current,
+                    "row_context": _public_row_context(
+                        row_values, table, row_number, column
+                    ),
+                })
 
     if dirty_coordinates != set(injection):
         missing_dirty = sorted(set(injection) - dirty_coordinates)
@@ -690,6 +748,7 @@ def build_field_pairs(
         "privacy": {
             "llm_visible_splits": ["train"],
             "locator_fields_excluded": sorted(LOCATION_COLUMNS),
+            "target_column_excluded_from_row_context": True,
             "private_taxonomy_exported": False,
         },
     }
@@ -826,8 +885,8 @@ def _static_rule_issues(source: str) -> list[str]:
         return [f"syntax error: {exc.msg} at line {exc.lineno}"]
     top_functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
     issues: list[str] = []
-    if len(top_functions) != 1 or top_functions[0].name != "Correction":
-        issues.append("source must define exactly one top-level Correction function")
+    if len(top_functions) != 1 or top_functions[0].name != "GenerateCandidates":
+        issues.append("source must define exactly one top-level GenerateCandidates function")
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
             issues.append(
@@ -837,8 +896,8 @@ def _static_rule_issues(source: str) -> list[str]:
         function = top_functions[0]
         if function.decorator_list or function.returns is not None:
             issues.append("decorators and return annotations are forbidden")
-        if [argument.arg for argument in function.args.args] != ["input_string"]:
-            issues.append("Correction must accept exactly input_string")
+        if [argument.arg for argument in function.args.args] != ["input_string", "row_context"]:
+            issues.append("GenerateCandidates must accept exactly input_string and row_context")
         if function.args.defaults or function.args.kw_defaults:
             issues.append("default parameters are forbidden")
         if any(argument.annotation is not None for argument in function.args.args):
@@ -848,15 +907,20 @@ def _static_rule_issues(source: str) -> list[str]:
     return sorted(set(issues + validator.issues))
 
 
-def _compile_correction(source: str) -> Callable[[str], str]:
+def _compile_correction(source: str) -> Callable[[str, Mapping[str, str]], list[dict[str, str]]]:
     issues = _static_rule_issues(source)
     if issues:
         raise CellRepairError("invalid correction source: " + "; ".join(issues))
     namespace: dict[str, Any] = {"__builtins__": SAFE_BUILTINS, "re": re}
     exec(compile(source, "correction.py", "exec"), namespace, namespace)
-    function = namespace.get("Correction")
-    if not callable(function) or list(inspect.signature(function).parameters) != ["input_string"]:
-        raise CellRepairError("Correction is not callable with input_string")
+    function = namespace.get("GenerateCandidates")
+    if not callable(function) or list(inspect.signature(function).parameters) != [
+        "input_string",
+        "row_context",
+    ]:
+        raise CellRepairError(
+            "GenerateCandidates is not callable with input_string and row_context"
+        )
     return function
 
 
@@ -870,7 +934,11 @@ def _extract_correction_source(text: str) -> str:
     for candidate in _source_candidates(text):
         lines = candidate.strip().splitlines()
         start = next(
-            (index for index, line in enumerate(lines) if line.lstrip().startswith("def Correction(")),
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.lstrip().startswith("def GenerateCandidates(")
+            ),
             None,
         )
         if start is None:
@@ -884,7 +952,7 @@ def _extract_correction_source(text: str) -> str:
     unique_sources = list(dict.fromkeys(valid_sources))
     if len(unique_sources) != 1:
         raise CellRepairError(
-            "MiniMax response must contain exactly one valid Correction function"
+            "MiniMax response must contain exactly one valid GenerateCandidates function"
         )
     return unique_sources[0]
 
@@ -903,25 +971,69 @@ def _validate_evidence(evidence: Mapping[str, Any]) -> None:
     if not isinstance(clean, list):
         raise CellRepairError("field clean examples must be a list")
     for pair in pairs:
-        if not isinstance(pair, dict) or set(pair) != {"dirty", "clean"}:
+        if not isinstance(pair, dict) or set(pair) != {"dirty", "clean", "row_context"}:
             raise CellRepairError("dirty-clean pair has an invalid schema")
         if not all(isinstance(pair[key], str) for key in ("dirty", "clean")):
             raise CellRepairError("dirty-clean values must be strings")
-    if not all(isinstance(value, str) for value in clean):
-        raise CellRepairError("clean examples must be strings")
+        _validate_row_context(pair["row_context"], str(evidence["column"]))
+    for example in clean:
+        if not isinstance(example, dict) or set(example) != {"value", "row_context"}:
+            raise CellRepairError("clean example has an invalid schema")
+        if not isinstance(example["value"], str):
+            raise CellRepairError("clean example value must be a string")
+        _validate_row_context(example["row_context"], str(evidence["column"]))
     serialized = json.dumps(evidence, ensure_ascii=True, separators=(",", ":")).lower()
     if any(marker in serialized.replace("\\", "/") for marker in PRIVATE_MARKERS):
         raise CellRepairError("private source marker leaked into MiniMax evidence")
+
+
+def _validate_row_context(value: Any, target_column: str) -> None:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise CellRepairError("row context must be a string-to-string object")
+    forbidden = [
+        key for key in value if key == target_column or key.lower() in LOCATION_COLUMNS
+    ]
+    if forbidden:
+        raise CellRepairError(f"row context contains forbidden columns: {forbidden}")
+
+
+def _candidate_output(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise CellRepairError("GenerateCandidates must return a list")
+    if len(value) > MAX_CANDIDATES:
+        raise CellRepairError(f"GenerateCandidates must return at most {MAX_CANDIDATES} candidates")
+    candidates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, candidate in enumerate(value):
+        if not isinstance(candidate, dict) or set(candidate) != CANDIDATE_KEYS:
+            raise CellRepairError(
+                f"candidate {index} must contain exactly value, rule_id, and evidence"
+            )
+        if not all(isinstance(candidate[key], str) for key in CANDIDATE_KEYS):
+            raise CellRepairError(f"candidate {index} fields must be strings")
+        if not candidate["rule_id"] or not candidate["evidence"]:
+            raise CellRepairError(f"candidate {index} requires rule_id and evidence")
+        if candidate["value"] in seen:
+            raise CellRepairError(f"candidate {index} duplicates value {candidate['value']!r}")
+        seen.add(candidate["value"])
+        candidates.append({
+            "value": candidate["value"],
+            "rule_id": candidate["rule_id"],
+            "evidence": candidate["evidence"],
+        })
+    return candidates
 
 
 def validate_fcorr(
     source: str,
     evidence: Mapping[str, Any],
     *,
-    minimum_accuracy: float = 0.85,
+    minimum_recall_at_5: float = FCORR_MINIMUM_RECALL_AT_5,
 ) -> dict[str, Any]:
-    if not 0.0 <= minimum_accuracy < 1.0:
-        raise CellRepairError("minimum accuracy must be in [0, 1)")
+    if not 0.0 <= minimum_recall_at_5 < 1.0:
+        raise CellRepairError("minimum recall@5 must be in [0, 1)")
     _validate_evidence(evidence)
     static_issues = _static_rule_issues(source)
     if static_issues:
@@ -931,79 +1043,97 @@ def validate_fcorr(
     except CellRepairError as exc:
         return {"status": "FAILED", "issues": [str(exc)], "metrics": {}}
 
-    wrong: list[dict[str, str]] = []
+    missing: list[dict[str, Any]] = []
     runtime_issues: list[str] = []
     deterministic = True
-    correct = 0
+    recall_counts = {1: 0, 3: 0, 5: 0}
+    reciprocal_rank_sum = 0.0
+    candidate_counts: list[int] = []
     pairs = list(evidence["dirty_clean_pairs"])
     for index, pair in enumerate(pairs):
         dirty = pair["dirty"]
         expected = pair["clean"]
+        row_context = pair["row_context"]
         try:
-            first = function(dirty)
-            second = function(dirty)
+            first = _candidate_output(function(dirty, dict(row_context)))
+            second = _candidate_output(function(dirty, dict(row_context)))
         except Exception as exc:
             runtime_issues.append(f"pair {index}: {type(exc).__name__}: {exc}")
-            wrong.append({"dirty": dirty, "expected_clean": expected, "actual_output": "<ERROR>"})
-            continue
-        if not isinstance(first, str) or not isinstance(second, str):
-            runtime_issues.append(f"pair {index}: Correction must return str")
-            wrong.append({
+            missing.append({
                 "dirty": dirty,
+                "row_context": row_context,
                 "expected_clean": expected,
-                "actual_output": f"<{type(first).__name__}>",
+                "generated_candidates": [],
+                "failure": "runtime_error",
             })
             continue
         deterministic = deterministic and first == second
-        if first == expected:
-            correct += 1
+        values = [candidate["value"] for candidate in first]
+        candidate_counts.append(len(values))
+        if expected in values:
+            rank = values.index(expected) + 1
+            reciprocal_rank_sum += 1.0 / rank
+            for cutoff in recall_counts:
+                recall_counts[cutoff] += rank <= cutoff
         else:
-            wrong.append({"dirty": dirty, "expected_clean": expected, "actual_output": first})
+            missing.append({
+                "dirty": dirty,
+                "row_context": row_context,
+                "expected_clean": expected,
+                "generated_candidates": values,
+                "failure": "expected_clean_missing_from_top_5",
+            })
 
     preserved = 0
     clean_runtime_issues = 0
     clean_examples = list(evidence["clean_examples"])
-    for index, value in enumerate(clean_examples):
+    for index, example in enumerate(clean_examples):
+        value = example["value"]
+        row_context = example["row_context"]
         try:
-            first = function(value)
-            second = function(value)
+            first = _candidate_output(function(value, dict(row_context)))
+            second = _candidate_output(function(value, dict(row_context)))
         except Exception as exc:
             runtime_issues.append(f"clean {index}: {type(exc).__name__}: {exc}")
             clean_runtime_issues += 1
             continue
-        if not isinstance(first, str) or not isinstance(second, str):
-            runtime_issues.append(f"clean {index}: Correction must return str")
-            clean_runtime_issues += 1
-            continue
         deterministic = deterministic and first == second
-        preserved += first == value
+        preserved += not first or any(candidate["value"] == value for candidate in first)
 
-    accuracy = correct / len(pairs)
+    recall_at_5 = recall_counts[5] / len(pairs)
     metrics = {
         "pair_count": len(pairs),
-        "exact_count": correct,
-        "wrong_count": len(pairs) - correct,
-        "exact_match_accuracy": accuracy,
+        "candidate_recall_at_1": recall_counts[1] / len(pairs),
+        "candidate_recall_at_3": recall_counts[3] / len(pairs),
+        "candidate_recall_at_5": recall_at_5,
+        "mean_reciprocal_rank": reciprocal_rank_sum / len(pairs),
+        "mean_candidate_count": (
+            sum(candidate_counts) / len(candidate_counts) if candidate_counts else 0.0
+        ),
+        "maximum_candidate_count": max(candidate_counts, default=0),
+        "empty_candidate_count": sum(count == 0 for count in candidate_counts),
         "clean_example_count": len(clean_examples),
         "clean_preserved_count": preserved,
         "clean_preservation_rate": (
             preserved / len(clean_examples) if clean_examples else None
         ),
         "clean_runtime_issue_count": clean_runtime_issues,
+        "runtime_issue_count": len(runtime_issues),
         "deterministic": deterministic,
     }
     issues = list(runtime_issues)
     if not deterministic:
-        issues.append("Correction output is not deterministic")
-    if accuracy <= minimum_accuracy:
+        issues.append("GenerateCandidates output is not deterministic")
+    if recall_at_5 <= minimum_recall_at_5:
         issues.append(
-            f"exact-match accuracy {accuracy:.6f} does not exceed {minimum_accuracy:.6f}"
+            f"candidate recall@5 {recall_at_5:.6f} does not exceed "
+            f"{minimum_recall_at_5:.6f}"
         )
     return {
         "status": "SUCCESS" if not issues else "FAILED",
         "issues": issues,
         "metrics": metrics,
-        "wrongly_corrected_pairs": wrong,
+        "missing_candidate_pairs": missing,
     }
 
 
@@ -1018,18 +1148,20 @@ def _initial_prompt(evidence: Mapping[str, Any]) -> str:
         "clean_examples": evidence["clean_examples"],
     }
     return (
-        "Please conclude a general pattern for dirty and clean cells, and write a "
-        "correction function with Python module re, with simple and precise regular "
-        "expressions, to correct a dirty value to its corresponding clean value.\n\n"
+        "Please conclude general correction patterns from the Train-only dirty-clean pairs "
+        "and their target-masked row context. Write a deterministic candidate-generation "
+        "function using Python module re and simple, precise rules.\n\n"
         "The function contract is exactly:\n"
-        "def Correction(input_string):\n"
+        "def GenerateCandidates(input_string, row_context):\n"
         "    ...\n"
-        "    return corrected_string\n\n"
-        "Return one deterministic Correction function. You may include a short explanation "
+        "    return candidates\n\n"
+        "Return zero to five candidates. Each candidate must be a dict with exactly three "
+        "string fields: value, rule_id, and evidence. Candidate values must be unique and "
+        "ordered from most to least plausible. Return [] when no demonstrated rule applies. "
+        "Return one deterministic GenerateCandidates function. You may include a short explanation "
         "or a Python code fence. Do not import modules, access files or networks, use random "
-        "behavior, use row context, or hard-code patient, admission, stay, row, or observation "
-        "identifiers. Return the input unchanged when no demonstrated general correction "
-        "pattern applies.\n\n"
+        "behavior, or hard-code patient, admission, stay, row, or observation identifiers. "
+        "Use only input_string and row_context fields demonstrated in this Train evidence.\n\n"
         "Train-only field evidence:\n"
         + json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     )
@@ -1040,13 +1172,14 @@ def _revision_prompt(source: str, validation: Mapping[str, Any]) -> str:
         "previous_function": source,
         "issues": validation.get("issues", []),
         "metrics": validation.get("metrics", {}),
-        "wrongly_corrected_pairs": validation.get("wrongly_corrected_pairs", []),
+        "missing_candidate_pairs": validation.get("missing_candidate_pairs", []),
     }
     return (
-        "The previous correction function failed Train-only validation. Revise the complete "
-        "Correction(input_string) function using the wrongly corrected dirty-clean pairs. "
-        "Preserve general rules and do not memorize private identifiers. Return one revised "
-        "deterministic function under the same contract.\n\n"
+        "The previous candidate function failed Train-only validation. Revise the complete "
+        "GenerateCandidates(input_string, row_context) function using all missing-candidate "
+        "counterexamples. Preserve general rules, return at most five unique candidates, and "
+        "do not memorize private identifiers. Return one deterministic function under the "
+        "same contract.\n\n"
         + json.dumps(feedback, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     )
 
@@ -1151,15 +1284,16 @@ def synthesize_fcorr(
     output_dir: str | Path,
     agent_key: str = "react_planner",
     max_attempts: int = 12,
-    minimum_accuracy: float = FCORR_MINIMUM_ACCURACY,
+    minimum_recall_at_5: float = FCORR_MINIMUM_RECALL_AT_5,
     fields: Sequence[str] = (),
     completion: Completion | None = None,
 ) -> dict[str, Any]:
     if not 1 <= max_attempts <= 12:
         raise CellRepairError("max_attempts must be between 1 and 12")
-    if minimum_accuracy != FCORR_MINIMUM_ACCURACY:
+    if minimum_recall_at_5 != FCORR_MINIMUM_RECALL_AT_5:
         raise CellRepairError(
-            f"the frozen protocol requires minimum_accuracy={FCORR_MINIMUM_ACCURACY}"
+            "the frozen protocol requires minimum_recall_at_5="
+            f"{FCORR_MINIMUM_RECALL_AT_5}"
         )
     evidence_path = Path(evidence_dir).expanduser().resolve()
     pair_manifest, entries = _read_pair_manifest(evidence_path)
@@ -1227,7 +1361,7 @@ def synthesize_fcorr(
                         "status": "FAILED",
                         "issues": [context_report["error"]],
                         "metrics": {},
-                        "wrongly_corrected_pairs": [],
+                        "missing_candidate_pairs": [],
                     }
                     break
                 response_text = ""
@@ -1235,7 +1369,7 @@ def synthesize_fcorr(
                     "status": "FAILED",
                     "issues": [f"{type(exc).__name__}: {exc}"],
                     "metrics": {},
-                    "wrongly_corrected_pairs": [],
+                    "missing_candidate_pairs": [],
                 }
             else:
                 if "minimaxm3" not in _normalized_model_name(model_name):
@@ -1243,7 +1377,7 @@ def synthesize_fcorr(
                         "status": "FAILED",
                         "issues": [f"completion model is not MiniMax M3: {model_name}"],
                         "metrics": {},
-                        "wrongly_corrected_pairs": [],
+                        "missing_candidate_pairs": [],
                     }
                 else:
                     models.add(model_name)
@@ -1252,7 +1386,7 @@ def synthesize_fcorr(
                         validation = validate_fcorr(
                             source,
                             evidence,
-                            minimum_accuracy=minimum_accuracy,
+                            minimum_recall_at_5=minimum_recall_at_5,
                         )
                     except Exception as exc:
                         source = ""
@@ -1260,7 +1394,7 @@ def synthesize_fcorr(
                             "status": "FAILED",
                             "issues": [f"{type(exc).__name__}: {exc}"],
                             "metrics": {},
-                            "wrongly_corrected_pairs": [],
+                            "missing_candidate_pairs": [],
                         }
             _atomic_text(field_output / f"attempt_{attempt:02d}_response.txt", response_text)
             attempt_report = {
@@ -1286,7 +1420,7 @@ def synthesize_fcorr(
         field_manifest: dict[str, Any] = {
             "schema_version": RULE_SCHEMA_VERSION,
             "status": status,
-            "workflow": "gidcl_direct_fcorr",
+            "workflow": "gidcl_multicandidate_fcorr",
             "field_id": field_id,
             "table": evidence["table"],
             "column": evidence["column"],
@@ -1294,7 +1428,8 @@ def synthesize_fcorr(
             "agent_key": agent_key,
             "attempt_count": len(attempts),
             "maximum_attempts": max_attempts,
-            "minimum_accuracy_exclusive": minimum_accuracy,
+            "minimum_candidate_recall_at_5_exclusive": minimum_recall_at_5,
+            "maximum_candidates": MAX_CANDIDATES,
             "generation_config": {"temperature": 0.0, "seed": 666},
             "evidence_path": f"fields/{field_id}/evidence.json",
             "evidence_sha256": _sha256(frozen_evidence_path),
@@ -1319,13 +1454,14 @@ def synthesize_fcorr(
     synthesis_manifest = {
         "schema_version": RULE_SCHEMA_VERSION,
         "status": "SUCCESS",
-        "workflow": "gidcl_direct_fcorr_synthesis",
+        "workflow": "gidcl_multicandidate_fcorr_synthesis",
         "field_result_count": len(results),
         "status_counts": dict(Counter(item["status"] for item in results)),
         "models": sorted(models),
         "agent_key": agent_key,
         "maximum_attempts": max_attempts,
-        "minimum_accuracy_exclusive": minimum_accuracy,
+        "minimum_candidate_recall_at_5_exclusive": minimum_recall_at_5,
+        "maximum_candidates": MAX_CANDIDATES,
         "pair_manifest_path": "pair_manifest.json",
         "pair_manifest_sha256": _sha256(frozen_pair_manifest),
         "fields": results,
@@ -1339,7 +1475,7 @@ def freeze_rule_registry(*, synthesis_dir: str | Path) -> dict[str, Any]:
     synthesis = Path(synthesis_dir).expanduser().resolve()
     manifest = _read_json(synthesis / "synthesis_manifest.json", "synthesis manifest")
     if manifest.get("status") != "SUCCESS" or manifest.get("workflow") != (
-        "gidcl_direct_fcorr_synthesis"
+        "gidcl_multicandidate_fcorr_synthesis"
     ):
         raise CellRepairError("synthesis manifest is not a successful F_corr artifact")
     pair_manifest_path = synthesis / str(manifest.get("pair_manifest_path") or "")
@@ -1358,15 +1494,19 @@ def freeze_rule_registry(*, synthesis_dir: str | Path) -> dict[str, Any]:
         evidence_path = synthesis / str(field_manifest.get("evidence_path") or "")
         conversation_path = synthesis / str(field_manifest.get("conversation_path") or "")
         validation = field_manifest.get("validation") or {}
-        accuracy = (validation.get("metrics") or {}).get("exact_match_accuracy")
-        if field_manifest.get("workflow") != "gidcl_direct_fcorr":
+        recall_at_5 = (validation.get("metrics") or {}).get("candidate_recall_at_5")
+        if field_manifest.get("workflow") != "gidcl_multicandidate_fcorr":
             raise CellRepairError(f"accepted field has an invalid workflow: {field_id}")
         if "minimaxm3" not in _normalized_model_name(str(field_manifest.get("model") or "")):
             raise CellRepairError(f"accepted field model is not MiniMax M3: {field_id}")
         if field_manifest.get("generation_config") != {"temperature": 0.0, "seed": 666}:
             raise CellRepairError(f"accepted field generation config changed: {field_id}")
-        if validation.get("status") != "SUCCESS" or not isinstance(accuracy, (int, float)) or (
-            float(accuracy) <= FCORR_MINIMUM_ACCURACY
+        if field_manifest.get("maximum_candidates") != MAX_CANDIDATES:
+            raise CellRepairError(f"accepted field candidate limit changed: {field_id}")
+        if validation.get("status") != "SUCCESS" or not isinstance(
+            recall_at_5, (int, float)
+        ) or (
+            float(recall_at_5) <= FCORR_MINIMUM_RECALL_AT_5
         ):
             raise CellRepairError(f"accepted field failed frozen Train threshold: {field_id}")
         if not evidence_path.is_file() or _sha256(evidence_path) != field_manifest.get(
@@ -1395,28 +1535,46 @@ def freeze_rule_registry(*, synthesis_dir: str | Path) -> dict[str, Any]:
             "conversation_sha256": field_manifest["conversation_sha256"],
             "field_manifest_path": str(entry["field_manifest"]),
             "field_manifest_sha256": _sha256(field_manifest_path),
-            "train_exact_match_accuracy": field_manifest["validation"]["metrics"][
-                "exact_match_accuracy"
+            "train_candidate_recall_at_1": field_manifest["validation"]["metrics"][
+                "candidate_recall_at_1"
+            ],
+            "train_candidate_recall_at_3": field_manifest["validation"]["metrics"][
+                "candidate_recall_at_3"
+            ],
+            "train_candidate_recall_at_5": field_manifest["validation"]["metrics"][
+                "candidate_recall_at_5"
             ],
         }
     registry = {
         "schema_version": RULE_SCHEMA_VERSION,
         "status": "FROZEN",
-        "workflow": "gidcl_fcorr_rule_registry",
+        "workflow": "gidcl_multicandidate_fcorr_rule_registry",
         "rule_count": len(accepted),
         "rules": {key: accepted[key] for key in sorted(accepted)},
         "pair_manifest_path": manifest["pair_manifest_path"],
         "pair_manifest_sha256": manifest["pair_manifest_sha256"],
         "synthesis_manifest_sha256": _sha256(synthesis / "synthesis_manifest.json"),
+        "maximum_candidates": MAX_CANDIDATES,
         "test_time_llm_access": False,
     }
     _write_json(synthesis / "rule_registry.json", registry)
     return registry
 
 
-def _load_rule_registry(rule_dir: Path) -> tuple[dict[str, Callable[[str], str]], dict[str, Any]]:
+def _load_rule_registry(
+    rule_dir: Path,
+) -> tuple[
+    dict[str, Callable[[str, Mapping[str, str]], list[dict[str, str]]]],
+    dict[str, Any],
+]:
     registry = _read_json(rule_dir / "rule_registry.json", "rule registry")
-    if registry.get("status") != "FROZEN" or registry.get("test_time_llm_access") is not False:
+    if (
+        registry.get("schema_version") != RULE_SCHEMA_VERSION
+        or registry.get("status") != "FROZEN"
+        or registry.get("workflow") != "gidcl_multicandidate_fcorr_rule_registry"
+        or registry.get("maximum_candidates") != MAX_CANDIDATES
+        or registry.get("test_time_llm_access") is not False
+    ):
         raise CellRepairError("rule registry is not frozen for offline execution")
     synthesis_manifest_path = rule_dir / "synthesis_manifest.json"
     if not synthesis_manifest_path.is_file() or _sha256(synthesis_manifest_path) != registry.get(
@@ -1428,7 +1586,7 @@ def _load_rule_registry(rule_dir: Path) -> tuple[dict[str, Callable[[str], str]]
         "pair_manifest_sha256"
     ):
         raise CellRepairError("frozen pair manifest hash mismatch")
-    rules: dict[str, Callable[[str], str]] = {}
+    rules: dict[str, Callable[[str, Mapping[str, str]], list[dict[str, str]]]] = {}
     for key, entry in registry.get("rules", {}).items():
         source_path = rule_dir / str(entry["source_path"])
         field_manifest_path = rule_dir / str(entry["field_manifest_path"])
@@ -1477,13 +1635,15 @@ def build_repair_targets(
     *,
     predictions: str | Path,
     graph_dir: str | Path,
-    raw_dir: str | Path,
+    raw_dir: str | Path | None = None,
     split: str,
     output_dir: str | Path,
 ) -> dict[str, Any]:
     predictions_path = Path(predictions).expanduser().resolve()
     graph = Path(graph_dir).expanduser().resolve()
-    raw = Path(raw_dir).expanduser().resolve()
+    raw = Path(raw_dir).expanduser().resolve() if raw_dir is not None else None
+    if raw is not None and not raw.is_dir():
+        raise CellRepairError(f"raw directory does not exist: {raw}")
     output = _new_output(output_dir)
     prediction_rows = _read_predictions(predictions_path, split)
     observations: dict[int, dict[str, Any]] = {}
@@ -1497,7 +1657,8 @@ def build_repair_targets(
     requests: dict[str, set[int]] = defaultdict(set)
     for observation in observations.values():
         requests[str(observation["table"])].add(int(observation["row_number"]))
-    raw_rows = _read_raw_rows(raw, requests)
+    graph_rows = _read_graph_rows(graph / "cell_observations.jsonl", requests)
+    raw_rows = _read_raw_rows(raw, requests) if raw is not None else {}
     fields = [
         "split",
         "observation_index",
@@ -1506,6 +1667,7 @@ def build_repair_targets(
         "raw_row_index",
         "column",
         "current_value",
+        "row_context_json",
         "dirty_score",
         "threshold",
     ]
@@ -1520,8 +1682,8 @@ def build_repair_targets(
             table = str(observation["table"])
             row_number = int(observation["row_number"])
             column = str(observation["column"])
-            current = str(raw_rows[(table, row_number)].get(column) or "")
-            if current != str(observation.get("raw_value") or ""):
+            current = str(observation.get("raw_value") or "")
+            if raw is not None and str(raw_rows[(table, row_number)].get(column) or "") != current:
                 raise CellRepairError(
                     f"raw/graph value mismatch at {(table, row_number, column)}"
                 )
@@ -1533,6 +1695,12 @@ def build_repair_targets(
                 "raw_row_index": row_number - 1,
                 "column": column,
                 "current_value": current,
+                "row_context_json": json.dumps(
+                    _public_row_context(graph_rows, table, row_number, column),
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
                 "dirty_score": prediction["dirty_score"],
                 "threshold": prediction["threshold"],
             })
@@ -1545,6 +1713,10 @@ def build_repair_targets(
         "target_count": len(prediction_rows),
         "predictions_sha256": _sha256(predictions_path),
         "targets_sha256": _sha256(target_path),
+        "current_value_source": "cell_observations",
+        "raw_cross_check_enabled": raw is not None,
+        "target_column_excluded_from_row_context": True,
+        "locator_fields_excluded_from_row_context": sorted(LOCATION_COLUMNS),
         "private_labels_exported": False,
     }
     _write_json(output / "target_manifest.json", manifest)
@@ -1561,6 +1733,7 @@ def _read_targets(path: Path) -> list[dict[str, str]]:
             "raw_row_index",
             "column",
             "current_value",
+            "row_context_json",
             "dirty_score",
         }
         if not required.issubset(reader.fieldnames or ()):
@@ -1580,29 +1753,30 @@ def run_frozen_rules(
     functions, registry = _load_rule_registry(rules_path)
     target_rows = _read_targets(target_path)
     value_rows: list[dict[str, Any]] = []
-    plan_rows: list[dict[str, Any]] = []
-    action_counts: Counter[str] = Counter()
+    candidate_count = 0
+    targets_with_candidates = 0
     for row in target_rows:
         field = _field_key(row["table"], row["column"])
         current = str(row["current_value"])
         function = functions.get(field)
-        candidate: str | None = None
+        candidates: list[dict[str, str]] = []
         reason = "no_accepted_field_rule"
+        try:
+            row_context = json.loads(row["row_context_json"])
+            _validate_row_context(row_context, row["column"])
+        except (json.JSONDecodeError, CellRepairError) as exc:
+            raise CellRepairError(
+                f"invalid target row context at observation {row['observation_index']}: {exc}"
+            ) from exc
         if function is not None:
             try:
-                produced = function(current)
-                if not isinstance(produced, str):
-                    reason = "rule_returned_non_string"
-                elif produced == current:
-                    reason = "rule_returned_input"
-                else:
-                    candidate = produced
-                    reason = "accepted_field_rule"
+                candidates = _candidate_output(function(current, dict(row_context)))
+                reason = "accepted_field_rule" if candidates else "rule_returned_no_candidates"
             except Exception as exc:
                 reason = f"rule_runtime_error:{type(exc).__name__}"
-        action = "replace" if candidate is not None else "unresolved"
-        action_counts[action] += 1
-        common = {
+        candidate_count += len(candidates)
+        targets_with_candidates += bool(candidates)
+        value_rows.append({
             "split": row["split"],
             "observation_index": int(row["observation_index"]),
             "table": row["table"],
@@ -1612,32 +1786,27 @@ def run_frozen_rules(
             "dirty_score": float(row["dirty_score"]),
             "field_rule": field if function is not None else "",
             "reason": reason,
-        }
-        value_rows.append({**common, "candidate_value": candidate})
-        plan_rows.append({
-            **common,
-            "action": action,
-            "replacement_value": candidate or "",
+            "candidates": candidates,
         })
-    values_path = output / "repair_values.jsonl"
-    plan_path = output / "repair_plan.jsonl"
+    values_path = output / "candidate_values.jsonl"
     _write_jsonl(values_path, value_rows)
-    _write_jsonl(plan_path, plan_rows)
     manifest = {
         "schema_version": REPAIR_SCHEMA_VERSION,
         "status": "SUCCESS",
-        "workflow": "offline_frozen_fcorr_execution",
+        "workflow": "offline_frozen_multicandidate_fcorr_execution",
         "split": target_rows[0]["split"] if target_rows else "",
         "target_count": len(target_rows),
-        "action_counts": dict(action_counts),
+        "candidate_count": candidate_count,
+        "targets_with_candidates": targets_with_candidates,
+        "maximum_candidates_per_target": MAX_CANDIDATES,
+        "selection_performed": False,
         "targets_sha256": _sha256(target_path),
         "rule_registry_sha256": _sha256(rules_path / "rule_registry.json"),
-        "repair_values_sha256": _sha256(values_path),
-        "repair_plan_sha256": _sha256(plan_path),
+        "candidate_values_sha256": _sha256(values_path),
         "llm_called": False,
         "frozen_rule_count": registry["rule_count"],
     }
-    _write_json(output / "repair_execution_manifest.json", manifest)
+    _write_json(output / "candidate_execution_manifest.json", manifest)
     return manifest
 
 
@@ -1794,6 +1963,215 @@ def _metric_block(reports: Sequence[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _candidate_metric_block(reports: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    dirty = [row for row in reports if row["is_dirty"]]
+    clean = [row for row in reports if not row["is_dirty"]]
+    targeted_dirty = [row for row in dirty if row["detector_prediction"] == 1]
+    targeted = [row for row in reports if row["detector_prediction"] == 1]
+    tp = len(targeted_dirty)
+    fp = sum(row["detector_prediction"] == 1 for row in clean)
+    fn = sum(row["detector_prediction"] == 0 for row in dirty)
+    tn = sum(row["detector_prediction"] == 0 for row in clean)
+
+    def conditional_recall(cutoff: int) -> float:
+        return (
+            sum(0 < int(row["gold_rank"]) <= cutoff for row in targeted_dirty) / tp
+            if tp
+            else 0.0
+        )
+
+    def joint_recall(cutoff: int) -> float:
+        return (
+            sum(0 < int(row["gold_rank"]) <= cutoff for row in dirty) / len(dirty)
+            if dirty
+            else 0.0
+        )
+
+    candidate_total = sum(int(row["candidate_count"]) for row in targeted)
+    return {
+        "count": len(reports),
+        "dirty_count": len(dirty),
+        "clean_count": len(clean),
+        "detector_confusion_matrix": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
+        "detector_positive_count": len(targeted),
+        "candidate_count": candidate_total,
+        "targets_with_candidates": sum(int(row["candidate_count"]) > 0 for row in targeted),
+        "mean_candidates_per_target": candidate_total / len(targeted) if targeted else 0.0,
+        "rule_candidate_recall_at_1": conditional_recall(1),
+        "rule_candidate_recall_at_3": conditional_recall(3),
+        "rule_candidate_recall_at_5": conditional_recall(5),
+        "joint_candidate_recall_at_1": joint_recall(1),
+        "joint_candidate_recall_at_3": joint_recall(3),
+        "joint_candidate_recall_at_5": joint_recall(5),
+        "mean_reciprocal_rank": (
+            sum(
+                1.0 / int(row["gold_rank"])
+                for row in targeted_dirty
+                if int(row["gold_rank"]) > 0
+            )
+            / tp
+            if tp
+            else 0.0
+        ),
+        "clean_preservation_rate": (
+            sum(bool(row["clean_preserved"]) for row in clean) / len(clean)
+            if clean
+            else None
+        ),
+    }
+
+
+def evaluate_candidates(
+    *,
+    candidate_values: str | Path,
+    injection_log: str | Path,
+    predictions: str | Path,
+    graph_dir: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    values_path = Path(candidate_values).expanduser().resolve()
+    log_path = Path(injection_log).expanduser().resolve()
+    predictions_path = Path(predictions).expanduser().resolve()
+    graph = Path(graph_dir).expanduser().resolve()
+    output = _new_output(output_dir)
+    value_rows = _read_jsonl(values_path)
+    if not value_rows:
+        raise CellRepairError("candidate values are empty")
+    splits = sorted({str(row.get("split") or "") for row in value_rows})
+    if len(splits) != 1 or not splits[0]:
+        raise CellRepairError("candidate values must contain exactly one non-empty split")
+    split = splits[0]
+    values = {int(row["observation_index"]): row for row in value_rows}
+    if len(values) != len(value_rows):
+        raise CellRepairError("candidate values have duplicate observation indices")
+
+    with predictions_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {"split", "observation_index", "prediction", "label"}
+        if not required.issubset(reader.fieldnames or ()):
+            raise CellRepairError("private evaluation predictions have an invalid schema")
+        prediction_rows: dict[int, dict[str, str]] = {}
+        for row in reader:
+            if row["split"] != split:
+                continue
+            observation_index = int(row["observation_index"])
+            if observation_index in prediction_rows:
+                raise CellRepairError(
+                    f"duplicate evaluation prediction: {observation_index}"
+                )
+            if row["prediction"] not in {"0", "1"} or row["label"] not in {"0", "1"}:
+                raise CellRepairError("evaluation predictions must contain binary labels")
+            prediction_rows[observation_index] = dict(row)
+    if not prediction_rows:
+        raise CellRepairError(f"no prediction rows for evaluation split {split}")
+    predicted_positive = {
+        index for index, row in prediction_rows.items() if row["prediction"] == "1"
+    }
+    if set(values) != predicted_positive:
+        raise CellRepairError(
+            "candidate artifacts must cover every and only detector-positive Cell"
+        )
+
+    observations: dict[int, dict[str, Any]] = {}
+    observations_path = graph / "cell_observations.jsonl"
+    with observations_path.open(encoding="utf-8") as handle:
+        for observation_index, line in enumerate(handle):
+            if observation_index in prediction_rows:
+                observations[observation_index] = json.loads(line)
+    missing = sorted(set(prediction_rows) - set(observations))
+    if missing:
+        raise CellRepairError(
+            f"evaluation predictions reference missing observations: {missing[:5]}"
+        )
+
+    gold = _read_injection_log(log_path)
+    reports: list[dict[str, Any]] = []
+    for observation_index in sorted(prediction_rows):
+        prediction = prediction_rows[observation_index]
+        observation = observations[observation_index]
+        table = str(observation["table"])
+        row_number = int(observation["row_number"])
+        column = str(observation["column"])
+        current = str(observation.get("raw_value") or "")
+        truth = gold.get(_coordinate(table, row_number, column))
+        is_dirty = prediction["label"] == "1"
+        if is_dirty != (truth is not None):
+            raise CellRepairError(
+                f"prediction label and paired evidence disagree at observation {observation_index}"
+            )
+        clean_value = str(truth["clean_value"]) if truth else current
+        value_row = values.get(observation_index)
+        candidates: list[dict[str, str]] = []
+        if value_row is not None:
+            actual_coordinate = (
+                str(value_row["table"]),
+                int(value_row["raw_row_index"]),
+                str(value_row["column"]),
+                str(value_row["current_value"]),
+            )
+            expected_coordinate = (table, row_number - 1, column, current)
+            if actual_coordinate != expected_coordinate:
+                raise CellRepairError(
+                    f"candidate artifact coordinate mismatch at observation {observation_index}"
+                )
+            candidates = _candidate_output(value_row.get("candidates"))
+        candidate_strings = [candidate["value"] for candidate in candidates]
+        gold_rank = (
+            candidate_strings.index(clean_value) + 1 if clean_value in candidate_strings else 0
+        )
+        reports.append({
+            "split": split,
+            "observation_index": observation_index,
+            "table": table,
+            "raw_row_index": row_number - 1,
+            "column": column,
+            "field": _field_key(table, column),
+            "is_dirty": is_dirty,
+            "detector_prediction": int(prediction["prediction"]),
+            "error_class": str(truth.get("error_class") or "") if truth else "sampled_clean",
+            "error_subtype": (
+                str(truth.get("error_subtype") or "") if truth else "sampled_clean"
+            ),
+            "candidate_count": len(candidates),
+            "gold_rank": gold_rank,
+            "clean_preserved": (
+                not candidates or any(candidate["value"] == current for candidate in candidates)
+            ) if not is_dirty else False,
+            "reason": value_row.get("reason", "") if value_row is not None else "detector_negative",
+        })
+
+    by_field = {
+        field: _candidate_metric_block([row for row in reports if row["field"] == field])
+        for field in sorted({row["field"] for row in reports})
+    }
+    by_subtype = {
+        subtype: _candidate_metric_block(
+            [row for row in reports if row["error_subtype"] == subtype]
+        )
+        for subtype in sorted({row["error_subtype"] for row in reports})
+    }
+    report = {
+        "schema_version": REPAIR_SCHEMA_VERSION,
+        "status": "SUCCESS",
+        "workflow": "private_multicandidate_fcorr_evaluation",
+        "evaluation_role": "frozen_audit",
+        "splits": [split],
+        "selection_performed": False,
+        "metrics": _candidate_metric_block(reports),
+        "by_field": by_field,
+        "by_error_subtype": by_subtype,
+        "target_reports": reports,
+        "inputs": {
+            "candidate_values_sha256": _sha256(values_path),
+            "injection_log_sha256": _sha256(log_path),
+            "predictions_sha256": _sha256(predictions_path),
+            "cell_observations_sha256": _sha256(observations_path),
+        },
+    }
+    _write_json(output / "candidate_evaluation_report.json", report)
+    return report
+
+
 def evaluate_repairs(
     *,
     repair_values: str | Path,
@@ -1937,9 +2315,7 @@ def evaluate_repairs(
         "schema_version": REPAIR_SCHEMA_VERSION,
         "status": "SUCCESS",
         "workflow": "private_fcorr_repair_evaluation",
-        "evaluation_role": (
-            "development_audit" if split == "internal_test" else "validation_or_external"
-        ),
+        "evaluation_role": "frozen_audit",
         "splits": [split],
         "metrics": _metric_block(reports),
         "by_field": by_field,

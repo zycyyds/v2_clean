@@ -2,8 +2,9 @@
 
 > 字段级 `F_corr` 修复流程已经实现并单独记录在
 > [cell_repair_candidate_workflow.md](cell_repair_candidate_workflow.md)。Strict R-GCN 是唯一
-> 错误检测器；MiniMax M3 只根据 Train dirty-clean pairs 离线生成字段修复函数，冻结后在
-> Validation/Test 阶段不访问模型 API。
+> 错误检测器；MiniMax M3 根据 Train dirty-clean pairs 和目标字段屏蔽后的行上下文离线生成
+> 最多 5 个候选的字段函数。冻结后 Validation/Internal Test 使用相同的 `frozen_audit` 流程，
+> 不访问模型 API，也不直接生成可 Apply 的 repair plan。
 
 更新时间：2026-08-13
 
