@@ -12,3 +12,4 @@ dependencies:
   - pip
   - pip:
       - agentscope==2.0.4.post1
+      - httpx==0.28.1

@@ -1149,4 +1149,5 @@ def test_environment_locks_python311_and_agentscope2() -> None:
     assert "python=3.11" in dependencies
     assert "ripgrep" in dependencies
     assert "agentscope==2.0.4.post1" in pip_dependencies
+    assert "httpx==0.28.1" in pip_dependencies
     assert not (root / "agent" / "bounded_memory.py").exists()

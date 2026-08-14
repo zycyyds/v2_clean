@@ -103,7 +103,9 @@ Gold 未进入 Top-5 时，下一轮只反馈 Train 反例：
 
 ## 5. Windows 单行命令
 
-以下命令在 `D:\mimic_graph\v2_clean-graph` 的 `graph-embedding` 环境中执行。
+以下命令都在 `D:\mimic_graph\v2_clean-graph` 执行。图数据命令可使用
+`graph-embedding` 环境；调用 MiniMax 的 `synthesize-fcorr` 必须使用 `environment.yml` 定义的
+`py3102` AgentScope 环境。命令通过 `conda run` 显式选择该环境，避免误用当前激活环境。
 
 ### 5.1 构建 Train 证据
 
@@ -116,13 +118,13 @@ python -m graph.cell_repair_cli build-pairs --graph-dir "D:\mimic_graph\data\gra
 先用一个小字段 smoke test：
 
 ```bat
-set MODEL_NAME=MiniMax-M3 && python -m graph.cell_repair_cli synthesize-fcorr --evidence-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\field_pairs" --output-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\rules_smoke" --agent-key react_planner --max-attempts 12 --field hosp/patients.gender
+set MODEL_NAME=MiniMax-M3 && conda run -n py3102 python -m graph.cell_repair_cli synthesize-fcorr --evidence-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\field_pairs" --output-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\rules_smoke" --agent-key react_planner --max-attempts 12 --field hosp/patients.gender
 ```
 
 全字段运行时使用新的空输出目录：
 
 ```bat
-set MODEL_NAME=MiniMax-M3 && python -m graph.cell_repair_cli synthesize-fcorr --evidence-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\field_pairs" --output-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\rules" --agent-key react_planner --max-attempts 12
+set MODEL_NAME=MiniMax-M3 && conda run -n py3102 python -m graph.cell_repair_cli synthesize-fcorr --evidence-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\field_pairs" --output-dir "D:\mimic_graph\experiments\fcorr_candidates_v1\rules" --agent-key react_planner --max-attempts 12
 ```
 
 ### 5.3 Validation 冻结候选审计

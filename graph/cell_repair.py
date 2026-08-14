@@ -1204,6 +1204,24 @@ def _context_too_large(exc: BaseException) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _preflight_minimax_runtime(agent_key: str) -> str:
+    try:
+        from lib.agent_runtime import has_model_credentials, resolve_model_name
+    except ModuleNotFoundError as exc:
+        dependency = str(exc.name or "unknown")
+        raise CellRepairError(
+            f"MiniMax runtime dependency is missing: {dependency}; run synthesize-fcorr "
+            "in the py3102 environment declared by environment.yml"
+        ) from exc
+
+    model_name = resolve_model_name(agent_key, "MiniMax-M3")
+    if "minimaxm3" not in _normalized_model_name(model_name):
+        raise CellRepairError(f"resolved synthesis model is not MiniMax M3: {model_name}")
+    if not has_model_credentials(agent_key):
+        raise CellRepairError(f"no MiniMax API credentials configured for {agent_key}")
+    return model_name
+
+
 async def _minimax_completion(
     messages: Sequence[Mapping[str, str]],
     *,
@@ -1302,6 +1320,8 @@ def synthesize_fcorr(
     unknown = selected_fields - known_fields
     if unknown:
         raise CellRepairError(f"unknown requested fields: {sorted(unknown)}")
+    if completion is None:
+        _preflight_minimax_runtime(agent_key)
     output = _new_output(output_dir)
     (output / "fields").mkdir()
     frozen_pair_manifest = output / "pair_manifest.json"
@@ -1334,6 +1354,8 @@ def synthesize_fcorr(
         for attempt in range(1, max_attempts + 1):
             request_text = json.dumps(messages, ensure_ascii=True, separators=(",", ":"))
             source = ""
+            terminal_status: str | None = None
+            response_received = False
             try:
                 response_text, model_name = _invoke_completion(
                     messages,
@@ -1343,27 +1365,11 @@ def synthesize_fcorr(
                     completion=completion,
                 )
             except Exception as exc:
-                if _context_too_large(exc):
-                    status = "CONTEXT_TOO_LARGE"
-                    context_report = {
-                        "attempt": attempt,
-                        "request_sha256": _text_sha256(request_text),
-                        "status": status,
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "consumes_rule_attempt": True,
-                    }
-                    attempts.append(context_report)
-                    _write_json(
-                        field_output / f"attempt_{attempt:02d}_validation.json",
-                        context_report,
-                    )
-                    final_validation = {
-                        "status": "FAILED",
-                        "issues": [context_report["error"]],
-                        "metrics": {},
-                        "missing_candidate_pairs": [],
-                    }
-                    break
+                terminal_status = (
+                    "CONTEXT_TOO_LARGE"
+                    if _context_too_large(exc)
+                    else "SYNTHESIS_RUNTIME_ERROR"
+                )
                 response_text = ""
                 validation = {
                     "status": "FAILED",
@@ -1372,7 +1378,9 @@ def synthesize_fcorr(
                     "missing_candidate_pairs": [],
                 }
             else:
+                response_received = True
                 if "minimaxm3" not in _normalized_model_name(model_name):
+                    terminal_status = "MODEL_MISMATCH"
                     validation = {
                         "status": "FAILED",
                         "issues": [f"completion model is not MiniMax M3: {model_name}"],
@@ -1403,15 +1411,20 @@ def synthesize_fcorr(
                 "response_sha256": _text_sha256(response_text),
                 "model": model_name,
                 "validation": validation,
-                "consumes_rule_attempt": True,
+                "model_response_received": response_received,
+                "consumes_rule_attempt": terminal_status != "SYNTHESIS_RUNTIME_ERROR",
             }
             attempts.append(attempt_report)
             _write_json(field_output / f"attempt_{attempt:02d}_validation.json", attempt_report)
             final_validation = validation
-            messages.append({"role": "assistant", "content": response_text})
+            if response_received:
+                messages.append({"role": "assistant", "content": response_text})
             if validation.get("status") == "SUCCESS" and source:
                 accepted_source = source
                 status = "FROZEN"
+                break
+            if terminal_status is not None:
+                status = terminal_status
                 break
             if attempt < max_attempts:
                 messages.append({"role": "user", "content": _revision_prompt(source, validation)})

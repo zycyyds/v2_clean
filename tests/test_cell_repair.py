@@ -529,7 +529,7 @@ def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path
     assert manifest["registry"]["test_time_llm_access"] is False
 
 
-def test_synthesis_stops_at_twelve_or_context_limit_and_rejects_wrong_model(
+def test_synthesis_stops_at_twelve_or_terminal_generation_failure(
     tmp_path: Path,
 ) -> None:
     paths = _fixture(tmp_path)
@@ -564,6 +564,27 @@ def test_synthesis_stops_at_twelve_or_context_limit_and_rejects_wrong_model(
     )
     assert limited["status_counts"] == {"CONTEXT_TOO_LARGE": 1}
 
+    runtime_attempts: list[int] = []
+
+    def runtime_error(messages, field_evidence, attempt):
+        del messages, field_evidence
+        runtime_attempts.append(attempt)
+        raise ModuleNotFoundError("No module named 'httpx'")
+
+    runtime_failure = synthesize_fcorr(
+        evidence_dir=evidence,
+        output_dir=tmp_path / "runtime-error",
+        fields=["icu/events.amount"],
+        completion=runtime_error,
+    )
+    assert runtime_attempts == [1]
+    assert runtime_failure["status_counts"] == {"SYNTHESIS_RUNTIME_ERROR": 1}
+    runtime_field = runtime_failure["fields"][0]
+    runtime_manifest = json.loads(
+        (tmp_path / "runtime-error" / runtime_field["field_manifest"]).read_text()
+    )
+    assert runtime_manifest["attempt_count"] == 1
+
     wrong_model = synthesize_fcorr(
         evidence_dir=evidence,
         output_dir=tmp_path / "wrong-model",
@@ -571,7 +592,7 @@ def test_synthesis_stops_at_twelve_or_context_limit_and_rejects_wrong_model(
         max_attempts=1,
         completion=lambda messages, field, attempt: (AMOUNT_RULE, "other-model"),
     )
-    assert wrong_model["status_counts"] == {"FCORR_REJECTED": 1}
+    assert wrong_model["status_counts"] == {"MODEL_MISMATCH": 1}
 
 
 @pytest.mark.parametrize("tampered", ["source", "evidence", "manifest"])
