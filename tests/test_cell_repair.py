@@ -482,6 +482,17 @@ def test_static_sandbox_rejects_import_ids_dynamic_calls_and_multiple_functions(
     assert any("forbidden call 'open'" in issue for issue in _static_rule_issues(
         "def GenerateCandidates(input_string, row_context):\n    return open(input_string)\n"
     ))
+    assert not _static_rule_issues(
+        "def GenerateCandidates(input_string, row_context):\n"
+        "    candidates = []\n"
+        "    candidates.append({'value': 'M', 'rule_id': 'r', 'evidence': 'e'})\n"
+        "    return candidates\n"
+    )
+    assert any("unsafe attribute 'compile'" in issue for issue in _static_rule_issues(
+        "def GenerateCandidates(input_string, row_context):\n"
+        "    pattern = re.compile('x')\n"
+        "    return []\n"
+    ))
     response = (
         "```python\ndef GenerateCandidates(input_string, row_context):\n    return []\n```\n"
         "```python\ndef GenerateCandidates(input_string, row_context):\n"
@@ -491,6 +502,43 @@ def test_static_sandbox_rejects_import_ids_dynamic_calls_and_multiple_functions(
         _extract_correction_source(response)
     with pytest.raises(CellRepairError, match="exactly one"):
         _extract_correction_source("def GenerateCandidates(:\n    pass")
+
+
+def test_extract_correction_source_ignores_minimax_thinking_drafts() -> None:
+    response = (
+        "<think>\n"
+        "```python\n"
+        "def GenerateCandidates(input_string, row_context):\n"
+        "    return [{'value': 'draft', 'rule_id': 'draft', 'evidence': 'draft'}]\n"
+        "```\n"
+        "</think>\n"
+        "Final answer:\n"
+        "```python\n"
+        "def GenerateCandidates(input_string, row_context):\n"
+        "    candidates = []\n"
+        "    if input_string == 'UNKNOWN_GENDER_CODE':\n"
+        "        candidates.append({'value': 'M', 'rule_id': 'r1', 'evidence': 'train'})\n"
+        "    return candidates\n"
+        "```\n"
+    )
+
+    source = _extract_correction_source(response)
+
+    assert "'draft'" not in source
+    assert "candidates.append" in source
+    assert validate_fcorr(
+        source,
+        {
+            "table": "hosp/patients",
+            "column": "gender",
+            "dirty_clean_pairs": [{
+                "dirty": "UNKNOWN_GENDER_CODE",
+                "clean": "M",
+                "row_context": {},
+            }],
+            "clean_examples": [],
+        },
+    )["status"] == "SUCCESS"
 
 
 def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path: Path) -> None:

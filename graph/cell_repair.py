@@ -82,6 +82,7 @@ SAFE_BUILTINS = {
     "tuple": tuple,
 }
 SAFE_STRING_METHODS = {
+    "append",
     "casefold",
     "count",
     "endswith",
@@ -925,8 +926,13 @@ def _compile_correction(source: str) -> Callable[[str, Mapping[str, str]], list[
 
 
 def _source_candidates(text: str) -> list[str]:
-    blocks = re.findall(r"```(?:python)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
-    return [*blocks, text]
+    final_answer = re.split(r"</think\s*>", text, flags=re.IGNORECASE)[-1]
+    blocks = re.findall(
+        r"```(?:python)?\s*(.*?)```",
+        final_answer,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return [*blocks, final_answer]
 
 
 def _extract_correction_source(text: str) -> str:
@@ -1158,8 +1164,11 @@ def _initial_prompt(evidence: Mapping[str, Any]) -> str:
         "Return zero to five candidates. Each candidate must be a dict with exactly three "
         "string fields: value, rule_id, and evidence. Candidate values must be unique and "
         "ordered from most to least plausible. Return [] when no demonstrated rule applies. "
-        "Return one deterministic GenerateCandidates function. You may include a short explanation "
-        "or a Python code fence. Do not import modules, access files or networks, use random "
+        "Your final answer must contain exactly one Python code block with exactly one "
+        "GenerateCandidates function and no alternative drafts. The runtime already provides re; "
+        "do not import it and do not use re.compile. Allowed regex calls are re.fullmatch, "
+        "re.match, re.search, and re.sub. You may use list.append. Do not access files or "
+        "networks, use random "
         "behavior, or hard-code patient, admission, stay, row, or observation identifiers. "
         "Use only input_string and row_context fields demonstrated in this Train evidence.\n\n"
         "Train-only field evidence:\n"
@@ -1178,8 +1187,10 @@ def _revision_prompt(source: str, validation: Mapping[str, Any]) -> str:
         "The previous candidate function failed Train-only validation. Revise the complete "
         "GenerateCandidates(input_string, row_context) function using all missing-candidate "
         "counterexamples. Preserve general rules, return at most five unique candidates, and "
-        "do not memorize private identifiers. Return one deterministic function under the "
-        "same contract.\n\n"
+        "do not memorize private identifiers. The final answer must contain exactly one Python "
+        "code block with exactly one deterministic function and no alternative drafts. Do not "
+        "use imports or re.compile; the runtime provides re.fullmatch, re.match, re.search, and "
+        "re.sub. You may use list.append.\n\n"
         + json.dumps(feedback, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     )
 

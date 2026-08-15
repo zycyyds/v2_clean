@@ -65,6 +65,8 @@ Train 证据、MiniMax prompt、规则源码或冻结 registry。
 宿主对每个 Train dirty-clean pair 执行两次候选函数，强制检查：
 
 - AST 安全、唯一顶层 `GenerateCandidates` 和固定两参数签名；
+- MiniMax 原始响应完整留档，但源码提取忽略 `<think>...</think>` 草稿，只解析最终答案；
+- 最终答案必须只有一个 Python 代码块和一个函数，可使用 `list.append`，禁止 `re.compile`；
 - 输出必须是 0 至 5 个结构化候选，value 不重复；
 - 相同输入和上下文的输出必须完全一致；
 - 禁止 import、文件/网络、随机、动态执行、定位 ID 和 private/Test reference；
