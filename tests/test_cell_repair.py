@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import gzip
 import hashlib
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,6 +15,7 @@ import pytest
 from graph.cell_repair import (
     CellRepairError,
     _extract_correction_source,
+    _minimax_completion,
     _static_rule_issues,
     apply_repair_plan,
     build_field_pairs,
@@ -527,6 +530,53 @@ def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path
     assert "BAD3" not in status_first[3] and "BAD4" not in status_first[3]
     assert manifest["registry"]["rule_count"] == 2
     assert manifest["registry"]["test_time_llm_access"] is False
+
+
+def test_minimax_completion_passes_agentscope_messages_to_model(monkeypatch) -> None:
+    agentscope_message = pytest.importorskip("agentscope.message")
+    Msg = agentscope_message.Msg
+    TextBlock = agentscope_message.TextBlock
+
+    import lib.agent_runtime as runtime
+
+    observed_roles: list[str] = []
+    closed = False
+
+    class FakeModel:
+        async def __call__(self, messages):
+            assert all(isinstance(message, Msg) for message in messages)
+            observed_roles.extend(message.role for message in messages)
+            return SimpleNamespace(content=[TextBlock(type="text", text=AMOUNT_RULE)])
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    class RejectingFormatter:
+        async def format(self, messages):
+            del messages
+            raise AssertionError("model must own AgentScope message formatting")
+
+    monkeypatch.setattr(
+        runtime,
+        "create_openai_model_and_formatter",
+        lambda *args, **kwargs: (FakeModel(), RejectingFormatter()),
+    )
+    monkeypatch.setattr(runtime, "resolve_model_name", lambda *args: "MiniMax-M3")
+
+    response, model_name = asyncio.run(_minimax_completion(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "user"},
+            {"role": "assistant", "content": "assistant"},
+        ],
+        agent_key="react_planner",
+    ))
+
+    assert response == AMOUNT_RULE.strip()
+    assert model_name == "MiniMax-M3"
+    assert observed_roles == ["system", "user", "assistant"]
+    assert closed is True
 
 
 def test_synthesis_stops_at_twelve_or_terminal_generation_failure(

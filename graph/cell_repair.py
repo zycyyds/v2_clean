@@ -1210,8 +1210,8 @@ def _preflight_minimax_runtime(agent_key: str) -> str:
     except ModuleNotFoundError as exc:
         dependency = str(exc.name or "unknown")
         raise CellRepairError(
-            f"MiniMax runtime dependency is missing: {dependency}; run synthesize-fcorr "
-            "in the py3102 environment declared by environment.yml"
+            f"MiniMax runtime dependency is missing: {dependency}; install the AgentScope "
+            "runtime dependencies in the active environment or use environment.yml"
         ) from exc
 
     model_name = resolve_model_name(agent_key, "MiniMax-M3")
@@ -1239,7 +1239,7 @@ async def _minimax_completion(
     model_name = resolve_model_name(agent_key, "MiniMax-M3")
     if "minimaxm3" not in _normalized_model_name(model_name):
         raise CellRepairError(f"resolved synthesis model is not MiniMax M3: {model_name}")
-    model, formatter = create_openai_model_and_formatter(
+    model, _ = create_openai_model_and_formatter(
         agent_key,
         "MiniMax-M3",
         generate_overrides={"temperature": 0.0, "seed": 666},
@@ -1257,8 +1257,7 @@ async def _minimax_completion(
         else:
             raise CellRepairError(f"unsupported conversation role: {role}")
     try:
-        request = await formatter.format(formatted_messages)
-        response = await model(request)
+        response = await model(formatted_messages)
         return format_message_content(response.content), model_name
     finally:
         closer = getattr(model, "aclose", None)
