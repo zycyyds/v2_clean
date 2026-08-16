@@ -6,6 +6,7 @@
 
 - `reference-guided-train-validate`：从 `train/raw -> train/reference` 示例学习累计 Pipeline，在 hidden validation 上迭代，冻结最佳版本后自动进入独立 Test。
 - `reference-guided-correct`：从少量成对标准示例学习数据错误模式，修复 `correction/raw` 完整数据包，并由宿主使用 private reference 评估。
+- `agent.pi_repair_audit_cli`：不使用Validation或17文件格式转换，基于10-stay paired Train冻结Agent生成的raw修复pipeline，再对970-stay Internal Test执行一次离线审计。
 
 ## Pi 式通用 Agent
 
