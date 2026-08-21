@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import inspect
 import json
+import multiprocessing as mp
 import os
 import re
 import shutil
@@ -22,6 +23,7 @@ RULE_SCHEMA_VERSION = 3
 REPAIR_SCHEMA_VERSION = 3
 FCORR_MINIMUM_RECALL_AT_5 = 0.85
 MAX_CANDIDATES = 5
+MINIMAX_COMPLETION_TIMEOUT_SECONDS = 600.0
 CANDIDATE_KEYS = {"value", "rule_id", "evidence"}
 TRAIN_FOLDS = (0, 1, 2)
 FOLD_SPLITS = {0: "train", 1: "train", 2: "train", 3: "validation", 4: "internal_test"}
@@ -932,33 +934,47 @@ def _source_candidates(text: str) -> list[str]:
         final_answer,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    return [*blocks, final_answer]
+    return blocks or [final_answer]
 
 
 def _extract_correction_source(text: str) -> str:
     valid_sources: list[str] = []
+    invalid_issues: list[str] = []
     for candidate in _source_candidates(text):
         lines = candidate.strip().splitlines()
-        start = next(
-            (
-                index
-                for index, line in enumerate(lines)
-                if line.lstrip().startswith("def GenerateCandidates(")
-            ),
-            None,
-        )
-        if start is None:
+        starts = [
+            index
+            for index, line in enumerate(lines)
+            if line.lstrip().startswith("def GenerateCandidates(")
+        ]
+        if len(starts) != 1:
             continue
-        relevant = lines[start:]
-        for end in range(len(relevant), 0, -1):
-            source = "\n".join(relevant[:end]).rstrip() + "\n"
-            if not _static_rule_issues(source):
-                valid_sources.append(source)
+        start = starts[0]
+        definition = lines[start]
+        base_indent = len(definition) - len(definition.lstrip())
+        relevant = [definition[base_indent:]]
+        for line in lines[start + 1:]:
+            if not line.strip():
+                relevant.append("")
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent <= base_indent:
                 break
+            relevant.append(line[base_indent:])
+        source = "\n".join(relevant).rstrip() + "\n"
+        issues = _static_rule_issues(source)
+        if issues:
+            invalid_issues.extend(issues)
+            continue
+        valid_sources.append(source)
     unique_sources = list(dict.fromkeys(valid_sources))
     if len(unique_sources) != 1:
+        detail = ""
+        if not unique_sources and invalid_issues:
+            detail = ": " + "; ".join(sorted(set(invalid_issues)))
         raise CellRepairError(
             "MiniMax response must contain exactly one valid GenerateCandidates function"
+            + detail
         )
     return unique_sources[0]
 
@@ -1167,7 +1183,9 @@ def _initial_prompt(evidence: Mapping[str, Any]) -> str:
         "Your final answer must contain exactly one Python code block with exactly one "
         "GenerateCandidates function and no alternative drafts. The runtime already provides re; "
         "do not import it and do not use re.compile. Allowed regex calls are re.fullmatch, "
-        "re.match, re.search, and re.sub. You may use list.append. Do not access files or "
+        "re.match, re.search, and re.sub. input_string is always a string, so do not use "
+        "isinstance. Every control-flow path must return a concrete list; do not use yield. "
+        "You may use list.append. Do not access files or "
         "networks, use random "
         "behavior, or hard-code patient, admission, stay, row, or observation identifiers. "
         "Use only input_string and row_context fields demonstrated in this Train evidence.\n\n"
@@ -1190,7 +1208,8 @@ def _revision_prompt(source: str, validation: Mapping[str, Any]) -> str:
         "do not memorize private identifiers. The final answer must contain exactly one Python "
         "code block with exactly one deterministic function and no alternative drafts. Do not "
         "use imports or re.compile; the runtime provides re.fullmatch, re.match, re.search, and "
-        "re.sub. You may use list.append.\n\n"
+        "re.sub. input_string is always a string, so do not use isinstance. Every control-flow "
+        "path must return a concrete list; do not use yield. You may use list.append.\n\n"
         + json.dumps(feedback, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     )
 
@@ -1206,6 +1225,7 @@ def _context_too_large(exc: BaseException) -> bool:
         "context_length",
         "maximum context",
         "max context",
+        "context window exceeds limit",
         "too many tokens",
         "request entity too large",
         "payload too large",
@@ -1276,6 +1296,64 @@ async def _minimax_completion(
             await closer()
 
 
+def _minimax_completion_worker(
+    messages: Sequence[Mapping[str, str]],
+    agent_key: str,
+    connection: Any,
+) -> None:
+    try:
+        result = asyncio.run(_minimax_completion(messages, agent_key=agent_key))
+        payload = ("SUCCESS", result)
+    except BaseException as exc:
+        payload = ("ERROR", (type(exc).__name__, str(exc)))
+    try:
+        connection.send(payload)
+    except (BrokenPipeError, EOFError, OSError):
+        pass
+    finally:
+        connection.close()
+
+
+def _invoke_minimax_subprocess(
+    messages: Sequence[Mapping[str, str]],
+    *,
+    agent_key: str,
+    timeout_seconds: float = MINIMAX_COMPLETION_TIMEOUT_SECONDS,
+    worker: Callable[[Sequence[Mapping[str, str]], str, Any], None] = (
+        _minimax_completion_worker
+    ),
+) -> tuple[str, str]:
+    context = mp.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=worker,
+        args=(list(messages), agent_key, sender),
+        daemon=False,
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(timeout_seconds):
+            raise TimeoutError(
+                f"MiniMax completion exceeded {timeout_seconds:.0f} seconds"
+            )
+        status, payload = receiver.recv()
+        if status != "SUCCESS":
+            error_type, error_message = payload
+            raise RuntimeError(f"{error_type}: {error_message}")
+        response_text, model_name = payload
+        return str(response_text), str(model_name)
+    finally:
+        receiver.close()
+        process.join(timeout=1.0)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5.0)
+
+
 def _read_pair_manifest(evidence_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     manifest_path = evidence_dir / "field_pairs_manifest.json"
     manifest = _read_json(manifest_path, "field pair manifest")
@@ -1303,7 +1381,7 @@ def _invoke_completion(
 ) -> tuple[str, str]:
     if completion is not None:
         return completion(messages, evidence, attempt)
-    return asyncio.run(_minimax_completion(messages, agent_key=agent_key))
+    return _invoke_minimax_subprocess(messages, agent_key=agent_key)
 
 
 def synthesize_fcorr(
@@ -1487,6 +1565,100 @@ def synthesize_fcorr(
         "maximum_candidates": MAX_CANDIDATES,
         "pair_manifest_path": "pair_manifest.json",
         "pair_manifest_sha256": _sha256(frozen_pair_manifest),
+        "fields": results,
+    }
+    _write_json(output / "synthesis_manifest.json", synthesis_manifest)
+    registry = freeze_rule_registry(synthesis_dir=output)
+    return {**synthesis_manifest, "registry": registry}
+
+
+def merge_rule_registries(
+    *,
+    synthesis_dirs: Sequence[str | Path],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    if not synthesis_dirs:
+        raise CellRepairError("at least one synthesis directory is required")
+    output = _new_output(output_dir)
+    (output / "fields").mkdir()
+    results: list[dict[str, Any]] = []
+    models: set[str] = set()
+    seen_fields: set[str] = set()
+    source_hashes: list[str] = []
+    pair_manifest_sha256: str | None = None
+    maximum_attempts = 0
+
+    for source_value in synthesis_dirs:
+        source = Path(source_value).expanduser().resolve()
+        manifest_path = source / "synthesis_manifest.json"
+        manifest = _read_json(manifest_path, "source synthesis manifest")
+        if manifest.get("status") != "SUCCESS" or manifest.get("workflow") != (
+            "gidcl_multicandidate_fcorr_synthesis"
+        ):
+            raise CellRepairError(f"source is not a successful F_corr synthesis: {source}")
+        source_pair_path = source / str(manifest.get("pair_manifest_path") or "")
+        source_pair_sha = str(manifest.get("pair_manifest_sha256") or "")
+        if not source_pair_path.is_file() or _sha256(source_pair_path) != source_pair_sha:
+            raise CellRepairError(f"source pair manifest hash mismatch: {source}")
+        if pair_manifest_sha256 is None:
+            pair_manifest_sha256 = source_pair_sha
+            shutil.copyfile(source_pair_path, output / "pair_manifest.json")
+        elif source_pair_sha != pair_manifest_sha256:
+            raise CellRepairError("source syntheses use different pair manifests")
+        entries = manifest.get("fields")
+        if not isinstance(entries, list):
+            raise CellRepairError(f"source synthesis has no field results: {source}")
+        maximum_attempts = max(maximum_attempts, int(manifest.get("maximum_attempts") or 0))
+        models.update(str(value) for value in manifest.get("models", []))
+        source_hashes.append(_sha256(manifest_path))
+
+        for entry in entries:
+            field_manifest_path = (source / str(entry.get("field_manifest") or "")).resolve()
+            if not field_manifest_path.is_relative_to(source) or not field_manifest_path.is_file():
+                raise CellRepairError(f"source field manifest is invalid: {source}")
+            field_manifest = _read_json(field_manifest_path, "source field manifest")
+            field_id = str(field_manifest.get("field_id") or "")
+            field_name = _field_key(
+                str(field_manifest.get("table") or ""),
+                str(field_manifest.get("column") or ""),
+            )
+            if not field_id or field_name in seen_fields:
+                raise CellRepairError(f"duplicate or invalid merged field: {field_name}")
+            if (
+                entry.get("field_id") != field_id
+                or entry.get("table") != field_manifest.get("table")
+                or entry.get("column") != field_manifest.get("column")
+                or entry.get("status") != field_manifest.get("status")
+            ):
+                raise CellRepairError(f"source field entry mismatch: {field_name}")
+            source_field_dir = field_manifest_path.parent
+            target_field_dir = output / "fields" / field_id
+            shutil.copytree(source_field_dir, target_field_dir)
+            seen_fields.add(field_name)
+            results.append({
+                "field_id": field_id,
+                "table": field_manifest["table"],
+                "column": field_manifest["column"],
+                "status": field_manifest["status"],
+                "field_manifest": f"fields/{field_id}/field_manifest.json",
+            })
+
+    results.sort(key=lambda item: _field_key(str(item["table"]), str(item["column"])))
+    synthesis_manifest = {
+        "schema_version": RULE_SCHEMA_VERSION,
+        "status": "SUCCESS",
+        "workflow": "gidcl_multicandidate_fcorr_synthesis",
+        "field_result_count": len(results),
+        "status_counts": dict(sorted(Counter(item["status"] for item in results).items())),
+        "models": sorted(models),
+        "agent_key": "merged_field_syntheses",
+        "maximum_attempts": maximum_attempts,
+        "minimum_candidate_recall_at_5_exclusive": FCORR_MINIMUM_RECALL_AT_5,
+        "maximum_candidates": MAX_CANDIDATES,
+        "pair_manifest_path": "pair_manifest.json",
+        "pair_manifest_sha256": pair_manifest_sha256,
+        "merge_source_count": len(synthesis_dirs),
+        "source_synthesis_manifest_sha256": sorted(source_hashes),
         "fields": results,
     }
     _write_json(output / "synthesis_manifest.json", synthesis_manifest)

@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import shutil
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ import pytest
 from graph.cell_repair import (
     CellRepairError,
     _extract_correction_source,
+    _invoke_minimax_subprocess,
     _minimax_completion,
     _static_rule_issues,
     apply_repair_plan,
@@ -22,6 +24,7 @@ from graph.cell_repair import (
     build_repair_targets,
     evaluate_candidates,
     evaluate_repairs,
+    merge_rule_registries,
     recover_raw_from_graph,
     run_frozen_rules,
     synthesize_fcorr,
@@ -38,6 +41,11 @@ AMOUNT_RULE = '''def GenerateCandidates(input_string, row_context):
         }]
     return []
 '''
+
+
+def _slow_completion_worker(messages, agent_key, connection) -> None:
+    del messages, agent_key, connection
+    time.sleep(5)
 
 STATUS_RULE = '''def GenerateCandidates(input_string, row_context):
     match = re.fullmatch(r"BAD([0-4])", input_string)
@@ -541,6 +549,21 @@ def test_extract_correction_source_ignores_minimax_thinking_drafts() -> None:
     )["status"] == "SUCCESS"
 
 
+def test_extract_correction_source_does_not_truncate_unsafe_function_body() -> None:
+    response = (
+        "```python\n"
+        "def GenerateCandidates(input_string, row_context):\n"
+        "    candidates = []\n"
+        "    if not isinstance(input_string, str):\n"
+        "        return candidates\n"
+        "    return candidates\n"
+        "```\n"
+    )
+
+    with pytest.raises(CellRepairError, match="forbidden call 'isinstance'"):
+        _extract_correction_source(response)
+
+
 def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path: Path) -> None:
     paths = _fixture(tmp_path)
     evidence = _build_pairs(paths, tmp_path / "pairs")
@@ -578,6 +601,45 @@ def test_synthesis_uses_field_isolated_history_and_counterexample_retry(tmp_path
     assert "BAD3" not in status_first[3] and "BAD4" not in status_first[3]
     assert manifest["registry"]["rule_count"] == 2
     assert manifest["registry"]["test_time_llm_access"] is False
+
+
+def test_merge_rule_registries_combines_independent_field_results(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    evidence = _build_pairs(paths, tmp_path / "pairs")
+    amount = synthesize_fcorr(
+        evidence_dir=evidence,
+        output_dir=tmp_path / "amount-rules",
+        fields=["icu/events.amount"],
+        completion=_good_completion,
+    )
+    status = synthesize_fcorr(
+        evidence_dir=evidence,
+        output_dir=tmp_path / "status-rules",
+        fields=["icu/events.status"],
+        completion=_good_completion,
+    )
+    assert amount["registry"]["rule_count"] == 1
+    assert status["registry"]["rule_count"] == 1
+
+    merged = merge_rule_registries(
+        synthesis_dirs=[tmp_path / "amount-rules", tmp_path / "status-rules"],
+        output_dir=tmp_path / "merged-rules",
+    )
+
+    assert merged["field_result_count"] == 2
+    assert merged["status_counts"] == {"FROZEN": 2}
+    assert merged["registry"]["rule_count"] == 2
+    assert sorted(merged["registry"]["rules"]) == [
+        "icu/events.amount",
+        "icu/events.status",
+    ]
+    assert merged["merge_source_count"] == 2
+
+    with pytest.raises(CellRepairError, match="duplicate"):
+        merge_rule_registries(
+            synthesis_dirs=[tmp_path / "amount-rules", tmp_path / "amount-rules"],
+            output_dir=tmp_path / "duplicate-rules",
+        )
 
 
 def test_minimax_completion_passes_agentscope_messages_to_model(monkeypatch) -> None:
@@ -627,6 +689,20 @@ def test_minimax_completion_passes_agentscope_messages_to_model(monkeypatch) -> 
     assert closed is True
 
 
+def test_minimax_subprocess_timeout_terminates_unresponsive_worker() -> None:
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError, match="exceeded"):
+        _invoke_minimax_subprocess(
+            [{"role": "user", "content": "user"}],
+            agent_key="react_planner",
+            timeout_seconds=0.05,
+            worker=_slow_completion_worker,
+        )
+
+    assert time.monotonic() - started < 3
+
+
 def test_synthesis_stops_at_twelve_or_terminal_generation_failure(
     tmp_path: Path,
 ) -> None:
@@ -661,6 +737,18 @@ def test_synthesis_stops_at_twelve_or_terminal_generation_failure(
         completion=too_large,
     )
     assert limited["status_counts"] == {"CONTEXT_TOO_LARGE": 1}
+
+    def context_window_limit(messages, field_evidence, attempt):
+        del messages, field_evidence, attempt
+        raise RuntimeError("invalid params, context window exceeds limit (2013)")
+
+    alternate_limited = synthesize_fcorr(
+        evidence_dir=evidence,
+        output_dir=tmp_path / "context-window-limit",
+        fields=["icu/events.amount"],
+        completion=context_window_limit,
+    )
+    assert alternate_limited["status_counts"] == {"CONTEXT_TOO_LARGE": 1}
 
     runtime_attempts: list[int] = []
 

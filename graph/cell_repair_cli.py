@@ -13,6 +13,7 @@ from .cell_repair import (
     evaluate_candidates,
     evaluate_repairs,
     freeze_rule_registry,
+    merge_rule_registries,
     recover_raw_from_graph,
     run_frozen_rules,
     synthesize_fcorr,
@@ -76,6 +77,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Rebuild the frozen registry from accepted field manifests.",
     )
     freeze.add_argument("--synthesis-dir", required=True, type=Path)
+
+    merge = subparsers.add_parser(
+        "merge-registries",
+        help="Merge independently synthesized field artifacts into one frozen registry.",
+    )
+    merge.add_argument(
+        "--synthesis-dir",
+        action="append",
+        required=True,
+        type=Path,
+        help="Source synthesis directory; repeat for each final field result.",
+    )
+    merge.add_argument("--output-dir", required=True, type=Path)
 
     targets = subparsers.add_parser(
         "build-targets",
@@ -162,6 +176,11 @@ def main() -> int:
             )
         elif args.command == "freeze-registry":
             report = freeze_rule_registry(synthesis_dir=args.synthesis_dir)
+        elif args.command == "merge-registries":
+            report = merge_rule_registries(
+                synthesis_dirs=args.synthesis_dir,
+                output_dir=args.output_dir,
+            )
         elif args.command == "build-targets":
             report = build_repair_targets(
                 predictions=args.predictions,
