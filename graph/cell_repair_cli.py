@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
+
+from agent.pi_fcorr_synthesis import synthesize_fcorr_with_pi
+from agent.pi_train_repair import default_repair_skill_dirs
 
 from .cell_repair import (
     CellRepairError,
@@ -69,6 +73,32 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Limit synthesis to one table.column; repeat for multiple fields.",
+    )
+
+    synthesize_pi = subparsers.add_parser(
+        "synthesize-fcorr-pi",
+        help=(
+            "Use one persistent Train-only Pi Agent session and four correction skills "
+            "to synthesize frozen multi-candidate F_corr rules."
+        ),
+    )
+    synthesize_pi.add_argument("--project-root", default=str(Path(__file__).parents[1]))
+    synthesize_pi.add_argument("--evidence-dir", required=True, type=Path)
+    synthesize_pi.add_argument("--output-dir", required=True, type=Path)
+    synthesize_pi.add_argument("--agent-key", default="react_planner")
+    synthesize_pi.add_argument("--max-rounds", type=int, default=8)
+    synthesize_pi.add_argument("--max-iters", type=int, default=10_000)
+    synthesize_pi.add_argument(
+        "--field",
+        action="append",
+        default=[],
+        help="Limit synthesis to one table.column; repeat for multiple fields.",
+    )
+    synthesize_pi.add_argument(
+        "--skill-dir",
+        action="append",
+        default=[],
+        help="Override the four default correction skill directories.",
     )
 
     freeze = subparsers.add_parser(
@@ -160,6 +190,32 @@ def main() -> int:
                 max_attempts=args.max_attempts,
                 fields=args.field,
             )
+        elif args.command == "synthesize-fcorr-pi":
+            project = Path(args.project_root).expanduser().resolve()
+            skills = (
+                tuple(Path(value) for value in args.skill_dir)
+                if args.skill_dir
+                else default_repair_skill_dirs(project)
+            )
+            result = asyncio.run(synthesize_fcorr_with_pi(
+                project_root=project,
+                evidence_dir=args.evidence_dir,
+                output_dir=args.output_dir,
+                agent_key=args.agent_key,
+                max_rounds=args.max_rounds,
+                max_iters=args.max_iters,
+                fields=tuple(args.field),
+                skill_dirs=skills,
+            ))
+            report = {
+                "status": result.status,
+                "workflow": "pi_agent_train_only_fcorr_synthesis",
+                "rounds": result.rounds,
+                "output_dir": str(result.output_dir),
+                "field_count": result.field_count,
+                "rule_count": result.rule_count,
+                "registry": result.registry,
+            }
         elif args.command == "freeze-registry":
             report = freeze_rule_registry(synthesis_dir=args.synthesis_dir)
         elif args.command == "build-targets":
