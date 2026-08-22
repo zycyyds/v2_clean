@@ -188,6 +188,8 @@ class PiFullExperiment:
                 error_code="VALIDATION_CANCELLED",
             )
         except Exception:
+            import traceback as _tb
+            _tb.print_exc()
             validation = self._validation_terminal("FAILED", "validation_exception")
             return self._finish(
                 status="VALIDATION_FAILED",

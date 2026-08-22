@@ -91,7 +91,7 @@ def test_openai_model_rotates_to_next_key_after_rate_limit(monkeypatch) -> None:
             "event": "api_key_failover",
             "from_slot": 1,
             "to_slot": 2,
-            "reason": "http_429",
+            "reason": "FakeRateLimitError/status=429",
         },
     ]
     assert "key" not in json.dumps(failovers).replace("api_key_failover", "")
@@ -1106,3 +1106,194 @@ def test_environment_locks_python311_and_agentscope2() -> None:
     assert "ripgrep" in dependencies
     assert "agentscope==2.0.4.post1" in pip_dependencies
     assert not (root / "agent" / "bounded_memory.py").exists()
+
+
+# ---------- failover classifier behavior ----------
+
+
+def _make_rotating_model(monkeypatch, api_keys=("first-key", "second-key")):
+    """Build a RotatingOpenAIChatModel wired to two fake keys."""
+    import lib.agent_runtime as runtime
+
+    monkeypatch.setattr(
+        runtime,
+        "effective_agent_config",
+        lambda _key: {
+            "api_keys": list(api_keys),
+            "base_url": "https://example.invalid/v1",
+            "model": "MiniMax-M3",
+        },
+    )
+    return runtime.create_openai_model_and_formatter("react_planner", "fallback")
+
+
+def test_should_fail_over_classifier_matrix() -> None:
+    """_should_fail_over returns the right verdict for every classified bucket."""
+    from lib.agent_runtime import _should_fail_over
+
+    class StatusError(Exception):
+        def __init__(self, status):
+            super().__init__(f"status {status}")
+            self.status_code = status
+
+    # Status-code driven — failover whitelist
+    assert _should_fail_over(StatusError(402))  # Payment Required / quota
+    assert _should_fail_over(StatusError(408))  # Request Timeout
+    assert _should_fail_over(StatusError(409))  # Conflict
+    assert _should_fail_over(StatusError(429))  # RateLimit
+    assert _should_fail_over(StatusError(500))  # InternalServerError
+    assert _should_fail_over(StatusError(502))  # Bad Gateway
+    assert _should_fail_over(StatusError(503))  # ServiceUnavailable
+    assert _should_fail_over(StatusError(504))  # GatewayTimeout
+    assert _should_fail_over(StatusError(599))  # unknown 5xx — still failover
+
+    # Status-code driven — request/config bugs, must reraise
+    assert not _should_fail_over(StatusError(400))  # BadRequest
+    assert not _should_fail_over(StatusError(401))  # Unauthorized
+    assert not _should_fail_over(StatusError(403))  # PermissionDenied
+    assert not _should_fail_over(StatusError(404))  # NotFound
+    assert not _should_fail_over(StatusError(422))  # UnprocessableEntity
+    assert not _should_fail_over(StatusError(418))  # unknown 4xx — reraise
+
+    # Class-name driven (no status_code)
+    class _InsufficientQuotaError(Exception):
+        pass
+
+    assert _should_fail_over(_InsufficientQuotaError())
+    assert _should_fail_over(ConnectionError("network blip"))
+
+    # No status, no recognized name: defaults to failover (transient assumption)
+    assert _should_fail_over(ValueError("weird"))
+
+
+def test_rotating_model_fails_over_on_402(monkeypatch) -> None:
+    """402 Payment Required / quota exhausted should rotate like 429."""
+    from agentscope.message import TextBlock
+    from agentscope.model import ChatResponse
+
+    model, _ = _make_rotating_model(monkeypatch)
+    seen_keys: list[str] = []
+    failovers: list[dict] = []
+    model.on_failover = failovers.append
+
+    class FakePaymentRequired(Exception):
+        status_code = 402
+
+    async def fake_call_api(self, *_args, **_kwargs):
+        seen_keys.append(self.credential.api_key.get_secret_value())
+        if len(seen_keys) == 1:
+            raise FakePaymentRequired("quota exhausted")
+        return ChatResponse(content=[TextBlock(text="recovered")], is_last=True)
+
+    monkeypatch.setattr(type(model), "_call_api", fake_call_api)
+
+    response = asyncio.run(model([]))
+
+    assert response.content[0].text == "recovered"
+    assert seen_keys == ["first-key", "second-key"]
+    assert failovers == [
+        {
+            "event": "api_key_failover",
+            "from_slot": 1,
+            "to_slot": 2,
+            "reason": "FakePaymentRequired/status=402",
+        },
+    ]
+
+
+def test_rotating_model_fails_over_on_5xx(monkeypatch) -> None:
+    """5xx transient error should rotate to next key."""
+    from agentscope.message import TextBlock
+    from agentscope.model import ChatResponse
+
+    model, _ = _make_rotating_model(monkeypatch)
+    seen_keys: list[str] = []
+    failovers: list[dict] = []
+    model.on_failover = failovers.append
+
+    class FakeServerError(Exception):
+        status_code = 503
+
+    async def fake_call_api(self, *_args, **_kwargs):
+        seen_keys.append(self.credential.api_key.get_secret_value())
+        if len(seen_keys) == 1:
+            raise FakeServerError("upstream down")
+        return ChatResponse(content=[TextBlock(text="recovered")], is_last=True)
+
+    monkeypatch.setattr(type(model), "_call_api", fake_call_api)
+
+    response = asyncio.run(model([]))
+    assert response.content[0].text == "recovered"
+    assert seen_keys == ["first-key", "second-key"]
+    assert failovers[0]["reason"] == "FakeServerError/status=503"
+
+
+def test_rotating_model_fails_over_on_connection_error(monkeypatch) -> None:
+    """ConnectionError (no status_code) should rotate via class-name match."""
+    from agentscope.message import TextBlock
+    from agentscope.model import ChatResponse
+
+    model, _ = _make_rotating_model(monkeypatch)
+    seen_keys: list[str] = []
+    failovers: list[dict] = []
+    model.on_failover = failovers.append
+
+    async def fake_call_api(self, *_args, **_kwargs):
+        seen_keys.append(self.credential.api_key.get_secret_value())
+        if len(seen_keys) == 1:
+            raise ConnectionError("network blip")
+        return ChatResponse(content=[TextBlock(text="recovered")], is_last=True)
+
+    monkeypatch.setattr(type(model), "_call_api", fake_call_api)
+
+    response = asyncio.run(model([]))
+    assert response.content[0].text == "recovered"
+    assert seen_keys == ["first-key", "second-key"]
+    assert failovers[0]["reason"] == "ConnectionError/status=None"
+
+
+def test_rotating_model_reraises_401_without_failover(monkeypatch) -> None:
+    """401 Unauthorized is not recoverable — surfaces immediately, no key cycling."""
+    model, _ = _make_rotating_model(monkeypatch)
+    seen_keys: list[str] = []
+    failovers: list[dict] = []
+    model.on_failover = failovers.append
+
+    class FakeAuthError(Exception):
+        status_code = 401
+
+    async def fake_call_api(self, *_args, **_kwargs):
+        seen_keys.append(self.credential.api_key.get_secret_value())
+        raise FakeAuthError("bad key")
+
+    monkeypatch.setattr(type(model), "_call_api", fake_call_api)
+
+    with pytest.raises(FakeAuthError):
+        asyncio.run(model([]))
+
+    # Only the first key was attempted — silent quota burn avoided.
+    assert seen_keys == ["first-key"]
+    assert failovers == []
+
+
+def test_rotating_model_reraises_400_and_404_without_failover(monkeypatch) -> None:
+    """400 BadRequest and 404 NotFound are request/config bugs — must surface."""
+    for status in (400, 404):
+        model, _ = _make_rotating_model(monkeypatch)
+        seen_keys: list[str] = []
+        failovers: list[dict] = []
+        model.on_failover = failovers.append
+
+        class FakeClientError(Exception):
+            status_code = status
+
+        async def fake_call_api(self, *_args, **_kwargs):
+            seen_keys.append(self.credential.api_key.get_secret_value())
+            raise FakeClientError("nope")
+
+        monkeypatch.setattr(type(model), "_call_api", fake_call_api)
+
+        with pytest.raises(FakeClientError):
+            asyncio.run(model([]))
+        assert seen_keys == ["first-key"], f"status={status} should not rotate"
+        assert failovers == [], f"status={status} should not record failover"

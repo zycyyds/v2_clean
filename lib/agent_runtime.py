@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -19,6 +20,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config_loader import get_agent_config  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 class ManagedOpenAIChatModel(OpenAIChatModel):
@@ -52,18 +55,110 @@ class ManagedOpenAIChatModel(OpenAIChatModel):
 
 
 class AllApiKeysRateLimitedError(RuntimeError):
-    """Every configured OpenAI-compatible credential returned HTTP 429."""
+    """Every configured OpenAI-compatible credential returned a recoverable error.
+
+    Historically this only fired on HTTP 429. The runtime now also fails over
+    on 402 / 408 / 409 / 5xx / timeout / connection errors (see
+    ``_FAILOVER_STATUS_CODES``), and surfaces them via this same exception so
+    callers can keep treating "all keys down" as a single terminal condition.
+    """
 
 
-def _is_rate_limit_error(exc: Exception) -> bool:
-    return (
-        getattr(exc, "status_code", None) == 429
-        or type(exc).__name__ == "RateLimitError"
-    )
+# Status codes we try to recover from by rotating to the next API key. The
+# common thread is that the failure is likely local to a credential or
+# upstream cluster (rate limit, quota exhausted, transient 5xx, gateway
+# hiccup, network blip) — not intrinsic to the request itself.
+_FAILOVER_STATUS_CODES = frozenset({
+    402,  # Payment Required / InsufficientQuota
+    408,  # Request Timeout
+    409,  # Conflict
+    429,  # Too Many Requests / RateLimit
+    500,  # Internal Server Error
+    502,  # Bad Gateway
+    503,  # Service Unavailable
+    504,  # Gateway Timeout
+})
+
+# Status codes we never try to fail over. These almost always mean the
+# request itself or the credential configuration is broken; silently burning
+# the next key's quota would hide the real problem instead of fixing it.
+_NEVER_FAILOVER_STATUS_CODES = frozenset({
+    400,  # Bad Request
+    401,  # Unauthorized
+    403,  # Forbidden / PermissionDenied
+    404,  # Not Found
+    422,  # Unprocessable Entity
+})
+
+# Exception class names (used when no ``status_code`` is attached) that we
+# treat as recoverable. Covers openai SDK + Anthropic SDK + generic transport
+# errors so we work across providers.
+_FAILOVER_EXCEPTION_NAMES = frozenset({
+    "RateLimitError",
+    "InternalServerError",
+    "APITimeoutError",
+    "APIConnectionError",
+    "Timeout",  # httpx / requests / asyncio
+    "InsufficientQuotaError",
+    "PaymentRequiredError",
+    "ServiceUnavailableError",
+    "ConflictError",
+    "ConnectionError",  # builtin
+})
+
+# Exception class names we never try to fail over.
+_NEVER_FAILOVER_EXCEPTION_NAMES = frozenset({
+    "AuthenticationError",
+    "BadRequestError",
+    "PermissionDeniedError",
+    "NotFoundError",
+    "UnprocessableEntityError",
+    "InvalidRequestError",
+})
+
+
+def _should_fail_over(exc: Exception) -> bool:
+    """Return True if rotating to the next credential could plausibly recover.
+
+    Decision is based on the exception's ``status_code`` (when available) and
+    its class name, in that order. Unknown 4xx responses default to ``False``
+    so a misconfigured credential can't silently burn quota on each retry.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in _NEVER_FAILOVER_STATUS_CODES:
+            return False
+        if status in _FAILOVER_STATUS_CODES:
+            return True
+        if 400 <= status < 500:
+            return False
+        if status >= 500:
+            return True
+    cls_name = type(exc).__name__
+    if cls_name in _NEVER_FAILOVER_EXCEPTION_NAMES:
+        return False
+    if cls_name in _FAILOVER_EXCEPTION_NAMES:
+        return True
+    # No status_code and no recognized class name: assume transient (network
+    # blips, custom provider wrappers) — failover is cheap.
+    return True
+
+
+def _failure_summary(exc: Exception) -> str:
+    """Compact 'type/status' label suitable for logs and on_failover payloads."""
+    cls_name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    return f"{cls_name}/status={status}"
 
 
 class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
-    """Retry one request with the next local credential after an HTTP 429."""
+    """Retry one request with the next local credential after a recoverable error.
+
+    "Recoverable" is whatever ``_should_fail_over`` returns True for — see its
+    docstring. Non-recoverable errors (400/401/403/404/422) are re-raised
+    immediately so configuration mistakes surface instead of silently cycling
+    through credentials.
+    """
 
     def __init__(self, *, api_keys: list[str], base_url: str, **kwargs: Any) -> None:
         if not api_keys:
@@ -80,6 +175,7 @@ class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         last_error: Exception | None = None
+        last_summary: str = "unknown"
         for offset in range(len(self._api_keys)):
             key_index = (self._active_key_index + offset) % len(self._api_keys)
             self.credential = OpenAICredential(
@@ -89,24 +185,41 @@ class RotatingOpenAIChatModel(ManagedOpenAIChatModel):
             try:
                 response = await super().__call__(*args, **kwargs)
             except Exception as exc:
-                if not _is_rate_limit_error(exc):
+                summary = _failure_summary(exc)
+                if not _should_fail_over(exc):
+                    logger.warning(
+                        "RotatingOpenAIChatModel: key_slot=%d non-recoverable error "
+                        "(no failover): %s message=%r",
+                        key_index + 1,
+                        summary,
+                        exc,
+                    )
                     raise
                 last_error = exc
-                next_slot = ((key_index + 1) % len(self._api_keys)) + 1
+                last_summary = summary
+                logger.warning(
+                    "RotatingOpenAIChatModel: key_slot=%d recoverable error, "
+                    "failover: %s message=%r",
+                    key_index + 1,
+                    summary,
+                    exc,
+                )
                 if self.on_failover is not None and offset + 1 < len(self._api_keys):
+                    next_slot = ((key_index + 1) % len(self._api_keys)) + 1
                     self.on_failover(
                         {
                             "event": "api_key_failover",
                             "from_slot": key_index + 1,
                             "to_slot": next_slot,
-                            "reason": "http_429",
+                            "reason": summary,
                         },
                     )
                 continue
             self._active_key_index = key_index
             return response
         raise AllApiKeysRateLimitedError(
-            f"all {len(self._api_keys)} configured API keys are rate limited",
+            f"all {len(self._api_keys)} configured API keys failed "
+            f"(last error: {last_summary})",
         ) from last_error
 
 
