@@ -75,11 +75,15 @@ def build_hospital_dataset(
     clean_source: str | Path,
     output_dir: str | Path,
     train_count: int = 10,
+    validation_count: int = 0,
+    validation_seed: int = 666,
     expected_rows: int = 1_000,
 ) -> dict[str, Any]:
     output = Path(output_dir).expanduser().resolve()
     if train_count < 1 or train_count >= expected_rows:
         raise ValueError("train_count must be positive and smaller than expected_rows")
+    if validation_count < 0 or train_count + validation_count >= expected_rows:
+        raise ValueError("validation_count must leave at least one correction row")
     if output.exists() and any(output.iterdir()):
         raise ValueError(f"dataset output must be new and empty: {output}")
 
@@ -113,10 +117,22 @@ def build_hospital_dataset(
         raise ValueError("not enough dirty rows to construct curated examples")
     train_keys = _select_train_keys(changed_columns_by_key, train_count)
     train_key_set = set(train_keys)
+    remaining_keys = [
+        row[KEY_COLUMN] for row in dirty_rows if row[KEY_COLUMN] not in train_key_set
+    ]
+    validation_keys = _select_validation_keys(
+        remaining_keys,
+        validation_count,
+        validation_seed,
+    )
+    validation_key_set = set(validation_keys)
     train_dirty = [row for row in dirty_rows if row[KEY_COLUMN] in train_key_set]
     train_clean = [row for row in clean_rows if row[KEY_COLUMN] in train_key_set]
-    correction_dirty = [row for row in dirty_rows if row[KEY_COLUMN] not in train_key_set]
-    correction_clean = [row for row in clean_rows if row[KEY_COLUMN] not in train_key_set]
+    validation_dirty = [row for row in dirty_rows if row[KEY_COLUMN] in validation_key_set]
+    validation_clean = [row for row in clean_rows if row[KEY_COLUMN] in validation_key_set]
+    held_out_keys = train_key_set | validation_key_set
+    correction_dirty = [row for row in dirty_rows if row[KEY_COLUMN] not in held_out_keys]
+    correction_clean = [row for row in clean_rows if row[KEY_COLUMN] not in held_out_keys]
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{output.name}-", dir=output.parent) as temp_text:
@@ -126,6 +142,17 @@ def build_hospital_dataset(
         _write_csv(prepared / "train/reference" / TABLE_NAME, dirty_fields, train_clean)
         _write_csv(prepared / "train_only_replay/raw" / TABLE_NAME, dirty_fields, train_dirty)
         _write_csv(prepared / "train_only_replay/gold" / TABLE_NAME, dirty_fields, train_clean)
+        if validation_count:
+            _write_csv(
+                prepared / "validation/raw" / TABLE_NAME,
+                dirty_fields,
+                validation_dirty,
+            )
+            _write_csv(
+                prepared / "validation/gold" / TABLE_NAME,
+                dirty_fields,
+                validation_clean,
+            )
         _write_csv(prepared / "correction/raw" / TABLE_NAME, dirty_fields, correction_dirty)
         _write_csv(
             prepared / "correction/reference_private" / TABLE_NAME,
@@ -134,19 +161,43 @@ def build_hospital_dataset(
         )
         _write_keys(prepared / "train/keys.csv", train_dirty)
         _write_keys(prepared / "train_only_replay/keys.csv", train_dirty)
+        if validation_count:
+            _write_keys(prepared / "validation/keys.csv", validation_dirty)
         _write_keys(prepared / "correction/keys.csv", correction_dirty)
-        _write_differences(prepared / "host_private/cell_diff.jsonl", differences, train_key_set)
+        _write_differences(
+            prepared / "host_private/cell_diff.jsonl",
+            differences,
+            train_key_set,
+            validation_key_set,
+        )
 
         train_difference_count = sum(item[KEY_COLUMN] in train_key_set for item in differences)
+        validation_difference_count = sum(
+            item[KEY_COLUMN] in validation_key_set for item in differences
+        )
         manifest = {
             "schema_version": 1,
             "status": "SUCCESS",
-            "workflow": "raha_hospital_curated_10shot",
-            "benchmark_label": "curated 10-shot internal audit",
+            "workflow": (
+                "raha_hospital_curated_10_20_holdout"
+                if validation_count
+                else "raha_hospital_curated_10shot"
+            ),
+            "benchmark_label": (
+                "curated 10-shot with independent 20-row validation"
+                if validation_count
+                else "curated 10-shot internal audit"
+            ),
             "table": TABLE_NAME,
             "key_column": KEY_COLUMN,
             "clean_schema_mode": clean_schema_mode,
             "selection": SELECTION,
+            "validation_selection": (
+                "seeded_stable_hash_over_remaining_rows_v1"
+                if validation_count
+                else "none"
+            ),
+            "validation_seed": validation_seed if validation_count else None,
             "source": {
                 "dirty": dirty_identity,
                 "clean": clean_identity,
@@ -156,24 +207,41 @@ def build_hospital_dataset(
             "counts": {
                 "all": expected_rows,
                 "train": len(train_dirty),
+                "validation": len(validation_dirty),
                 "correction": len(correction_dirty),
             },
             "difference_counts": {
                 "cells": len(differences),
                 "rows": len(changed_columns_by_key),
                 "train_cells": train_difference_count,
-                "correction_cells": len(differences) - train_difference_count,
+                "validation_cells": validation_difference_count,
+                "correction_cells": (
+                    len(differences)
+                    - train_difference_count
+                    - validation_difference_count
+                ),
             },
             "train_indices": [row[KEY_COLUMN] for row in train_dirty],
+            "validation_indices": [row[KEY_COLUMN] for row in validation_dirty],
             "paths": {
                 "train_raw": "train/raw",
                 "train_reference": "train/reference",
                 "train_only_replay_raw": "train_only_replay/raw",
                 "train_only_replay_gold": "train_only_replay/gold",
+                "validation_raw": "validation/raw" if validation_count else None,
+                "validation_gold": "validation/gold" if validation_count else None,
                 "correction_raw": "correction/raw",
                 "correction_reference_private": "correction/reference_private",
             },
         }
+        if not validation_count:
+            manifest.pop("validation_selection")
+            manifest.pop("validation_seed")
+            manifest.pop("validation_indices")
+            manifest["counts"].pop("validation")
+            manifest["difference_counts"].pop("validation_cells")
+            manifest["paths"].pop("validation_raw")
+            manifest["paths"].pop("validation_gold")
         manifest["file_sha256"] = {
             path.relative_to(prepared).as_posix(): _sha256(path.read_bytes())
             for path in sorted(prepared.rglob("*"))
@@ -278,6 +346,19 @@ def _select_train_keys(changed_columns_by_key: dict[str, set[str]], count: int) 
     return selected
 
 
+def _select_validation_keys(keys: list[str], count: int, seed: int) -> list[str]:
+    if count == 0:
+        return []
+    ranked = sorted(
+        keys,
+        key=lambda key: (
+            hashlib.sha256(f"{seed}:{key}".encode("utf-8")).digest(),
+            _stable_key(key),
+        ),
+    )
+    return ranked[:count]
+
+
 def _stable_key(value: str) -> tuple[int, int | str]:
     try:
         return (0, int(value))
@@ -301,14 +382,20 @@ def _write_differences(
     path: Path,
     differences: list[dict[str, str]],
     train_keys: set[str],
+    validation_keys: set[str],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for item in differences:
-            payload = {
-                **item,
-                "split": "train" if item[KEY_COLUMN] in train_keys else "correction",
-            }
+            key = item[KEY_COLUMN]
+            split = (
+                "train"
+                if key in train_keys
+                else "validation"
+                if key in validation_keys
+                else "correction"
+            )
+            payload = {**item, "split": split}
             handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
@@ -325,11 +412,15 @@ def _sha256(payload: bytes) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build the Raha Hospital curated 10:990 split.")
+    parser = argparse.ArgumentParser(
+        description="Build a curated-train Raha Hospital benchmark split."
+    )
     parser.add_argument("--dirty-source", default=DEFAULT_DIRTY_URL)
     parser.add_argument("--clean-source", default=DEFAULT_CLEAN_URL)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--train-count", type=int, default=10)
+    parser.add_argument("--validation-count", type=int, default=0)
+    parser.add_argument("--validation-seed", type=int, default=666)
     parser.add_argument("--expected-rows", type=int, default=1_000)
     return parser.parse_args(argv)
 
@@ -341,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
         clean_source=args.clean_source,
         output_dir=args.output_dir,
         train_count=args.train_count,
+        validation_count=args.validation_count,
+        validation_seed=args.validation_seed,
         expected_rows=args.expected_rows,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))

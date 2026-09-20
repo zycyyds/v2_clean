@@ -14,6 +14,19 @@ python -m benchmark_experiments.hospital_curated10_v1.build_dataset \
   --output-dir datasets/raha_hospital_curated10_v1
 ```
 
+For the 10:20:970 protocol with an independent Validation split:
+
+```bash
+python -m benchmark_experiments.hospital_curated10_v1.build_dataset \
+  --validation-count 20 \
+  --validation-seed 666 \
+  --output-dir datasets/raha_hospital_curated10_val20_v1
+```
+
+The ten Train rows retain curated changed-column coverage. The twenty Validation
+rows are selected from all remaining rows by a stable seeded hash, without using
+their dirty/clean differences. The other 970 rows form the frozen Test split.
+
 ## Train and freeze
 
 Run `agent.pi_harness_cli` with the dataset's `train` directories and use

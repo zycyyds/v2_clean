@@ -147,6 +147,46 @@ def test_builder_accepts_only_the_official_hospital_schema_mapping(tmp_path: Pat
     assert report["clean_schema_mode"] == "raha_official_positional_mapping_v1"
 
 
+def test_builder_can_create_disjoint_seeded_validation_split(tmp_path: Path) -> None:
+    dirty = tmp_path / "dirty.csv"
+    clean = tmp_path / "clean.csv"
+    dirty_rows = [
+        [str(index), f"10{index}", f"city-{index}", "aa"]
+        for index in range(1, 9)
+    ]
+    clean_rows = [list(row) for row in dirty_rows]
+    for offset in range(5):
+        dirty_rows[offset][1] = f"x0{offset + 1}"
+    _write_rows(dirty, dirty_rows)
+    _write_rows(clean, clean_rows)
+
+    report = build_hospital_dataset(
+        dirty_source=dirty,
+        clean_source=clean,
+        output_dir=tmp_path / "split",
+        train_count=2,
+        validation_count=2,
+        validation_seed=666,
+        expected_rows=8,
+    )
+
+    root = tmp_path / "split"
+    train = set(_read_indices(root / "train/raw/hospital.csv"))
+    validation = set(_read_indices(root / "validation/raw/hospital.csv"))
+    correction = set(_read_indices(root / "correction/raw/hospital.csv"))
+    assert report["counts"] == {
+        "all": 8,
+        "train": 2,
+        "validation": 2,
+        "correction": 4,
+    }
+    assert not train & validation
+    assert not train & correction
+    assert not validation & correction
+    assert train | validation | correction == {str(index) for index in range(1, 9)}
+    assert report["validation_selection"] == "seeded_stable_hash_over_remaining_rows_v1"
+
+
 def test_strict_test_adapter_changes_only_submission_contract(tmp_path: Path) -> None:
     source = tmp_path / "source"
     snapshot = source / "host/reproducible_snapshot"
