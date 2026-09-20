@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "files": {
+    "hospital.csv": {
+      "key_columns": ["index"]
+    }
+  }
+}
