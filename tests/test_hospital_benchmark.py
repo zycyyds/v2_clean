@@ -9,6 +9,9 @@ from benchmark_experiments.hospital_curated10_v1.build_dataset import (
     EXPECTED_DIRTY_FIELDS,
     build_hospital_dataset,
 )
+from benchmark_experiments.hospital_curated10_v1.adapt_strict_test_snapshot import (
+    adapt_snapshot,
+)
 from benchmark_experiments.hospital_curated10_v1.score_cells import score_cells
 
 
@@ -142,6 +145,66 @@ def test_builder_accepts_only_the_official_hospital_schema_mapping(tmp_path: Pat
     )
 
     assert report["clean_schema_mode"] == "raha_official_positional_mapping_v1"
+
+
+def test_strict_test_adapter_changes_only_submission_contract(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    snapshot = source / "host/reproducible_snapshot"
+    snapshot.mkdir(parents=True)
+    (snapshot / "pipeline.py").write_text("print('unchanged')\n", encoding="utf-8")
+    (snapshot / "submission.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "result_root": "result_package",
+                "replay": {
+                    "argv": [
+                        "python3",
+                        "pipeline.py",
+                        "--train-raw",
+                        "{train_raw}",
+                        "--train-reference",
+                        "{train_reference}",
+                        "--raw-root",
+                        "{raw_root}",
+                        "--output-dir",
+                        "{output_dir}",
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "host/run_report.json").write_text(
+        json.dumps(
+            {
+                "status": "SUCCESS_REPRODUCIBLE",
+                "reproducible_snapshot": str(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "host/run_manifest.json").write_text(
+        json.dumps({"train_reference": str(tmp_path / "train_reference")}),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "adapted"
+    report = adapt_snapshot(source, output)
+
+    adapted_submission = json.loads(
+        (output / "host/reproducible_snapshot/submission.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    argv = adapted_submission["replay"]["argv"]
+    assert "{train_raw}" not in argv
+    assert argv.count("{train_reference}") == 2
+    assert (
+        output / "host/reproducible_snapshot/pipeline.py"
+    ).read_bytes() == (snapshot / "pipeline.py").read_bytes()
+    assert report["cleaning_implementation_modified"] is False
+    assert report["test_data_accessed"] is False
 
 
 def _write_custom_csv(path: Path, fields: list[str], rows: list[list[str]]) -> None:

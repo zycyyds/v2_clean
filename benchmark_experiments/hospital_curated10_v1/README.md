@@ -22,7 +22,17 @@ Run `agent.pi_harness_cli` with the dataset's `train` directories and use
 
 ## One-shot test
 
-Run `agent.pi_test_harness_cli` once with `correction/raw` and
+If the generated Train submission still requests `{train_raw}`, first create a
+strict-Test-compatible bundle. The adapter only aliases that unused input to the
+already permitted Train reference and records both snapshot hashes:
+
+```bash
+python -m benchmark_experiments.hospital_curated10_v1.adapt_strict_test_snapshot \
+  --source-experiment experiments/hospital_curated10_train_seed666_v1 \
+  --output-experiment experiments/hospital_curated10_train_seed666_strict_test_v1
+```
+
+Then run `agent.pi_test_harness_cli` once with `correction/raw` and
 `correction/reference_private`. The model credentials must be absent during this step.
 
 ## Private cell scoring
