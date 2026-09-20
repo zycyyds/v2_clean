@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from benchmark_experiments.hospital_curated10_v1.build_dataset import (
     EXPECTED_CLEAN_FIELDS,
     EXPECTED_DIRTY_FIELDS,
@@ -187,7 +189,10 @@ def test_builder_can_create_disjoint_seeded_validation_split(tmp_path: Path) -> 
     assert report["validation_selection"] == "seeded_stable_hash_over_remaining_rows_v1"
 
 
-def test_strict_test_adapter_changes_only_submission_contract(tmp_path: Path) -> None:
+@pytest.mark.parametrize("train_raw_flag", ["--train-raw", "--train_raw"])
+def test_strict_test_adapter_changes_only_submission_contract(
+    tmp_path: Path, train_raw_flag: str
+) -> None:
     source = tmp_path / "source"
     snapshot = source / "host/reproducible_snapshot"
     snapshot.mkdir(parents=True)
@@ -201,7 +206,7 @@ def test_strict_test_adapter_changes_only_submission_contract(tmp_path: Path) ->
                     "argv": [
                         "python3",
                         "pipeline.py",
-                        "--train-raw",
+                        train_raw_flag,
                         "{train_raw}",
                         "--train-reference",
                         "{train_reference}",

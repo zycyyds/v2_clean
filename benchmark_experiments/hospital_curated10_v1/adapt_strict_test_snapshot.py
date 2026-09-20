@@ -61,7 +61,8 @@ def adapt_snapshot(source_experiment: Path, output_experiment: Path) -> dict[str
     if not isinstance(argv, list):
         raise ValueError("source submission replay.argv is invalid")
     train_raw_occurrences = sum(item.count("{train_raw}") for item in argv)
-    if train_raw_occurrences != 1 or "--train-raw" not in argv:
+    train_raw_flags = {"--train-raw", "--train_raw"}
+    if train_raw_occurrences != 1 or not train_raw_flags.intersection(argv):
         raise ValueError("expected exactly one explicit {train_raw} argument")
 
     source_submission_sha256 = _sha256(submission_path)
