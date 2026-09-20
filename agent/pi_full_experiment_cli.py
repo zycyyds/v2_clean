@@ -37,7 +37,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--test-experiment", required=True)
     parser.add_argument("--test-raw", required=True)
     parser.add_argument("--test-gold", required=True)
-    parser.add_argument("--test-replay-timeout", type=float, default=1_800.0)
+    parser.add_argument("--test-replay-timeout", type=float, default=3_600.0)
     parser.add_argument("--test-scoring-timeout", type=float, default=3_600.0)
     return parser.parse_args(argv)
 

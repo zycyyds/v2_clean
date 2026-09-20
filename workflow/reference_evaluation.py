@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 import os
+import sys
 import shutil
 import sqlite3
 import tempfile
@@ -13,6 +14,10 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 import pandas as pd
+
+# Allow reading CSV cells beyond the 131072-byte default limit (chartevents and
+# other clinical tables routinely carry values or notes that exceed this).
+csv.field_size_limit(sys.maxsize)
 
 
 SCORER_VERSION = "balanced_row_aligned_v2"

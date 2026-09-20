@@ -96,7 +96,7 @@ def test_parse_args_accepts_complete_experiment_inputs_and_defaults(
     assert args.test_experiment == "/runs/test"
     assert args.test_raw == "/data/test/raw"
     assert args.test_gold == "/private/test/gold"
-    assert args.test_replay_timeout == 1800.0
+    assert args.test_replay_timeout == 3600.0
     assert args.test_scoring_timeout == 3600.0
     assert not hasattr(args, "preflight_attestation")
     assert not hasattr(args, "confirmation")
@@ -168,7 +168,7 @@ def test_run_builds_full_config_reads_prompt_once_and_prints_public_payload(
     assert config.test_raw == Path("/data/test/raw")
     assert config.test_gold == Path("/private/test/gold")
     assert config.evaluation_manifest == config.validation.evaluation_manifest
-    assert config.test_replay_timeout_seconds == 1800.0
+    assert config.test_replay_timeout_seconds == 3600.0
     assert config.test_scoring_timeout_seconds == 3600.0
 
     output = capsys.readouterr().out

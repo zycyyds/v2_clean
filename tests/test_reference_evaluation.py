@@ -106,6 +106,24 @@ def test_exact_package_scores_one_with_schema_v2(tmp_path: Path) -> None:
     assert report["metrics"]["composite_score"] == 1.0
 
 
+def test_large_csv_cell_beyond_default_parser_limit_scores_one(tmp_path: Path) -> None:
+    reference = tmp_path / "reference"
+    result = tmp_path / "result"
+    _write_complete_package(reference)
+    _write_complete_package(result)
+    relative = "cohort/cohort_icu_mortality_0__.csv"
+    columns = FILE_COLUMNS[relative]
+    large_value = "x" * 140_000
+    row = _default_row(columns)
+    row[columns.index("value")] = large_value
+    _write_csv(reference / relative, columns, [row])
+    _write_csv(result / relative, columns, [row])
+
+    report = score_reference_directory(result, reference)
+
+    assert report["metrics"]["composite_score"] == 1.0
+
+
 def test_row_order_does_not_change_score(tmp_path: Path) -> None:
     reference = tmp_path / "reference"
     result = tmp_path / "result"
