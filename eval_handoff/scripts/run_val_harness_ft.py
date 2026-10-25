@@ -12,7 +12,8 @@ harness 的 run() 对 worker.run_turn() 抛出的异常零容错，一次抖动�
      这样「崩在第 1 轮」也能留下第 1 轮之前的成果
 
 用法: python run_val_harness_ft.py <profile> [实验目录后缀]
-  profile: less1 | more1   （决定数据集视图、prompt、实验名前缀、dataset manifest）
+  profile: less1 | more1 | n18 | n18_more | i48
+           （决定数据集视图、prompt、实验名前缀、dataset manifest、evaluation manifest）
 
 环境变量可覆盖默认路径（换机器/换数据集时用）：
   PROJ       项目根，默认 /Users/mac/PycharmProjects/v2_clean
@@ -35,6 +36,7 @@ from agent.pi_harness import (  # noqa: E402
     PiValidationHarnessConfig,
     build_worker_model_environment,
     load_evaluation_manifest,
+    restore_agent_workdir,
     snapshot_agent_workdir,
 )
 from agent.pi_worker_client import JsonlWorkerClient  # noqa: E402
@@ -59,6 +61,40 @@ PROFILES = {
         "manifest": (PROJ / "datasets/注入错误数据集"
                      / "icu_5000_v2_rawerror_test4.7pct_614M"
                      / "v2_rawerror_icu5000_final_report.json"),
+    },
+    # N18 是另一个任务（不是 icu5000）：18 个输出文件、切分键 subject_id、
+    # 有 ed/ + note/ 多模态、manifest 也不同。
+    "n18": {
+        "ds": PROJ / "datasets/注入错误数据集/n18_less_1",
+        "prompt": PROMPT_DIR / "n18_1.6pct_val_prompt_v1.md",
+        "exp_prefix": "n18_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集"
+                     / "N18_ckd_ED_v2_rawerror_test1.6pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
+    # N18 4.7pct（more）：与 icu5000 4.7pct 同样的密度剖面
+    #   train 2.33% / validation 0.89% / test 4.72%（照抄 K29 的分 split 率）
+    "n18_more": {
+        "ds": PROJ / "datasets/注入错误数据集/n18_more_1",
+        "prompt": PROMPT_DIR / "n18_4.7pct_val_prompt_v1.md",
+        "exp_prefix": "n18_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集"
+                     / "N18_ckd_ED_v2_rawerror_test4.7pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
+    # I48（房颤）：13 个输出文件（7 顶层 + 4 icu + 2 ecg）、切分键 subject_id、
+    # 多模态是 ecg/ 而不是 ed/+note/，manifest 也不同。
+    # 密度剖面跟 N18 1.6pct 一样：train 1.30% / validation 2.24% / test 1.58%。
+    "i48": {
+        "ds": PROJ / "datasets/注入错误数据集/i48_less_1",
+        "prompt": PROMPT_DIR / "i48_1.6pct_val_prompt_v1.md",
+        "exp_prefix": "i48_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集"
+                     / "I48_atrial_fibrillation_v2_rawerror_test1.6pct_411M"
+                     / "v2_rawerror_i48_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
     },
 }
 
@@ -98,7 +134,9 @@ def make_config(exp_name: str, prof: dict) -> PiValidationHarnessConfig:
         train_reference=ds / "train/reference",
         validation_raw=ds / "validation/raw",
         validation_gold=ds / "validation/reference",
-        evaluation_manifest=PROJ / "evaluation_manifests/icu_5000_v1.json",
+        evaluation_manifest=prof.get(
+            "eval_manifest",
+            PROJ / "evaluation_manifests/icu_5000_v1.json"),
         dataset_manifest=prof["manifest"],
         max_rounds=20,
         patience=3,
@@ -158,6 +196,31 @@ async def main() -> int:
     print(f"[profile={profile}] experiment={config.experiment_dir}", flush=True)
     print(f"[profile={profile}] prompt={prof['prompt']}", flush=True)
     print(f"[profile={profile}] dataset={prof['ds']}", flush=True)
+
+    # 续跑：把上一轮实验的 best_snapshot 灌进新实验的 workdir，
+    # 让 agent 从自己上一轮的状态继续（analysis/ pipeline/ train_analysis.json 都在），
+    # 而不是从头重推一遍。上一次跑被 API 限流掐断时用得上。
+    #
+    # 实现：harness 的 _prepare 要求「实验目录全新且为空」，且最后才 mkdir workdir。
+    # 所以不能在 run() 之前预置 workdir —— 改为包装 _prepare：
+    # 先让它按原样建好空的 workdir 和 host 目录，再把种子灌进去。
+    seed_from = os.environ.get("SEED_FROM", "").strip()
+    if seed_from:
+        seed = Path(seed_from)
+        if not (seed / "result").is_dir():
+            print(f"!! SEED_FROM 不是合法的快照（缺 result/）：{seed}", file=sys.stderr)
+            return 5
+        _orig_prepare = harness._prepare
+
+        # 注意：harness._prepare 是**实例属性**，不是绑定方法，
+        # 所以 self._prepare(prompt) 只会传 prompt 一个参数 —— 这里用闭包。
+        def _prepare_then_seed(prompt: str = "") -> None:
+            _orig_prepare(prompt)
+            restore_agent_workdir(harness.agent_workdir, seed)
+            print(f"[seed] 已从 {seed} 恢复 agent workdir（续跑）", flush=True)
+
+        harness._prepare = _prepare_then_seed
+        print(f"[seed] 续跑模式，种子 = {seed}", flush=True)
 
     try:
         result = await harness.run(prompt)
