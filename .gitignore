@@ -26,3 +26,9 @@ mimic-*/
 .idea/
 .vscode/
 .claude/
+
+# k29-agent-rawerror-run 分支的运行产物（10 GB 结果包 / 临时脚本，不入库）
+k29_agent_run/*
+!k29_agent_run/N18_1p6pct_评测结果.md
+!k29_agent_run/N18_4p7pct_评测结果.md
+tmp/
