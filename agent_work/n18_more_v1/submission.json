@@ -1,0 +1,23 @@
+{
+ "schema_version": 1,
+ "result_root": "output",
+ "replay": {
+  "argv": [
+   "--raw-root",
+   "{raw_root}",
+   "--train-reference",
+   "{train_reference}",
+   "--output-dir",
+   "{output_dir}",
+   "--workdir",
+   "{workdir}"
+  ],
+  "command": "python3 pipeline/run_pipeline.py",
+  "dependencies": [
+   "{raw_root}",
+   "{train_reference}",
+   "{output_dir}",
+   "{workdir}"
+  ]
+ }
+}

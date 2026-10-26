@@ -1,0 +1,27 @@
+{
+ "chartevents_rows": 5217696,
+ "chartevents_itemid_99_prefixed": 0,
+ "chartevents_leak_rows": 0,
+ "chartevents_epoch_charttime": 0,
+ "chartevents_sentinel_valuenum": 1529,
+ "chartevents_negative_valuenum": 17124,
+ "icustays_outtime_before_intime": 0,
+ "inputevents_endtime_before_starttime": 0,
+ "inputevents_itemid_99_prefixed": 0,
+ "admissions_flag_values": [
+  "0",
+  "1"
+ ],
+ "admissions_flag_inverts_deathtime": 245,
+ "admissions_null_insurance": 0,
+ "demographics_gender_values": [
+  "F",
+  "M"
+ ],
+ "demographics_anchor_age_sentinel": 0,
+ "diagnoses_alias_prefixed": 0,
+ "edstays_non_iso_intime": 0,
+ "multimodal/ed_medrecon.csv_non_iso_charttime": 0,
+ "multimodal/ed_pyxis.csv_non_iso_charttime": 0,
+ "multimodal/ed_vitalsign.csv_non_iso_charttime": 0
+}

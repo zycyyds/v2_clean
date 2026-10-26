@@ -1,0 +1,1548 @@
+{
+ "files": {
+  "admissions.csv": {
+   "out_rows": 18,
+   "ref_rows": 18,
+   "positional": {
+    "cells_matched": 231,
+    "cells_total": 234,
+    "cell_acc": 0.9872,
+    "per_col": {
+     "subject_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "admittime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "dischtime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "deathtime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "admission_type": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "admission_location": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "discharge_location": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "insurance": {
+      "matched": 15,
+      "total": 18,
+      "acc": 0.8333
+     },
+     "language": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "marital_status": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "race": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hospital_expire_flag": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 195,
+    "cells_total": 198,
+    "cell_acc": 0.9848,
+    "per_col": {
+     "admittime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "dischtime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "deathtime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "admission_type": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "admission_location": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "discharge_location": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "insurance": {
+      "matched": 15,
+      "total": 18,
+      "acc": 0.8333
+     },
+     "language": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "marital_status": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "race": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hospital_expire_flag": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 18
+   }
+  },
+  "cohort.csv": {
+   "out_rows": 18,
+   "ref_rows": 18,
+   "positional": {
+    "cells_matched": 108,
+    "cells_total": 108,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "cohort_type": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "cohort_label": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "icd_root": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hospital_expire_flag": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 72,
+    "cells_total": 72,
+    "cell_acc": 1.0,
+    "per_col": {
+     "cohort_type": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "cohort_label": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "icd_root": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hospital_expire_flag": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 18
+   }
+  },
+  "demographics.csv": {
+   "out_rows": 10,
+   "ref_rows": 10,
+   "positional": {
+    "cells_matched": 50,
+    "cells_total": 60,
+    "cell_acc": 0.8333,
+    "per_col": {
+     "subject_id": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "gender": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "anchor_age": {
+      "matched": 0,
+      "total": 10,
+      "acc": 0.0
+     },
+     "anchor_year": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "anchor_year_group": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "dod": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 40,
+    "cells_total": 50,
+    "cell_acc": 0.8,
+    "per_col": {
+     "gender": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "anchor_age": {
+      "matched": 0,
+      "total": 10,
+      "acc": 0.0
+     },
+     "anchor_year": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "anchor_year_group": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     },
+     "dod": {
+      "matched": 10,
+      "total": 10,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 10
+   }
+  },
+  "diagnoses.csv": {
+   "out_rows": 289,
+   "ref_rows": 289,
+   "positional": {
+    "cells_matched": 1445,
+    "cells_total": 1445,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     },
+     "seq_num": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     },
+     "icd_code": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     },
+     "icd_version": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 578,
+    "cells_total": 578,
+    "cell_acc": 1.0,
+    "per_col": {
+     "icd_code": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     },
+     "icd_version": {
+      "matched": 289,
+      "total": 289,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 289
+   }
+  },
+  "procedures.csv": {
+   "out_rows": 32,
+   "ref_rows": 32,
+   "positional": {
+    "cells_matched": 160,
+    "cells_total": 160,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     },
+     "seq_num": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     },
+     "icd_code": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     },
+     "icd_version": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 64,
+    "cells_total": 64,
+    "cell_acc": 1.0,
+    "per_col": {
+     "icd_code": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     },
+     "icd_version": {
+      "matched": 32,
+      "total": 32,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 32
+   }
+  },
+  "medications.csv": {
+   "out_rows": 786,
+   "ref_rows": 786,
+   "positional": {
+    "cells_matched": 6288,
+    "cells_total": 6288,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "starttime": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "stoptime": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "drug": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "dose_val_rx": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "dose_unit_rx": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     },
+     "route": {
+      "matched": 786,
+      "total": 786,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 3604,
+    "cells_total": 3776,
+    "cell_acc": 0.9544,
+    "per_col": {
+     "stoptime": {
+      "matched": 902,
+      "total": 944,
+      "acc": 0.9555
+     },
+     "dose_val_rx": {
+      "matched": 852,
+      "total": 944,
+      "acc": 0.9025
+     },
+     "dose_unit_rx": {
+      "matched": 942,
+      "total": 944,
+      "acc": 0.9979
+     },
+     "route": {
+      "matched": 908,
+      "total": 944,
+      "acc": 0.9619
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 944
+   }
+  },
+  "labs.csv": {
+   "out_rows": 4073,
+   "ref_rows": 4073,
+   "positional": {
+    "cells_matched": 24438,
+    "cells_total": 24438,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 4073,
+      "total": 4073,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 4073,
+      "total": 4073,
+      "acc": 1.0
+     },
+     "itemid": {
+      "matched": 4073,
+      "total": 4073,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 4073,
+      "total": 4073,
+      "acc": 1.0
+     },
+     "valuenum": {
+      "matched": 4073,
+      "total": 4073,
+      "acc": 1.0
+     },
+     "valueuom": {
+      "matched": 4073,
+      "total": 4073,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 8158,
+    "cells_total": 8162,
+    "cell_acc": 0.9995,
+    "per_col": {
+     "valuenum": {
+      "matched": 4077,
+      "total": 4081,
+      "acc": 0.999
+     },
+     "valueuom": {
+      "matched": 4081,
+      "total": 4081,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 4081
+   }
+  },
+  "icu/icustays.csv": {
+   "out_rows": 3,
+   "ref_rows": 3,
+   "positional": {
+    "cells_matched": 17,
+    "cells_total": 18,
+    "cell_acc": 0.9444,
+    "per_col": {
+     "subject_id": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "intime": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "outtime": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "los": {
+      "matched": 2,
+      "total": 3,
+      "acc": 0.6667
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 14,
+    "cells_total": 15,
+    "cell_acc": 0.9333,
+    "per_col": {
+     "subject_id": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "intime": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "outtime": {
+      "matched": 3,
+      "total": 3,
+      "acc": 1.0
+     },
+     "los": {
+      "matched": 2,
+      "total": 3,
+      "acc": 0.6667
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 3
+   }
+  },
+  "icu/chartevents.csv": {
+   "out_rows": 3740,
+   "ref_rows": 4013,
+   "positional": {
+    "cells_matched": 14244,
+    "cells_total": 26180,
+    "cell_acc": 0.5441,
+    "per_col": {
+     "subject_id": {
+      "matched": 3513,
+      "total": 3740,
+      "acc": 0.9393
+     },
+     "hadm_id": {
+      "matched": 3513,
+      "total": 3740,
+      "acc": 0.9393
+     },
+     "stay_id": {
+      "matched": 3513,
+      "total": 3740,
+      "acc": 0.9393
+     },
+     "charttime": {
+      "matched": 413,
+      "total": 3740,
+      "acc": 0.1104
+     },
+     "itemid": {
+      "matched": 53,
+      "total": 3740,
+      "acc": 0.0142
+     },
+     "valuenum": {
+      "matched": 1082,
+      "total": 3740,
+      "acc": 0.2893
+     },
+     "valueuom": {
+      "matched": 2157,
+      "total": 3740,
+      "acc": 0.5767
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 21191,
+    "cells_total": 21420,
+    "cell_acc": 0.9893,
+    "per_col": {
+     "subject_id": {
+      "matched": 5355,
+      "total": 5355,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 5355,
+      "total": 5355,
+      "acc": 1.0
+     },
+     "valuenum": {
+      "matched": 5126,
+      "total": 5355,
+      "acc": 0.9572
+     },
+     "valueuom": {
+      "matched": 5355,
+      "total": 5355,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 0.9917,
+    "row_recall": 0.9242,
+    "row_f1": 0.9568,
+    "merged_rows": 5355
+   }
+  },
+  "icu/inputevents.csv": {
+   "out_rows": 28,
+   "ref_rows": 28,
+   "positional": {
+    "cells_matched": 187,
+    "cells_total": 196,
+    "cell_acc": 0.9541,
+    "per_col": {
+     "subject_id": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "starttime": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "endtime": {
+      "matched": 24,
+      "total": 28,
+      "acc": 0.8571
+     },
+     "itemid": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "amount": {
+      "matched": 23,
+      "total": 28,
+      "acc": 0.8214
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 103,
+    "cells_total": 112,
+    "cell_acc": 0.9196,
+    "per_col": {
+     "subject_id": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 28,
+      "total": 28,
+      "acc": 1.0
+     },
+     "endtime": {
+      "matched": 24,
+      "total": 28,
+      "acc": 0.8571
+     },
+     "amount": {
+      "matched": 23,
+      "total": 28,
+      "acc": 0.8214
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 28
+   }
+  },
+  "icu/outputevents.csv": {
+   "out_rows": 56,
+   "ref_rows": 56,
+   "positional": {
+    "cells_matched": 307,
+    "cells_total": 336,
+    "cell_acc": 0.9137,
+    "per_col": {
+     "subject_id": {
+      "matched": 56,
+      "total": 56,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 56,
+      "total": 56,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 56,
+      "total": 56,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 27,
+      "total": 56,
+      "acc": 0.4821
+     },
+     "itemid": {
+      "matched": 56,
+      "total": 56,
+      "acc": 1.0
+     },
+     "value": {
+      "matched": 56,
+      "total": 56,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 89,
+    "cells_total": 93,
+    "cell_acc": 0.957,
+    "per_col": {
+     "subject_id": {
+      "matched": 31,
+      "total": 31,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 31,
+      "total": 31,
+      "acc": 1.0
+     },
+     "value": {
+      "matched": 27,
+      "total": 31,
+      "acc": 0.871
+     }
+    },
+    "row_precision": 0.5536,
+    "row_recall": 0.5536,
+    "row_f1": 0.5536,
+    "merged_rows": 31
+   }
+  },
+  "multimodal/notes.csv": {
+   "out_rows": 17,
+   "ref_rows": 17,
+   "positional": {
+    "cells_matched": 136,
+    "cells_total": 136,
+    "cell_acc": 1.0,
+    "per_col": {
+     "note_id": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "subject_id": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "note_type": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "note_seq": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "storetime": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "text": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 119,
+    "cells_total": 119,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "note_type": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "note_seq": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "storetime": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     },
+     "text": {
+      "matched": 17,
+      "total": 17,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 17
+   }
+  },
+  "multimodal/ed_diagnosis.csv": {
+   "out_rows": 30,
+   "ref_rows": 30,
+   "positional": {
+    "cells_matched": 180,
+    "cells_total": 180,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "seq_num": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "icd_code": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "icd_version": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "icd_title": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 120,
+    "cells_total": 120,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "icd_code": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "icd_version": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     },
+     "icd_title": {
+      "matched": 30,
+      "total": 30,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 30
+   }
+  },
+  "multimodal/ed_medrecon.csv": {
+   "out_rows": 242,
+   "ref_rows": 242,
+   "positional": {
+    "cells_matched": 2178,
+    "cells_total": 2178,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "name": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "gsn": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "ndc": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "etc_rn": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "etccode": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     },
+     "etcdescription": {
+      "matched": 242,
+      "total": 242,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 1286,
+    "cells_total": 1400,
+    "cell_acc": 0.9186,
+    "per_col": {
+     "subject_id": {
+      "matched": 280,
+      "total": 280,
+      "acc": 1.0
+     },
+     "ndc": {
+      "matched": 280,
+      "total": 280,
+      "acc": 1.0
+     },
+     "etc_rn": {
+      "matched": 242,
+      "total": 280,
+      "acc": 0.8643
+     },
+     "etccode": {
+      "matched": 242,
+      "total": 280,
+      "acc": 0.8643
+     },
+     "etcdescription": {
+      "matched": 242,
+      "total": 280,
+      "acc": 0.8643
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 280
+   }
+  },
+  "multimodal/ed_pyxis.csv": {
+   "out_rows": 87,
+   "ref_rows": 87,
+   "positional": {
+    "cells_matched": 609,
+    "cells_total": 609,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "med_rn": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "name": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "gsn_rn": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "gsn": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 261,
+    "cells_total": 261,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "med_rn": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     },
+     "gsn": {
+      "matched": 87,
+      "total": 87,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 87
+   }
+  },
+  "multimodal/ed_triage.csv": {
+   "out_rows": 18,
+   "ref_rows": 18,
+   "positional": {
+    "cells_matched": 198,
+    "cells_total": 198,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "temperature": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "heartrate": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "resprate": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "o2sat": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "sbp": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "dbp": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "pain": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "acuity": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "chiefcomplaint": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 180,
+    "cells_total": 180,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "temperature": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "heartrate": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "resprate": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "o2sat": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "sbp": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "dbp": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "pain": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "acuity": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "chiefcomplaint": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 18
+   }
+  },
+  "multimodal/ed_vitalsign.csv": {
+   "out_rows": 89,
+   "ref_rows": 89,
+   "positional": {
+    "cells_matched": 979,
+    "cells_total": 979,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "charttime": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "temperature": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "heartrate": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "resprate": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "o2sat": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "sbp": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "dbp": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "rhythm": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "pain": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 801,
+    "cells_total": 801,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "temperature": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "heartrate": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "resprate": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "o2sat": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "sbp": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "dbp": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "rhythm": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     },
+     "pain": {
+      "matched": 89,
+      "total": 89,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 89
+   }
+  },
+  "multimodal/edstays.csv": {
+   "out_rows": 18,
+   "ref_rows": 18,
+   "positional": {
+    "cells_matched": 162,
+    "cells_total": 162,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "stay_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "intime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "outtime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "gender": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "race": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "arrival_transport": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "disposition": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    }
+   },
+   "merged": {
+    "cells_matched": 144,
+    "cells_total": 144,
+    "cell_acc": 1.0,
+    "per_col": {
+     "subject_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "hadm_id": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "intime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "outtime": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "gender": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "race": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "arrival_transport": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     },
+     "disposition": {
+      "matched": 18,
+      "total": 18,
+      "acc": 1.0
+     }
+    },
+    "row_precision": 1.0,
+    "row_recall": 1.0,
+    "row_f1": 1.0,
+    "merged_rows": 18
+   }
+  }
+ },
+ "totals": {
+  "positional_matched": 51917,
+  "positional_total": 63905,
+  "merged_matched": 37019,
+  "merged_total": 37565
+ },
+ "overall_positional_cell_acc": 0.8124,
+ "overall_merged_cell_acc": 0.9855
+}

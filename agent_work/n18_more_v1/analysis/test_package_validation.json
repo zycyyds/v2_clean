@@ -1,0 +1,286 @@
+{
+ "package": "/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/n18-more-codex-v1/agent_work/n18_more_v1/output",
+ "files": {
+  "admissions.csv": {
+   "exists": true,
+   "rows": 7048,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "admittime",
+    "dischtime",
+    "deathtime",
+    "admission_type",
+    "admission_location",
+    "discharge_location",
+    "insurance",
+    "language",
+    "marital_status",
+    "race",
+    "hospital_expire_flag"
+   ],
+   "schema_ok": true,
+   "empty_cells": 8035
+  },
+  "cohort.csv": {
+   "exists": true,
+   "rows": 7048,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "cohort_type",
+    "cohort_label",
+    "icd_root",
+    "hospital_expire_flag"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "demographics.csv": {
+   "exists": true,
+   "rows": 2970,
+   "columns": [
+    "subject_id",
+    "gender",
+    "anchor_age",
+    "anchor_year",
+    "anchor_year_group",
+    "dod"
+   ],
+   "schema_ok": true,
+   "empty_cells": 1649
+  },
+  "diagnoses.csv": {
+   "exists": true,
+   "rows": 136507,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "seq_num",
+    "icd_code",
+    "icd_version"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "procedures.csv": {
+   "exists": true,
+   "rows": 10072,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "seq_num",
+    "icd_code",
+    "icd_version"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "medications.csv": {
+   "exists": true,
+   "rows": 364009,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "starttime",
+    "stoptime",
+    "drug",
+    "dose_val_rx",
+    "dose_unit_rx",
+    "route"
+   ],
+   "schema_ok": true,
+   "empty_cells": 688
+  },
+  "labs.csv": {
+   "exists": true,
+   "rows": 1540337,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "itemid",
+    "charttime",
+    "valuenum",
+    "valueuom"
+   ],
+   "schema_ok": true,
+   "empty_cells": 308990
+  },
+  "icu/icustays.csv": {
+   "exists": true,
+   "rows": 1718,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "intime",
+    "outtime",
+    "los"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "icu/chartevents.csv": {
+   "exists": true,
+   "rows": 5217696,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "charttime",
+    "itemid",
+    "valuenum",
+    "valueuom"
+   ],
+   "schema_ok": true,
+   "empty_cells": 3913903
+  },
+  "icu/inputevents.csv": {
+   "exists": true,
+   "rows": 173553,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "starttime",
+    "endtime",
+    "itemid",
+    "amount"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "icu/outputevents.csv": {
+   "exists": true,
+   "rows": 65556,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "charttime",
+    "itemid",
+    "value"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "multimodal/notes.csv": {
+   "exists": true,
+   "rows": 6675,
+   "columns": [
+    "note_id",
+    "subject_id",
+    "hadm_id",
+    "note_type",
+    "note_seq",
+    "charttime",
+    "storetime",
+    "text"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "multimodal/ed_diagnosis.csv": {
+   "exists": true,
+   "rows": 15630,
+   "columns": [
+    "subject_id",
+    "stay_id",
+    "seq_num",
+    "icd_code",
+    "icd_version",
+    "icd_title"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  },
+  "multimodal/ed_medrecon.csv": {
+   "exists": true,
+   "rows": 101164,
+   "columns": [
+    "subject_id",
+    "stay_id",
+    "charttime",
+    "name",
+    "gsn",
+    "ndc",
+    "etc_rn",
+    "etccode",
+    "etcdescription"
+   ],
+   "schema_ok": true,
+   "empty_cells": 394
+  },
+  "multimodal/ed_pyxis.csv": {
+   "exists": true,
+   "rows": 36888,
+   "columns": [
+    "subject_id",
+    "stay_id",
+    "charttime",
+    "med_rn",
+    "name",
+    "gsn_rn",
+    "gsn"
+   ],
+   "schema_ok": true,
+   "empty_cells": 1290
+  },
+  "multimodal/ed_triage.csv": {
+   "exists": true,
+   "rows": 7053,
+   "columns": [
+    "subject_id",
+    "stay_id",
+    "temperature",
+    "heartrate",
+    "resprate",
+    "o2sat",
+    "sbp",
+    "dbp",
+    "pain",
+    "acuity",
+    "chiefcomplaint"
+   ],
+   "schema_ok": true,
+   "empty_cells": 3339
+  },
+  "multimodal/ed_vitalsign.csv": {
+   "exists": true,
+   "rows": 38169,
+   "columns": [
+    "subject_id",
+    "stay_id",
+    "charttime",
+    "temperature",
+    "heartrate",
+    "resprate",
+    "o2sat",
+    "sbp",
+    "dbp",
+    "rhythm",
+    "pain"
+   ],
+   "schema_ok": true,
+   "empty_cells": 77145
+  },
+  "multimodal/edstays.csv": {
+   "exists": true,
+   "rows": 7053,
+   "columns": [
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "intime",
+    "outtime",
+    "gender",
+    "race",
+    "arrival_transport",
+    "disposition"
+   ],
+   "schema_ok": true,
+   "empty_cells": 0
+  }
+ },
+ "ok": true
+}

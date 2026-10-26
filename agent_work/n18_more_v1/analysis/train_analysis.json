@@ -1,0 +1,515 @@
+{
+  "task": "N18 (ICD-10 chronic kidney disease) cohort result package for MIMIC-IV",
+  "dataset": "/Users/mac/PycharmProjects/v2_clean/datasets/注入错误数据集/n18_more",
+  "train_raw": "train/raw",
+  "train_reference": "train/reference",
+  "train_subjects": [
+    11258695,
+    11437257,
+    13813219,
+    13901287,
+    14675727,
+    14779548,
+    16934764,
+    16994397,
+    17459613,
+    18976991
+  ],
+  "summary": "The raw slice is a MIMIC-IV style hosp/icu/ed/note tree whose hosp+icu tables carry injected cell level errors. The pipeline first repairs the raw tables, then selects the N18 cohort and formats the 18 reference CSVs. Every rule below was derived by diffing train/raw against train/reference; the train self check (train_self_check.py) reproduces the reference with 0.9831 cell accuracy on the key joined frames (1.0000 for 12 of the 18 files).",
+  "cohort_definition": {
+    "cohort_type": "disease_with_required_modality",
+    "cohort_label": "N18",
+    "icd_root": "N18",
+    "rule": "a hadm_id enters the cohort when (a) it carries an ICD-10 diagnosis whose code starts with 'N18' (N18.0-N18.9 chronic kidney disease) OR an ICD-9 diagnosis whose code starts with '585' (585.x CKD stage I-V), and (b) the same hadm_id appears in ed/edstays.csv (the required ED modality).",
+    "train_evidence": "train/raw/hosp/diagnoses_icd.csv holds 15 hadm_id with an N18 code and 11 hadm_id with a 585 code; 27 hadm_id appear in ed/edstays.csv. The intersection of (N18 | 585) and the ED hadm_id set is exactly the 18 hadm_id of train/reference/cohort.csv. N179 (acute kidney injury) must NOT match - it starts with N17, and the 3 hadm_id that carry N179 but have an ED visit are correctly absent from the reference cohort.",
+    "notes": "the reference cohort.csv keeps the raw row order of hosp/admissions.csv and adds the constant columns cohort_type/cohort_label/icd_root plus hospital_expire_flag taken from the repaired admissions table."
+  },
+  "error_patterns": [
+    {
+      "id": "E01",
+      "name": "alias prefix on icd codes",
+      "scope": "hosp/diagnoses_icd.csv.icd_code",
+      "description": "every icd_code of the training slice is prefixed with 'ALIAS_' (657/657 rows); the real code is the suffix.",
+      "repair": "icd_code = icd_code without the leading 'ALIAS_'",
+      "train_evidence": "after stripping the prefix the 289 cohort rows of train/raw/hosp/diagnoses_icd.csv are cell identical to train/reference/diagnoses.csv; the test slice ships no 'ALIAS_' prefix (0/300578), so the rule is a no-op there."
+    },
+    {
+      "id": "E02",
+      "name": "inverted mortality label",
+      "scope": "hosp/admissions.csv.hospital_expire_flag",
+      "description": "the flag was inverted for every row (38/39 raw rows carry 1, the single row that carries 0 is the only admission with a deathtime).",
+      "repair": "hospital_expire_flag = 1 - raw flag (equivalent to '1 iff deathtime is not null', which agrees on all 39 train rows).",
+      "train_evidence": "the 18 cohort rows of the reference all carry 0 while the raw carries 1; the only raw row with deathtime 2137-09-22 12:30:00 (hadm 21018237) carries 0 although the patient died in hospital (patients.dod = 2137-09-22)."
+    },
+    {
+      "id": "E03",
+      "name": "nulled insurance",
+      "scope": "hosp/admissions.csv.insurance",
+      "description": "the whole insurance column is null (39/39 train rows, 17679/17679 test rows).",
+      "repair": "insurance = 'Medicare' (the dominant reference value, 14/18 cohort rows of the train reference).",
+      "train_evidence": "train/reference/admissions.csv carries Medicaid/Medicare/Private/Other with Medicare in 14 of the 18 cohort rows; no other raw table carries the payer, so the per-admission value is not recoverable."
+    },
+    {
+      "id": "E04",
+      "name": "enum violation on patient gender",
+      "scope": "hosp/patients.csv.gender",
+      "description": "gender was replaced by the invalid enum value 'UNKNOWN_GENDER_CODE' for every patient.",
+      "repair": "gender = the (per subject) mode of ed/edstays.csv.gender, which is the only other gender source in the raw tree.",
+      "train_evidence": "the 10 train patients match ed/edstays.csv.gender on 10/10 subjects and reproduce the reference demographics.csv exactly."
+    },
+    {
+      "id": "E05",
+      "name": "sentinel anchor_age",
+      "scope": "hosp/patients.csv.anchor_age",
+      "description": "anchor_age was replaced by the sentinel 999 for every patient (2970/2970 in the test slice as well).",
+      "repair": "not recoverable - anchor_age appears in no other raw table, the discharge notes redact the date of birth and never state an age. A constant fallback (80, the median of the train reference) is written.",
+      "train_evidence": "the 10 train reference ages are 57..91 (median 79.5); no raw column of the corresponding subject encodes an age (checked notes/omr/services/transfers)."
+    },
+    {
+      "id": "E06",
+      "name": "time inversion on ICU outtime",
+      "scope": "icu/icustays.csv.outtime",
+      "description": "outtime was set to intime - 1h for every ICU stay.",
+      "repair": "outtime = intime + los * 86400 seconds.",
+      "train_evidence": "the 3 cohort stays of train/reference/icu/icustays.csv are reproduced exactly (2162-06-30 20:25:17, 2182-06-18 22:48:10, 2144-04-18 11:05:08) while the raw outtime is always intime - 1h."
+    },
+    {
+      "id": "E07",
+      "name": "label leakage rows",
+      "scope": "icu/chartevents.csv",
+      "description": "rows with itemid 999001 and value '1  (insert)' were inserted into the chart events.",
+      "repair": "drop every row whose itemid is 999001.",
+      "train_evidence": "267 of the 4366 cohort-stay chart event rows carry itemid 999001; none of them exists in train/reference/icu/chartevents.csv, and the row count of the remaining rows (4099) matches the reference once the injected duplicates are removed."
+    },
+    {
+      "id": "E08",
+      "name": "itemid value corruption",
+      "scope": "icu/chartevents.csv.itemid, icu/inputevents.csv.itemid",
+      "description": "the corrupter prefixed the 6 digit itemid with '99' (e.g. 220045 -> 99220045, 226452 -> 99226452).",
+      "repair": "itemid = itemid without a leading '99' when the remainder is a 6 digit number.",
+      "train_evidence": "529 of the 4013 cohort chart event rows and all 28 input event rows carry the prefix; stripping it reproduces the reference itemids."
+    },
+    {
+      "id": "E09",
+      "name": "task window leakage on charttime",
+      "scope": "icu/chartevents.csv.charttime",
+      "description": "330 chart event rows of the cohort stays carry charttime = outtime + 1 day, i.e. they were moved out of the ICU task window (and relocated inside the file).",
+      "repair": "the charttime of such a row is restored from the neighbouring row of the same stay (the raw file order is chronological, so the previous uncorrupted row of the same stay carries the right minute).",
+      "train_evidence": "with the repair 3717 of the 4013 reference rows are matched by (stay_id, charttime, itemid) - the residual 296 rows are the relocated ones whose original charttime is not recoverable from the raw (their storetime was rewritten as well, and the raw file order alone only bounds them to the neighbouring rows)."
+    },
+    {
+      "id": "E10",
+      "name": "whole row duplication",
+      "scope": "icu/chartevents.csv",
+      "description": "exact duplicate rows were injected next to their original (359 duplicate groups over the cohort stays).",
+      "repair": "de-duplicate on the full raw row (stay, charttime, itemid, value, valuenum, valueuom, storetime, caregiver_id), keeping the first occurrence.",
+      "train_evidence": "the distance histogram of the duplicate pairs is 358x distance 1 and 1x distance 8; the reference itself contains 281 legitimate adjacent duplicates, so only the key (stay_id, charttime, itemid) is used for scoring and the duplicates are removed for precision (row F1 0.9568 vs 0.9164 without the de-duplication)."
+    },
+    {
+      "id": "E11",
+      "name": "sentinel and unit error on valuenum",
+      "scope": "icu/chartevents.csv.valuenum, hosp/labevents.csv.valuenum",
+      "description": "valuenum was replaced by one of the sentinels {-999, -888, 9999, -1, -100, -200, -300, -400, -500}, multiplied by 100, or (for text values) replaced by an arbitrary number.",
+      "repair": "if the textual `value` column is numeric, valuenum = that number; for textual values the pristine number is the dominant value of the whole (itemid, value) group (NaN included, sentinels and 100x multiples excluded from the vote). A group whose rows all carry a sentinel has no recoverable value and is written empty. Rows whose value text is the MIMIC redaction placeholder '___' keep their own measurement.",
+      "train_evidence": "for the 2634 text valued chart event rows of the train reference the group mapping is right for 94.1% of the rows (the raw value alone is right for 46.3%); for the 598 text valued lab rows the mapping is right for 64.1% unless the '___' rows are excluded, with the exclusion it is 100%."
+    },
+    {
+      "id": "E12",
+      "name": "valueuom corruption",
+      "scope": "icu/chartevents.csv.valueuom",
+      "description": "the unit of a chart event row was replaced by the unit of another item.",
+      "repair": "valueuom = the dominant unit of the itemid.",
+      "train_evidence": "the unit is constant per itemid in the reference; after the repair the valueuom column of the matched chart event rows is 100% correct and the residual error of the file is the valuenum column (94.1% -> 98.9% cell accuracy of the whole file after the group mapping of E11)."
+    },
+    {
+      "id": "E13",
+      "name": "cross table id misalignment",
+      "scope": "icu/chartevents.csv.hadm_id/subject_id, icu/inputevents.csv.hadm_id/subject_id, icu/outputevents.csv.hadm_id/subject_id",
+      "description": "the admission id of ICU event rows was overwritten with an unrelated hadm_id.",
+      "repair": "subject_id and hadm_id are taken from the ICU stay registry (icu/icustays.csv) via stay_id.",
+      "train_evidence": "all 28 input event rows of the reference carry hadm_id 25022774/26845421/25069766 while the raw carries 26845421/21018237/26769523/26741083; the stay_id column itself is intact."
+    },
+    {
+      "id": "E14",
+      "name": "sentinel amount on input events",
+      "scope": "icu/inputevents.csv.amount",
+      "description": "the amount of an input event was replaced by a sentinel (-1000, -888, -1).",
+      "repair": "amount = originalamount when the raw amount is a sentinel.",
+      "train_evidence": "the 28 reference amounts are 100/100/200/200/40/240/... which equal the originalamount column of the raw (the totalamount is NaN for most rows); 2 stopped infusions keep a value that no raw column carries (356.6666581630707, 53.5) and stay wrong."
+    },
+    {
+      "id": "E15",
+      "name": "time inversion on input event endtime",
+      "scope": "icu/inputevents.csv.endtime",
+      "description": "endtime was set to starttime - 1 minute.",
+      "repair": "endtime = starttime + 1 minute when the raw endtime is starttime - 1 minute.",
+      "train_evidence": "24 of the 28 reference input events have endtime = starttime + 60s; the remaining 4 (two infusions with a 6420s and two with a 3600s duration) carry a duration that no raw column encodes."
+    },
+    {
+      "id": "E16",
+      "name": "epoch sentinel on output event charttime",
+      "scope": "icu/outputevents.csv.charttime",
+      "description": "the charttime of every output event was overwritten with 1970-01-01 00:00:00.",
+      "repair": "charttime = the hour aligned grid point of storetime. The grid point is either the hour of the storetime or the hour before it (the reference grid lags the storetime by 0-120 minutes) and the output events of one (stay, caregiver_id) form a strictly increasing sequence, which disambiguates the candidates; a dynamic programme picks the sequence with the maximal weight.",
+      "train_evidence": "the reference charttimes of stay 33064204 are 20:40, 21:00, 22:00, 00:00, ... while the raw storetimes are 20:40, 22:48, 22:48, 01:42, ...; the reference charttime is strictly increasing inside every one of the 14 (stay, caregiver) groups of the train reference. The repair reproduces 27/56 charttimes (the plain hour truncation only 21/56), which lifts the key aligned row F1 of the file from 0.411 to 0.554."
+    },
+    {
+      "id": "E17",
+      "name": "non ISO timestamps in the ED tables",
+      "scope": "ed/edstays.csv, ed/medrecon.csv, ed/pyxis.csv, ed/vitalsign.csv",
+      "description": "the ED timestamps use the non zero padded 'Y/M/D H:M:S' format.",
+      "repair": "re-format to '%Y-%m-%d %H:%M:%S'.",
+      "train_evidence": "the 378 ED timestamps of the train reference are all ISO formatted while the raw is not."
+    },
+    {
+      "id": "E18",
+      "name": "zero padded numeric identifiers",
+      "scope": "ed/medrecon.csv.gsn, ed/medrecon.csv.ndc, ed/medrecon.csv.etccode, ed/pyxis.csv.gsn",
+      "description": "the identifiers were written zero padded ('029968', '00002747').",
+      "repair": "medrecon.gsn and medrecon.ndc are written as integers, medrecon.etccode and pyxis.gsn as floats, pyxis.gsn_rn as an integer.",
+      "train_evidence": "the reference writes 29968 / 10135065005 / 2747.0 / 41384.0 / 1 for the raw 029968 / 10135065005 / 00002747 / 041384 / 1."
+    },
+    {
+      "id": "E19",
+      "name": "float formatting of the numeric columns",
+      "scope": "labs.csv.valuenum, icu/chartevents.csv.valuenum, icu/outputevents.csv.value, icu/inputevents.csv.amount, multimodal/ed_*.csv numeric columns, multimodal/edstays.csv.hadm_id",
+      "description": "the reference writes every numeric column as a float ('97.0'), the raw CSV writes the integer text ('97').",
+      "repair": "cast the numeric columns to float64 (hadm_id of edstays included, the reference stores it as 20642784.0).",
+      "train_evidence": "the only differences between the produced and the reference frame of labs.csv/chartevents.csv/outputevents.csv are the x.0 vs x formatting."
+    }
+  ],
+  "outputs": [
+    {
+      "file": "admissions.csv",
+      "raw_table": "hosp/admissions.csv",
+      "primary_key": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "time_anchor": "admittime / dischtime / deathtime (kept verbatim)",
+      "filter": "hadm_id in the N18 cohort",
+      "field_transformations": [
+        "hospital_expire_flag = 1 - raw flag (E02)",
+        "insurance = 'Medicare' when null (E03)",
+        "columns kept: subject_id, hadm_id, admittime, dischtime, deathtime, admission_type, admission_location, discharge_location, insurance, language, marital_status, race, hospital_expire_flag (admit_provider_id, edregtime, edouttime are dropped)"
+      ],
+      "aggregations": "none - one row per cohort admission, raw file order",
+      "train_evidence": "18/18 rows, 231/234 cells (the 3 missing cells are the insurance of the non-Medicare admissions)"
+    },
+    {
+      "file": "cohort.csv",
+      "raw_table": "derived from hosp/admissions.csv + hosp/diagnoses_icd.csv + ed/edstays.csv",
+      "primary_key": [
+        "subject_id",
+        "hadm_id"
+      ],
+      "time_anchor": "none",
+      "filter": "see cohort_definition",
+      "field_transformations": [
+        "cohort_type = disease_with_required_modality, cohort_label = N18, icd_root = N18",
+        "hospital_expire_flag taken from the repaired admissions row"
+      ],
+      "aggregations": "none - one row per cohort hadm_id, raw admissions order",
+      "train_evidence": "18/18 rows, 108/108 cells"
+    },
+    {
+      "file": "demographics.csv",
+      "raw_table": "hosp/patients.csv",
+      "primary_key": [
+        "subject_id"
+      ],
+      "time_anchor": "anchor_year / dod (kept verbatim)",
+      "filter": "all patients of the slice (every train subject and every one of the 2970 test subjects belongs to the cohort)",
+      "field_transformations": [
+        "gender from ed/edstays.csv (E04)",
+        "anchor_age: sentinel 999 replaced by the constant fallback 80 (E05)"
+      ],
+      "aggregations": "none - one row per patient",
+      "train_evidence": "10/10 rows, 50/60 cells (the 10 wrong cells are anchor_age)"
+    },
+    {
+      "file": "diagnoses.csv",
+      "raw_table": "hosp/diagnoses_icd.csv",
+      "primary_key": [
+        "subject_id",
+        "hadm_id",
+        "seq_num"
+      ],
+      "time_anchor": "none",
+      "filter": "hadm_id in the N18 cohort",
+      "field_transformations": [
+        "icd_code without the 'ALIAS_' prefix (E01)"
+      ],
+      "aggregations": "none - one row per diagnosis, raw file order",
+      "train_evidence": "289/289 rows, 1445/1445 cells"
+    },
+    {
+      "file": "procedures.csv",
+      "raw_table": "hosp/procedures_icd.csv",
+      "primary_key": [
+        "subject_id",
+        "hadm_id",
+        "seq_num"
+      ],
+      "time_anchor": "none (chartdate is dropped)",
+      "filter": "hadm_id in the N18 cohort",
+      "field_transformations": [
+        "columns: subject_id, hadm_id, seq_num, icd_code, icd_version"
+      ],
+      "aggregations": "none - one row per procedure, raw file order",
+      "train_evidence": "32/32 rows, 160/160 cells"
+    },
+    {
+      "file": "medications.csv",
+      "raw_table": "hosp/prescriptions.csv",
+      "primary_key": [
+        "subject_id",
+        "hadm_id",
+        "starttime",
+        "drug"
+      ],
+      "time_anchor": "starttime / stoptime (kept verbatim)",
+      "filter": "hadm_id in the N18 cohort",
+      "field_transformations": [
+        "columns: subject_id, hadm_id, starttime, stoptime, drug, dose_val_rx, dose_unit_rx, route"
+      ],
+      "aggregations": "none - one row per prescription, raw file order",
+      "train_evidence": "786/786 rows, 6288/6288 cells"
+    },
+    {
+      "file": "labs.csv",
+      "raw_table": "hosp/labevents.csv",
+      "primary_key": [
+        "subject_id",
+        "hadm_id",
+        "itemid",
+        "charttime"
+      ],
+      "time_anchor": "charttime (kept verbatim)",
+      "filter": "hadm_id in the N18 cohort (outpatient labs with a null hadm_id are dropped)",
+      "field_transformations": [
+        "valuenum repaired from the textual value column (E11) and written as float (E19)",
+        "columns: subject_id, hadm_id, itemid, charttime, valuenum, valueuom"
+      ],
+      "aggregations": "none - one row per lab event, raw file order",
+      "train_evidence": "4073/4073 rows, 24438/24438 cells"
+    },
+    {
+      "file": "icu/icustays.csv",
+      "raw_table": "icu/icustays.csv",
+      "primary_key": [
+        "stay_id"
+      ],
+      "time_anchor": "intime / outtime",
+      "filter": "hadm_id in the N18 cohort",
+      "field_transformations": [
+        "outtime = intime + los * 86400 s (E06)",
+        "columns: subject_id, hadm_id, stay_id, intime, outtime, los"
+      ],
+      "aggregations": "none - one row per ICU stay",
+      "train_evidence": "3/3 rows, 17/18 cells (one los differs from the reference by 1 ULP)"
+    },
+    {
+      "file": "icu/chartevents.csv",
+      "raw_table": "icu/chartevents.csv",
+      "primary_key": [
+        "stay_id",
+        "charttime",
+        "itemid"
+      ],
+      "time_anchor": "charttime",
+      "filter": "stay_id belongs to a cohort admission",
+      "field_transformations": [
+        "drop the label leakage rows (E07)",
+        "itemid without the '99' prefix (E08)",
+        "subject_id / hadm_id from the ICU stay registry (E13)",
+        "charttime restored for the rows pushed out of the task window (E09)",
+        "valuenum repaired (E11) and written as float (E19)",
+        "valueuom = dominant unit of the itemid (E12)",
+        "de-duplication of injected whole row copies (E10)"
+      ],
+      "aggregations": "none - one row per chart event, raw file order",
+      "train_evidence": "3740 produced vs 4013 reference rows, 3709 rows match on (stay_id, charttime, itemid) (row F1 0.9568) and 98.9% of their cells are correct; the missing rows are the 296 relocated events whose original charttime was overwritten"
+    },
+    {
+      "file": "icu/inputevents.csv",
+      "raw_table": "icu/inputevents.csv",
+      "primary_key": [
+        "stay_id",
+        "starttime",
+        "itemid"
+      ],
+      "time_anchor": "starttime / endtime",
+      "filter": "stay_id belongs to a cohort admission",
+      "field_transformations": [
+        "subject_id / hadm_id from the ICU stay registry (E13)",
+        "itemid without the '99' prefix (E08)",
+        "amount = originalamount when the raw amount is a sentinel (E14), written as float (E19)",
+        "endtime = starttime + 1 min when the raw endtime is starttime - 1 min (E15)"
+      ],
+      "aggregations": "none - one row per input event, raw file order",
+      "train_evidence": "28/28 rows, 187/196 cells (the 9 wrong cells are the durations of the 4 long infusions and 2 stopped infusions)"
+    },
+    {
+      "file": "icu/outputevents.csv",
+      "raw_table": "icu/outputevents.csv",
+      "primary_key": [
+        "stay_id",
+        "charttime",
+        "itemid"
+      ],
+      "time_anchor": "charttime",
+      "filter": "stay_id belongs to a cohort admission",
+      "field_transformations": [
+        "charttime recovered from storetime (E16)",
+        "subject_id / hadm_id from the ICU stay registry (E13)",
+        "value written as float (E19)"
+      ],
+      "aggregations": "none - one row per output event, raw file order",
+      "train_evidence": "56/56 rows, 307/336 cells, key aligned row F1 0.554 (the residual errors are the charttime of the events whose lag is not 0 and not a full hour)"
+    },
+    {
+      "file": "multimodal/notes.csv",
+      "raw_table": "note/discharge.csv (+ note/radiology.csv, filtered to note_type DS)",
+      "primary_key": [
+        "note_id"
+      ],
+      "time_anchor": "charttime / storetime (kept verbatim)",
+      "filter": "hadm_id in the N18 cohort and note_type = 'DS' (the radiology notes of the raw are RR notes and are not part of the reference)",
+      "field_transformations": [
+        "columns: note_id, subject_id, hadm_id, note_type, note_seq, charttime, storetime, text"
+      ],
+      "aggregations": "none - one row per note, raw file order",
+      "train_evidence": "17/17 rows, 136/136 cells; the 65 cohort radiology notes are absent from the reference"
+    },
+    {
+      "file": "multimodal/edstays.csv",
+      "raw_table": "ed/edstays.csv",
+      "primary_key": [
+        "stay_id"
+      ],
+      "time_anchor": "intime / outtime",
+      "filter": "hadm_id in the N18 cohort (the ED visits without a hadm_id are dropped)",
+      "field_transformations": [
+        "intime / outtime re-formatted to ISO (E17)",
+        "hadm_id written as float (E19)"
+      ],
+      "aggregations": "none - one row per ED visit",
+      "train_evidence": "18/18 rows, 162/162 cells"
+    },
+    {
+      "file": "multimodal/ed_diagnosis.csv",
+      "raw_table": "ed/diagnosis.csv",
+      "primary_key": [
+        "stay_id",
+        "seq_num"
+      ],
+      "time_anchor": "none",
+      "filter": "stay_id of a cohort ED visit",
+      "field_transformations": [
+        "columns: subject_id, stay_id, seq_num, icd_code, icd_version, icd_title"
+      ],
+      "aggregations": "none - one row per ED diagnosis, raw file order",
+      "train_evidence": "30/30 rows, 180/180 cells"
+    },
+    {
+      "file": "multimodal/ed_medrecon.csv",
+      "raw_table": "ed/medrecon.csv",
+      "primary_key": [
+        "stay_id",
+        "charttime",
+        "name",
+        "gsn"
+      ],
+      "time_anchor": "charttime",
+      "filter": "stay_id of a cohort ED visit",
+      "field_transformations": [
+        "charttime re-formatted to ISO (E17)",
+        "gsn / ndc as integers, etccode as float (E18, E19)"
+      ],
+      "aggregations": "none - one row per medication reconciliation entry",
+      "train_evidence": "242/242 rows, 2178/2178 cells"
+    },
+    {
+      "file": "multimodal/ed_pyxis.csv",
+      "raw_table": "ed/pyxis.csv",
+      "primary_key": [
+        "stay_id",
+        "charttime",
+        "name",
+        "gsn_rn"
+      ],
+      "time_anchor": "charttime",
+      "filter": "stay_id of a cohort ED visit",
+      "field_transformations": [
+        "charttime re-formatted to ISO (E17)",
+        "gsn as float, gsn_rn as integer (E18, E19)"
+      ],
+      "aggregations": "none - one row per pyxis entry",
+      "train_evidence": "87/87 rows, 609/609 cells"
+    },
+    {
+      "file": "multimodal/ed_triage.csv",
+      "raw_table": "ed/triage.csv",
+      "primary_key": [
+        "stay_id"
+      ],
+      "time_anchor": "none (the triage table has no timestamp)",
+      "filter": "stay_id of a cohort ED visit",
+      "field_transformations": [
+        "temperature, heartrate, resprate, o2sat, sbp, dbp, acuity as float (E19), pain kept as an integer"
+      ],
+      "aggregations": "none - one row per ED visit",
+      "train_evidence": "18/18 rows, 198/198 cells"
+    },
+    {
+      "file": "multimodal/ed_vitalsign.csv",
+      "raw_table": "ed/vitalsign.csv",
+      "primary_key": [
+        "stay_id",
+        "charttime"
+      ],
+      "time_anchor": "charttime",
+      "filter": "stay_id of a cohort ED visit",
+      "field_transformations": [
+        "charttime re-formatted to ISO (E17)",
+        "temperature, heartrate, resprate, o2sat, sbp, dbp as float (E19), rhythm and pain kept as they are"
+      ],
+      "aggregations": "none - one row per vital sign record",
+      "train_evidence": "89/89 rows, 979/979 cells"
+    }
+  ],
+  "train_self_check": {
+    "script": "scripts/selfcheck_train.py",
+    "report": "analysis/train_selfcheck.json",
+    "positional_cell_accuracy": 0.8118,
+    "merged_cell_accuracy": 0.9831,
+    "note": "the positional score of icu/chartevents.csv is low because the reference contains 296 chart events whose original charttime the corrupter destroyed; the key aligned score is the meaningful one (row F1 0.9568)."
+  },
+  "replay": {
+    "entry_point": "pipeline/run_pipeline.py",
+    "argv": [
+      "--raw-root",
+      "{raw_root}",
+      "--train-reference",
+      "{train_reference}",
+      "--output-dir",
+      "{output_dir}",
+      "--workdir",
+      "{workdir}"
+    ],
+    "dependencies": [
+      "{raw_root}",
+      "{train_reference}",
+      "{output_dir}",
+      "{workdir}"
+    ],
+    "forbidden": [
+      "train/raw",
+      "test gold",
+      "evaluation metadata"
+    ],
+    "command": "python3 pipeline/run_pipeline.py",
+    "self_check": "python3 train_self_check.py"
+  }
+}

@@ -1,0 +1,1821 @@
+[
+ {
+  "output": "admissions.csv",
+  "raw_rows": 18,
+  "ref_rows": 18,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "admittime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "dischtime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "deathtime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "admission_type",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "admission_location",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "discharge_location",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "insurance",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "<NA>",
+      "ref": "Medicaid"
+     },
+     {
+      "i": 1,
+      "raw": "<NA>",
+      "ref": "Medicare"
+     },
+     {
+      "i": 2,
+      "raw": "<NA>",
+      "ref": "Medicare"
+     },
+     {
+      "i": 3,
+      "raw": "<NA>",
+      "ref": "Medicare"
+     },
+     {
+      "i": 4,
+      "raw": "<NA>",
+      "ref": "Medicare"
+     }
+    ]
+   },
+   {
+    "col": "language",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "marital_status",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "race",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hospital_expire_flag",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "1",
+      "ref": "0"
+     },
+     {
+      "i": 1,
+      "raw": "1",
+      "ref": "0"
+     },
+     {
+      "i": 2,
+      "raw": "1",
+      "ref": "0"
+     },
+     {
+      "i": 3,
+      "raw": "1",
+      "ref": "0"
+     },
+     {
+      "i": 4,
+      "raw": "1",
+      "ref": "0"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "output": "diagnoses.csv",
+  "raw_rows": 289,
+  "ref_rows": 289,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "seq_num",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_code",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_version",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "procedures.csv",
+  "raw_rows": 32,
+  "ref_rows": 32,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "seq_num",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_code",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_version",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "medications.csv",
+  "raw_rows": 786,
+  "ref_rows": 786,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "starttime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stoptime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "drug",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "dose_val_rx",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "dose_unit_rx",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "route",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "labs.csv",
+  "raw_rows": 4073,
+  "ref_rows": 4073,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "itemid",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "charttime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "valuenum",
+    "n_diff": 1848,
+    "examples": [
+     {
+      "i": 4,
+      "raw": "97",
+      "ref": "97.0"
+     },
+     {
+      "i": 5,
+      "raw": "211",
+      "ref": "211.0"
+     },
+     {
+      "i": 9,
+      "raw": "49",
+      "ref": "49.0"
+     },
+     {
+      "i": 10,
+      "raw": "18",
+      "ref": "18.0"
+     },
+     {
+      "i": 11,
+      "raw": "24",
+      "ref": "24.0"
+     }
+    ]
+   },
+   {
+    "col": "valueuom",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "demographics.csv",
+  "raw_rows": 10,
+  "ref_rows": 10,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "gender",
+    "n_diff": 10,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "UNKNOWN_GENDER_CODE",
+      "ref": "F"
+     },
+     {
+      "i": 1,
+      "raw": "UNKNOWN_GENDER_CODE",
+      "ref": "F"
+     },
+     {
+      "i": 2,
+      "raw": "UNKNOWN_GENDER_CODE",
+      "ref": "F"
+     },
+     {
+      "i": 3,
+      "raw": "UNKNOWN_GENDER_CODE",
+      "ref": "M"
+     },
+     {
+      "i": 4,
+      "raw": "UNKNOWN_GENDER_CODE",
+      "ref": "M"
+     }
+    ]
+   },
+   {
+    "col": "anchor_age",
+    "n_diff": 10,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "999",
+      "ref": "59"
+     },
+     {
+      "i": 1,
+      "raw": "999",
+      "ref": "75"
+     },
+     {
+      "i": 2,
+      "raw": "999",
+      "ref": "87"
+     },
+     {
+      "i": 3,
+      "raw": "999",
+      "ref": "84"
+     },
+     {
+      "i": 4,
+      "raw": "999",
+      "ref": "81"
+     }
+    ]
+   },
+   {
+    "col": "anchor_year",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "anchor_year_group",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "dod",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "icu/icustays.csv",
+  "raw_rows": 3,
+  "ref_rows": 3,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "intime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "outtime",
+    "n_diff": 3,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2162-06-28 19:09:39",
+      "ref": "2162-06-30 20:25:17"
+     },
+     {
+      "i": 1,
+      "raw": "2182-06-17 23:50:00",
+      "ref": "2182-06-18 22:48:10"
+     },
+     {
+      "i": 2,
+      "raw": "2144-04-15 20:47:00",
+      "ref": "2144-04-18 11:05:08"
+     }
+    ]
+   },
+   {
+    "col": "los",
+    "n_diff": 1,
+    "examples": [
+     {
+      "i": 1,
+      "raw": "0.9153935185185185",
+      "ref": "0.9153935185185184"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "output": "icu/chartevents.csv",
+  "raw_rows": 4366,
+  "ref_rows": 4013,
+  "ROWCOUNT_DIFF": true,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 297,
+    "examples": [
+     {
+      "i": 1410,
+      "raw": "13813219",
+      "ref": "13901287"
+     },
+     {
+      "i": 1411,
+      "raw": "13813219",
+      "ref": "13901287"
+     },
+     {
+      "i": 1412,
+      "raw": "13813219",
+      "ref": "13901287"
+     },
+     {
+      "i": 1413,
+      "raw": "13813219",
+      "ref": "13901287"
+     },
+     {
+      "i": 1414,
+      "raw": "13813219",
+      "ref": "13901287"
+     }
+    ]
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 297,
+    "examples": [
+     {
+      "i": 1410,
+      "raw": "25022774",
+      "ref": "26845421"
+     },
+     {
+      "i": 1411,
+      "raw": "25022774",
+      "ref": "26845421"
+     },
+     {
+      "i": 1412,
+      "raw": "25022774",
+      "ref": "26845421"
+     },
+     {
+      "i": 1413,
+      "raw": "25022774",
+      "ref": "26845421"
+     },
+     {
+      "i": 1414,
+      "raw": "25022774",
+      "ref": "26845421"
+     }
+    ]
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 297,
+    "examples": [
+     {
+      "i": 1410,
+      "raw": "33064204",
+      "ref": "32327197"
+     },
+     {
+      "i": 1411,
+      "raw": "33064204",
+      "ref": "32327197"
+     },
+     {
+      "i": 1412,
+      "raw": "33064204",
+      "ref": "32327197"
+     },
+     {
+      "i": 1413,
+      "raw": "33064204",
+      "ref": "32327197"
+     },
+     {
+      "i": 1414,
+      "raw": "33064204",
+      "ref": "32327197"
+     }
+    ]
+   },
+   {
+    "col": "charttime",
+    "n_diff": 3594,
+    "examples": [
+     {
+      "i": 3,
+      "raw": "2162-06-28 20:16:00",
+      "ref": "2162-06-28 20:15:00"
+     },
+     {
+      "i": 4,
+      "raw": "2162-07-01 20:25:17",
+      "ref": "2162-06-28 20:16:00"
+     },
+     {
+      "i": 12,
+      "raw": "2162-07-01 20:25:17",
+      "ref": "2162-06-28 20:30:00"
+     },
+     {
+      "i": 31,
+      "raw": "2162-07-01 20:25:17",
+      "ref": "2162-06-28 20:30:00"
+     },
+     {
+      "i": 34,
+      "raw": "2162-07-01 20:25:17",
+      "ref": "2162-06-28 20:30:00"
+     }
+    ]
+   },
+   {
+    "col": "itemid",
+    "n_diff": 3942,
+    "examples": [
+     {
+      "i": 1,
+      "raw": "99220210",
+      "ref": "220045"
+     },
+     {
+      "i": 2,
+      "raw": "220277",
+      "ref": "220210"
+     },
+     {
+      "i": 3,
+      "raw": "220179",
+      "ref": "220277"
+     },
+     {
+      "i": 4,
+      "raw": "220180",
+      "ref": "220179"
+     },
+     {
+      "i": 5,
+      "raw": "99220181",
+      "ref": "220180"
+     }
+    ]
+   },
+   {
+    "col": "valuenum",
+    "n_diff": 3493,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "51",
+      "ref": "51.0"
+     },
+     {
+      "i": 1,
+      "raw": "23",
+      "ref": "84.0"
+     },
+     {
+      "i": 2,
+      "raw": "-1",
+      "ref": "23.0"
+     },
+     {
+      "i": 3,
+      "raw": "152",
+      "ref": "95.0"
+     },
+     {
+      "i": 4,
+      "raw": "-999",
+      "ref": "152.0"
+     }
+    ]
+   },
+   {
+    "col": "valueuom",
+    "n_diff": 1741,
+    "examples": [
+     {
+      "i": 1,
+      "raw": "insp/min",
+      "ref": "bpm"
+     },
+     {
+      "i": 2,
+      "raw": "%",
+      "ref": "insp/min"
+     },
+     {
+      "i": 3,
+      "raw": "mmHg",
+      "ref": "%"
+     },
+     {
+      "i": 63,
+      "raw": "<NA>",
+      "ref": "bpm"
+     },
+     {
+      "i": 64,
+      "raw": "<NA>",
+      "ref": "bpm"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "output": "icu/inputevents.csv",
+  "raw_rows": 28,
+  "ref_rows": 28,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 28,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "26845421",
+      "ref": "25022774"
+     },
+     {
+      "i": 1,
+      "raw": "21018237",
+      "ref": "25022774"
+     },
+     {
+      "i": 2,
+      "raw": "26769523",
+      "ref": "25022774"
+     },
+     {
+      "i": 3,
+      "raw": "21018237",
+      "ref": "25022774"
+     },
+     {
+      "i": 4,
+      "raw": "26741083",
+      "ref": "25022774"
+     }
+    ]
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "starttime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "endtime",
+    "n_diff": 28,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2162-06-29 08:26:00",
+      "ref": "2162-06-29 08:28:00"
+     },
+     {
+      "i": 1,
+      "raw": "2162-06-29 09:59:00",
+      "ref": "2162-06-29 10:01:00"
+     },
+     {
+      "i": 2,
+      "raw": "2162-06-29 18:56:00",
+      "ref": "2162-06-29 18:58:00"
+     },
+     {
+      "i": 3,
+      "raw": "2162-06-30 09:59:00",
+      "ref": "2162-06-30 10:01:00"
+     },
+     {
+      "i": 4,
+      "raw": "2162-06-30 11:59:00",
+      "ref": "2162-06-30 12:01:00"
+     }
+    ]
+   },
+   {
+    "col": "itemid",
+    "n_diff": 28,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "99226452",
+      "ref": "226452"
+     },
+     {
+      "i": 1,
+      "raw": "99226452",
+      "ref": "226452"
+     },
+     {
+      "i": 2,
+      "raw": "99226452",
+      "ref": "226452"
+     },
+     {
+      "i": 3,
+      "raw": "99226452",
+      "ref": "226452"
+     },
+     {
+      "i": 4,
+      "raw": "99226452",
+      "ref": "226452"
+     }
+    ]
+   },
+   {
+    "col": "amount",
+    "n_diff": 28,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "-1000",
+      "ref": "100.0"
+     },
+     {
+      "i": 1,
+      "raw": "-888",
+      "ref": "100.0"
+     },
+     {
+      "i": 2,
+      "raw": "-888",
+      "ref": "200.0"
+     },
+     {
+      "i": 3,
+      "raw": "-888",
+      "ref": "200.0"
+     },
+     {
+      "i": 4,
+      "raw": "-1",
+      "ref": "40.0"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "output": "icu/outputevents.csv",
+  "raw_rows": 56,
+  "ref_rows": 56,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "charttime",
+    "n_diff": 56,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "1970-01-01 00:00:00",
+      "ref": "2162-06-28 20:40:00"
+     },
+     {
+      "i": 1,
+      "raw": "1970-01-01 00:00:00",
+      "ref": "2162-06-28 21:00:00"
+     },
+     {
+      "i": 2,
+      "raw": "1970-01-01 00:00:00",
+      "ref": "2162-06-28 22:00:00"
+     },
+     {
+      "i": 3,
+      "raw": "1970-01-01 00:00:00",
+      "ref": "2162-06-29 00:00:00"
+     },
+     {
+      "i": 4,
+      "raw": "1970-01-01 00:00:00",
+      "ref": "2162-06-29 01:00:00"
+     }
+    ]
+   },
+   {
+    "col": "itemid",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "value",
+    "n_diff": 56,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "50",
+      "ref": "50.0"
+     },
+     {
+      "i": 1,
+      "raw": "45",
+      "ref": "45.0"
+     },
+     {
+      "i": 2,
+      "raw": "45",
+      "ref": "45.0"
+     },
+     {
+      "i": 3,
+      "raw": "80",
+      "ref": "80.0"
+     },
+     {
+      "i": 4,
+      "raw": "40",
+      "ref": "40.0"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "output": "multimodal/notes.csv",
+  "raw_rows": 82,
+  "ref_rows": 17,
+  "ROWCOUNT_DIFF": true,
+  "cols": [
+   {
+    "col": "note_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "note_type",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "note_seq",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "charttime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "storetime",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "text",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "multimodal/edstays.csv",
+  "raw_rows": 18,
+  "ref_rows": 18,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "hadm_id",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "20642784",
+      "ref": "20642784.0"
+     },
+     {
+      "i": 1,
+      "raw": "23308331",
+      "ref": "23308331.0"
+     },
+     {
+      "i": 2,
+      "raw": "23635076",
+      "ref": "23635076.0"
+     },
+     {
+      "i": 3,
+      "raw": "26837038",
+      "ref": "26837038.0"
+     },
+     {
+      "i": 4,
+      "raw": "28270661",
+      "ref": "28270661.0"
+     }
+    ]
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "intime",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2141/12/19 10:51:00",
+      "ref": "2141-12-19 10:51:00"
+     },
+     {
+      "i": 1,
+      "raw": "2184/2/20 22:03:00",
+      "ref": "2184-02-20 22:03:00"
+     },
+     {
+      "i": 2,
+      "raw": "2184/2/13 13:42:00",
+      "ref": "2184-02-13 13:42:00"
+     },
+     {
+      "i": 3,
+      "raw": "2183/12/25 09:32:00",
+      "ref": "2183-12-25 09:32:00"
+     },
+     {
+      "i": 4,
+      "raw": "2184/3/16 21:17:00",
+      "ref": "2184-03-16 21:17:00"
+     }
+    ]
+   },
+   {
+    "col": "outtime",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2141/12/19 19:34:00",
+      "ref": "2141-12-19 19:34:00"
+     },
+     {
+      "i": 1,
+      "raw": "2184/2/21 19:42:00",
+      "ref": "2184-02-21 19:42:00"
+     },
+     {
+      "i": 2,
+      "raw": "2184/2/13 22:43:00",
+      "ref": "2184-02-13 22:43:00"
+     },
+     {
+      "i": 3,
+      "raw": "2183/12/25 16:40:00",
+      "ref": "2183-12-25 16:40:00"
+     },
+     {
+      "i": 4,
+      "raw": "2184/3/17 05:50:00",
+      "ref": "2184-03-17 05:50:00"
+     }
+    ]
+   },
+   {
+    "col": "gender",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "race",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "arrival_transport",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "disposition",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "multimodal/ed_diagnosis.csv",
+  "raw_rows": 30,
+  "ref_rows": 30,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "seq_num",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_code",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_version",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "icd_title",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "multimodal/ed_medrecon.csv",
+  "raw_rows": 242,
+  "ref_rows": 242,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "charttime",
+    "n_diff": 242,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2141/12/19 13:15:00",
+      "ref": "2141-12-19 13:15:00"
+     },
+     {
+      "i": 1,
+      "raw": "2141/12/19 13:15:00",
+      "ref": "2141-12-19 13:15:00"
+     },
+     {
+      "i": 2,
+      "raw": "2141/12/19 13:15:00",
+      "ref": "2141-12-19 13:15:00"
+     },
+     {
+      "i": 3,
+      "raw": "2141/12/19 13:15:00",
+      "ref": "2141-12-19 13:15:00"
+     },
+     {
+      "i": 4,
+      "raw": "2141/12/19 13:16:00",
+      "ref": "2141-12-19 13:16:00"
+     }
+    ]
+   },
+   {
+    "col": "name",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "gsn",
+    "n_diff": 242,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "029968",
+      "ref": "29968"
+     },
+     {
+      "i": 1,
+      "raw": "047780",
+      "ref": "47780"
+     },
+     {
+      "i": 2,
+      "raw": "038164",
+      "ref": "38164"
+     },
+     {
+      "i": 3,
+      "raw": "015523",
+      "ref": "15523"
+     },
+     {
+      "i": 4,
+      "raw": "003705",
+      "ref": "3705"
+     }
+    ]
+   },
+   {
+    "col": "ndc",
+    "n_diff": 1,
+    "examples": [
+     {
+      "i": 217,
+      "raw": "00065044801",
+      "ref": "65044801"
+     }
+    ]
+   },
+   {
+    "col": "etc_rn",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "etccode",
+    "n_diff": 242,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "00002747",
+      "ref": "2747.0"
+     },
+     {
+      "i": 1,
+      "raw": "00006094",
+      "ref": "6094.0"
+     },
+     {
+      "i": 2,
+      "raw": "00005795",
+      "ref": "5795.0"
+     },
+     {
+      "i": 3,
+      "raw": "00006081",
+      "ref": "6081.0"
+     },
+     {
+      "i": 4,
+      "raw": "00000546",
+      "ref": "546.0"
+     }
+    ]
+   },
+   {
+    "col": "etcdescription",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "multimodal/ed_pyxis.csv",
+  "raw_rows": 87,
+  "ref_rows": 87,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "charttime",
+    "n_diff": 87,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2141/12/19 11:03:00",
+      "ref": "2141-12-19 11:03:00"
+     },
+     {
+      "i": 1,
+      "raw": "2141/12/19 11:03:00",
+      "ref": "2141-12-19 11:03:00"
+     },
+     {
+      "i": 2,
+      "raw": "2141/12/19 11:06:00",
+      "ref": "2141-12-19 11:06:00"
+     },
+     {
+      "i": 3,
+      "raw": "2141/12/19 11:06:00",
+      "ref": "2141-12-19 11:06:00"
+     },
+     {
+      "i": 4,
+      "raw": "2141/12/19 11:27:00",
+      "ref": "2141-12-19 11:27:00"
+     }
+    ]
+   },
+   {
+    "col": "med_rn",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "name",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "gsn_rn",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "gsn",
+    "n_diff": 80,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "041384",
+      "ref": "41384.0"
+     },
+     {
+      "i": 1,
+      "raw": "041385",
+      "ref": "41385.0"
+     },
+     {
+      "i": 2,
+      "raw": "015869",
+      "ref": "15869.0"
+     },
+     {
+      "i": 3,
+      "raw": "061716",
+      "ref": "61716.0"
+     },
+     {
+      "i": 4,
+      "raw": "062823",
+      "ref": "62823.0"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "output": "multimodal/ed_triage.csv",
+  "raw_rows": 18,
+  "ref_rows": 18,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "temperature",
+    "n_diff": 1,
+    "examples": [
+     {
+      "i": 9,
+      "raw": "97",
+      "ref": "97.0"
+     }
+    ]
+   },
+   {
+    "col": "heartrate",
+    "n_diff": 17,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "90",
+      "ref": "90.0"
+     },
+     {
+      "i": 1,
+      "raw": "89",
+      "ref": "89.0"
+     },
+     {
+      "i": 2,
+      "raw": "95",
+      "ref": "95.0"
+     },
+     {
+      "i": 3,
+      "raw": "77",
+      "ref": "77.0"
+     },
+     {
+      "i": 4,
+      "raw": "64",
+      "ref": "64.0"
+     }
+    ]
+   },
+   {
+    "col": "resprate",
+    "n_diff": 17,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "20",
+      "ref": "20.0"
+     },
+     {
+      "i": 1,
+      "raw": "18",
+      "ref": "18.0"
+     },
+     {
+      "i": 2,
+      "raw": "18",
+      "ref": "18.0"
+     },
+     {
+      "i": 3,
+      "raw": "18",
+      "ref": "18.0"
+     },
+     {
+      "i": 4,
+      "raw": "16",
+      "ref": "16.0"
+     }
+    ]
+   },
+   {
+    "col": "o2sat",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "97",
+      "ref": "97.0"
+     },
+     {
+      "i": 1,
+      "raw": "99",
+      "ref": "99.0"
+     },
+     {
+      "i": 2,
+      "raw": "99",
+      "ref": "99.0"
+     },
+     {
+      "i": 3,
+      "raw": "95",
+      "ref": "95.0"
+     },
+     {
+      "i": 4,
+      "raw": "100",
+      "ref": "100.0"
+     }
+    ]
+   },
+   {
+    "col": "sbp",
+    "n_diff": 17,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "139",
+      "ref": "139.0"
+     },
+     {
+      "i": 1,
+      "raw": "172",
+      "ref": "172.0"
+     },
+     {
+      "i": 2,
+      "raw": "125",
+      "ref": "125.0"
+     },
+     {
+      "i": 3,
+      "raw": "183",
+      "ref": "183.0"
+     },
+     {
+      "i": 4,
+      "raw": "135",
+      "ref": "135.0"
+     }
+    ]
+   },
+   {
+    "col": "dbp",
+    "n_diff": 17,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "64",
+      "ref": "64.0"
+     },
+     {
+      "i": 1,
+      "raw": "59",
+      "ref": "59.0"
+     },
+     {
+      "i": 2,
+      "raw": "64",
+      "ref": "64.0"
+     },
+     {
+      "i": 3,
+      "raw": "62",
+      "ref": "62.0"
+     },
+     {
+      "i": 4,
+      "raw": "63",
+      "ref": "63.0"
+     }
+    ]
+   },
+   {
+    "col": "pain",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "acuity",
+    "n_diff": 18,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2",
+      "ref": "2.0"
+     },
+     {
+      "i": 1,
+      "raw": "3",
+      "ref": "3.0"
+     },
+     {
+      "i": 2,
+      "raw": "2",
+      "ref": "2.0"
+     },
+     {
+      "i": 3,
+      "raw": "2",
+      "ref": "2.0"
+     },
+     {
+      "i": 4,
+      "raw": "2",
+      "ref": "2.0"
+     }
+    ]
+   },
+   {
+    "col": "chiefcomplaint",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ },
+ {
+  "output": "multimodal/ed_vitalsign.csv",
+  "raw_rows": 89,
+  "ref_rows": 89,
+  "cols": [
+   {
+    "col": "subject_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "stay_id",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "charttime",
+    "n_diff": 89,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "2141/12/19 10:54:00",
+      "ref": "2141-12-19 10:54:00"
+     },
+     {
+      "i": 1,
+      "raw": "2141/12/19 11:24:00",
+      "ref": "2141-12-19 11:24:00"
+     },
+     {
+      "i": 2,
+      "raw": "2141/12/19 12:47:00",
+      "ref": "2141-12-19 12:47:00"
+     },
+     {
+      "i": 3,
+      "raw": "2141/12/19 15:30:00",
+      "ref": "2141-12-19 15:30:00"
+     },
+     {
+      "i": 4,
+      "raw": "2141/12/19 17:30:00",
+      "ref": "2141-12-19 17:30:00"
+     }
+    ]
+   },
+   {
+    "col": "temperature",
+    "n_diff": 5,
+    "examples": [
+     {
+      "i": 2,
+      "raw": "98",
+      "ref": "98.0"
+     },
+     {
+      "i": 9,
+      "raw": "99",
+      "ref": "99.0"
+     },
+     {
+      "i": 39,
+      "raw": "97",
+      "ref": "97.0"
+     },
+     {
+      "i": 42,
+      "raw": "98",
+      "ref": "98.0"
+     },
+     {
+      "i": 43,
+      "raw": "98",
+      "ref": "98.0"
+     }
+    ]
+   },
+   {
+    "col": "heartrate",
+    "n_diff": 89,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "90",
+      "ref": "90.0"
+     },
+     {
+      "i": 1,
+      "raw": "96",
+      "ref": "96.0"
+     },
+     {
+      "i": 2,
+      "raw": "95",
+      "ref": "95.0"
+     },
+     {
+      "i": 3,
+      "raw": "94",
+      "ref": "94.0"
+     },
+     {
+      "i": 4,
+      "raw": "95",
+      "ref": "95.0"
+     }
+    ]
+   },
+   {
+    "col": "resprate",
+    "n_diff": 88,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "20",
+      "ref": "20.0"
+     },
+     {
+      "i": 1,
+      "raw": "20",
+      "ref": "20.0"
+     },
+     {
+      "i": 2,
+      "raw": "17",
+      "ref": "17.0"
+     },
+     {
+      "i": 3,
+      "raw": "16",
+      "ref": "16.0"
+     },
+     {
+      "i": 4,
+      "raw": "16",
+      "ref": "16.0"
+     }
+    ]
+   },
+   {
+    "col": "o2sat",
+    "n_diff": 89,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "97",
+      "ref": "97.0"
+     },
+     {
+      "i": 1,
+      "raw": "99",
+      "ref": "99.0"
+     },
+     {
+      "i": 2,
+      "raw": "100",
+      "ref": "100.0"
+     },
+     {
+      "i": 3,
+      "raw": "99",
+      "ref": "99.0"
+     },
+     {
+      "i": 4,
+      "raw": "99",
+      "ref": "99.0"
+     }
+    ]
+   },
+   {
+    "col": "sbp",
+    "n_diff": 88,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "139",
+      "ref": "139.0"
+     },
+     {
+      "i": 1,
+      "raw": "110",
+      "ref": "110.0"
+     },
+     {
+      "i": 2,
+      "raw": "104",
+      "ref": "104.0"
+     },
+     {
+      "i": 3,
+      "raw": "104",
+      "ref": "104.0"
+     },
+     {
+      "i": 4,
+      "raw": "110",
+      "ref": "110.0"
+     }
+    ]
+   },
+   {
+    "col": "dbp",
+    "n_diff": 88,
+    "examples": [
+     {
+      "i": 0,
+      "raw": "64",
+      "ref": "64.0"
+     },
+     {
+      "i": 1,
+      "raw": "56",
+      "ref": "56.0"
+     },
+     {
+      "i": 2,
+      "raw": "49",
+      "ref": "49.0"
+     },
+     {
+      "i": 3,
+      "raw": "57",
+      "ref": "57.0"
+     },
+     {
+      "i": 4,
+      "raw": "57",
+      "ref": "57.0"
+     }
+    ]
+   },
+   {
+    "col": "rhythm",
+    "n_diff": 0,
+    "examples": []
+   },
+   {
+    "col": "pain",
+    "n_diff": 0,
+    "examples": []
+   }
+  ]
+ }
+]
