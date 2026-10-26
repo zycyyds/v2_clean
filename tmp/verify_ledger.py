@@ -43,6 +43,12 @@ TRUTH = {
     "i48-4.7/agent": (
         AGENT_RUN / "experiments/i48_4p7_test_seed666_v2/host/score_report.json",
         RUNS / "i48_more_agent_error_metrics_v29.json"),
+    "n18-4.7/cc": (
+        RUNS / "n18_more_v1_overall_score.json",
+        RUNS / "n18_more_v1_cc_error_metrics_v29.json"),
+    "i48-1.6/cc": (
+        RUNS / "i48_less_cc_v1_overall_score.json",
+        RUNS / "i48_less_cc_v1_cc_error_metrics_v29.json"),
 }
 
 truth = {}

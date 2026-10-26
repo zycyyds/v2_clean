@@ -45,3 +45,17 @@ tmp/*
 !tmp/verify_ledger.py
 !tmp/verify_prompt_chain.py
 !tmp/final_master_table_v29.py
+# —— ⑫⑬ 的取证脚本（只输出聚合数字，不打印任何 subject_id / hadm_id / stay_id）——
+!tmp/collect_val_runs.py
+!tmp/round_scores.py
+!tmp/row_delta.py
+!tmp/print_per_file.py
+!tmp/cc_chartevents_trace.py
+!tmp/dedup_damage.py
+!tmp/dup_in_goldlike.py
+!tmp/inputevents_col_diff.py
+!tmp/inputevents_key_probe.py
+!tmp/leak_itemid_origin.py
+!tmp/leak_itemid_probe.py
+!tmp/leak_run_check.py
+!tmp/stay_filter_probe.py

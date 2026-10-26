@@ -82,6 +82,12 @@ DATA = {
                 RUNS / "n18_more_agent_error_metrics_v29.json",
                 RUNS / "n18_more_agent_error_metrics.json",
                 AGENT_RUN / "experiments/n18_4p7_test_seed666_v1/host/test_result_package"),
+            # cc 2026-10-26 跑的一次性结果（用 codex 任务书）
+            "cc (Claude Code)": (
+                RUNS / "n18_more_v1_overall_score.json",
+                RUNS / "n18_more_v1_cc_error_metrics_v29.json",
+                RUNS / "n18_more_v1_cc_error_metrics_v29.json",
+                AW / "n18_more_v1/output"),
         },
     },
     "I48 1.6pct": {
@@ -92,6 +98,12 @@ DATA = {
                 RUNS / "i48_less_agent_error_metrics_v29.json",
                 RUNS / "i48_less_agent_error_metrics.json",
                 AGENT_RUN / "experiments/i48_1p6_test_seed666_v1/host/test_result_package"),
+            # cc 2026-10-26 跑的一次性结果（用 codex 任务书）
+            "cc (Claude Code)": (
+                RUNS / "i48_less_cc_v1_overall_score.json",
+                RUNS / "i48_less_cc_v1_cc_error_metrics_v29.json",
+                RUNS / "i48_less_cc_v1_cc_error_metrics_v29.json",
+                AW / "i48_less_cc_v1/output/test"),
         },
     },
     "I48 4.7pct": {
@@ -235,3 +247,32 @@ for ds, cfg in DATA.items():
         print(f"| {ds} | — | {t:.6f} | — |")
     else:
         print(f"| {ds} | {v:.6f} | {t:.6f} | **{t - v:+.6f}** |")
+
+print("\n## 六、读数须知（三条不看会读错）\n")
+print("""### ① 同种子重跑**不保证**复现 —— 小于 ~0.011 的差值不可判定
+
+`model_config.yaml` 固定了 `temperature: 0.0` / `seed: 666`，
+但 **icu5000 1.6pct 用同一份 prompt（sha256 逐位相同）跑三次，第 4 轮分数是
+0.892868 / 0.903023 ⇒ 差 0.010155**。
+根因不是采样噪声，是**多轮 val 反馈闭环把扰动放大了**（每轮把得分和反馈喂回 agent）。
+
+⇒ **icu5000 1.6pct 我们比 codex 高 0.001139 = 噪声内，正确说法是「打平」。**
+⇒ I48 1.6pct cc 比我们高 0.006166 **也小于这个量级**。
+真正可判定的差值：N18 1.6pct（+0.021205）、icu5000 4.7pct（−0.017265 / −0.033373）。
+（test 阶段是纯重放、无 LLM，那一层是可复现的 —— 每条记录 `reproducible_score == best_score`。）
+
+### ② cc 的错误级指标被 cc 自己制造的损失污染
+
+N18 4.7pct cc 的 `b_missing` = 2,684,119、I48 1.6pct = 1,140,639，
+**大部分不是「没检出脏数据」，是 cc 的 pipeline 自己把 gold 里真实存在的行删了**
+（N18：删 `itemid=='999001'` −1,184,531 行 + 8 列去重 −643,177 行；
+I48：`itemid` 前缀没剥掉 ⇒ `matched_key_rows = 0/374,003`）。
+⇒ **cc 的 Det/Rep 与我们的不可直接比。**
+
+### ③ `hospital_expire_flag` 是一条标签泄漏通道
+
+我们 agent 的 `pipeline.py:282-283` 用 `deathtime` / `discharge_location=='DIED'`
+把 `hospital_expire_flag` **完全修对**（train 上 23/23），再由 `:344` 复制进 `cohort.csv`
+⇒ **交付的结果包自带一列近乎完美的院内死亡标签**。
+下游做死亡预测时**必须 drop 掉这一列**，且标签必须从 gold 的 `dod` + 住院窗口现算。
+""")
