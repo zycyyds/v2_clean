@@ -96,6 +96,17 @@ PROFILES = {
                      / "v2_rawerror_i48_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
     },
+    # I48 4.7pct（more）：密度剖面是「反转」的 —— train 2.33% / validation 0.89% /
+    # test 4.72%。validation 的错误密度比 train 低三倍、比 test 低五倍。
+    "i48_more": {
+        "ds": PROJ / "datasets/注入错误数据集/i48_more_1",
+        "prompt": PROMPT_DIR / "i48_4.7pct_val_prompt_v1.md",
+        "exp_prefix": "i48_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集"
+                     / "I48_atrial_fibrillation_v2_rawerror_test4.7pct_411M"
+                     / "v2_rawerror_i48_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
+    },
 }
 
 MAX_TURN_RETRIES = 4

@@ -31,4 +31,17 @@ mimic-*/
 k29_agent_run/*
 !k29_agent_run/N18_1p6pct_评测结果.md
 !k29_agent_run/N18_4p7pct_评测结果.md
-tmp/
+# 任务书留在运行区不入库 —— 里面有 MIMIC 的 train subject_id，
+# 而 origin / public-origin 都是公开仓库。（台账里记着每份任务书的 sha256，
+# 有文件的人可以自行核；icu5000 那两份早就在 eval_handoff/prompts/ 里。）
+
+# tmp/ 是草稿区，但台账引用到的**证据脚本**要入库 ——
+# 否则「逐字节证明没改 agent 的解法」这些结论没法被人复核。
+!tmp/
+tmp/*
+!tmp/fix_and_verify_i48_more.py
+!tmp/patch_frozen_i48_more.py
+!tmp/recover_i48_val.py
+!tmp/verify_ledger.py
+!tmp/verify_prompt_chain.py
+!tmp/final_master_table_v29.py
