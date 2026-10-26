@@ -113,8 +113,8 @@ multimodal/ed_triage.csv              18/18         1.0000 (198/198)   1.0000 (1
 multimodal/ed_vitalsign.csv           89/89         1.0000 (979/979)   1.0000 (801/801)  1.0000
 multimodal/edstays.csv                18/18         1.0000 (162/162)   1.0000 (144/144)  1.0000
 
-OVERALL positional cell accuracy: 0.8118
-OVERALL merged     cell accuracy: 0.9831
+OVERALL positional cell accuracy: 0.8124
+OVERALL merged     cell accuracy: 0.9855
 ```
 
 `positional` compares the produced rows with the reference rows in file order,

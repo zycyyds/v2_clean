@@ -15,7 +15,7 @@
     17459613,
     18976991
   ],
-  "summary": "The raw slice is a MIMIC-IV style hosp/icu/ed/note tree whose hosp+icu tables carry injected cell level errors. The pipeline first repairs the raw tables, then selects the N18 cohort and formats the 18 reference CSVs. Every rule below was derived by diffing train/raw against train/reference; the train self check (train_self_check.py) reproduces the reference with 0.9831 cell accuracy on the key joined frames (1.0000 for 12 of the 18 files).",
+  "summary": "The raw slice is a MIMIC-IV style hosp/icu/ed/note tree whose hosp+icu tables carry injected cell level errors. The pipeline first repairs the raw tables, then selects the N18 cohort and formats the 18 reference CSVs. Every rule below was derived by diffing train/raw against train/reference; the train self check (train_self_check.py) reproduces the reference with 0.9855 cell accuracy on the key joined frames (1.0000 for 12 of the 18 files).",
   "cohort_definition": {
     "cohort_type": "disease_with_required_modality",
     "cohort_label": "N18",
@@ -482,8 +482,8 @@
   "train_self_check": {
     "script": "scripts/selfcheck_train.py",
     "report": "analysis/train_selfcheck.json",
-    "positional_cell_accuracy": 0.8118,
-    "merged_cell_accuracy": 0.9831,
+    "positional_cell_accuracy": 0.8124,
+    "merged_cell_accuracy": 0.9855,
     "note": "the positional score of icu/chartevents.csv is low because the reference contains 296 chart events whose original charttime the corrupter destroyed; the key aligned score is the meaningful one (row F1 0.9568)."
   },
   "replay": {
