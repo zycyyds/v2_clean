@@ -49,6 +49,9 @@ TRUTH = {
     "i48-1.6/cc": (
         RUNS / "i48_less_cc_v1_overall_score.json",
         RUNS / "i48_less_cc_v1_cc_error_metrics_v29.json"),
+    "i48-4.7/cc": (
+        RUNS / "i48_more_cc_v1_overall_score.json",
+        RUNS / "i48_more_cc_v1_cc_error_metrics_v29.json"),
 }
 
 truth = {}

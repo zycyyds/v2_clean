@@ -114,6 +114,12 @@ DATA = {
                 RUNS / "i48_more_agent_error_metrics_v29.json",
                 RUNS / "i48_more_agent_error_metrics.json",
                 AGENT_RUN / "experiments/i48_4p7_test_seed666_v2/host/test_result_package"),
+            # cc 2026-10-27 跑的一次性结果（用 codex 任务书）
+            "cc (Claude Code)": (
+                RUNS / "i48_more_cc_v1_overall_score.json",
+                RUNS / "i48_more_cc_v1_cc_error_metrics_v29.json",
+                RUNS / "i48_more_cc_v1_cc_error_metrics_v29.json",
+                AW / "i48_more_v1/output/test"),
         },
     },
 }

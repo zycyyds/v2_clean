@@ -13,6 +13,8 @@ JOBS = [
     ("cc N18 4.7pct · agent", WT / "k29_agent_run/experiments/n18_4p7_test_seed666_v1/host/score_report.json"),
     ("cc I48 1.6pct", RUNS / "i48_less_cc_v1_overall_score.json"),
     ("cc I48 1.6pct · agent", WT / "k29_agent_run/experiments/i48_1p6_test_seed666_v1/host/score_report.json"),
+    ("cc I48 4.7pct", RUNS / "i48_more_cc_v1_overall_score.json"),
+    ("cc I48 4.7pct · agent", WT / "k29_agent_run/experiments/i48_4p7_test_seed666_v2/host/score_report.json"),
 ]
 
 for tag, p in JOBS:
