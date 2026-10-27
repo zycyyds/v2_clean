@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "task": "K29_gastritis_duodenitis",
+  "source_dataset": "MIMIC-IV v3.1",
+  "cohort_filter": "ICD K29.* (gastritis / duodenitis) on hospital admissions",
+  "description": "12 structured csv files (7 top-level + 4 icu + 1 multimodal/notes). scorer grades all 12 via equal_file_row_aligned_v1. summary.json must live OUTSIDE this reference directory (e.g. reference/_meta/summary.json) so the row-aligned scorer does not pick it up; the harness enforces this via preflight.",
+  "files": {
+    "admissions.csv": {
+      "key_columns": ["hadm_id"],
+      "expected_rows_per_10_hadms": 10
+    },
+    "cohort.csv": {
+      "key_columns": ["hadm_id"],
+      "expected_rows_per_10_hadms": 10
+    },
+    "demographics.csv": {
+      "key_columns": ["subject_id"],
+      "notes": "subject-keyed, may have multiple rows per subject (anchor_year × valueuom-like breakdown)"
+    },
+    "diagnoses.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "procedures.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "medications.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "starttime",
+        "stoptime",
+        "drug",
+        "dose_val_rx",
+        "dose_unit_rx",
+        "route"
+      ],
+      "notes": "all 8 columns used as a composite key; raw may contain ~6 dup rows after compression"
+    },
+    "labs.csv": {
+      "key_columns": ["subject_id", "hadm_id", "itemid", "charttime", "valuenum", "valueuom"]
+    },
+    "icu/icustays.csv": {
+      "key_columns": ["stay_id"]
+    },
+    "icu/chartevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "valuenum",
+        "valueuom"
+      ],
+      "notes": "all 7 columns used as a composite key; raw may contain ~70 dup rows after compression"
+    },
+    "icu/inputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "starttime",
+        "itemid",
+        "amount"
+      ]
+    },
+    "icu/outputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "value"
+      ]
+    },
+    "multimodal/notes.csv": {
+      "key_columns": ["note_id"]
+    }
+  },
+  "_auxiliary_files": {
+    "_comment": "summary.json is intentionally NOT in 'files'. scorer would error trying to extract columns from a JSON document. Keep summary.json OUTSIDE the reference directory tree the scorer walks (e.g. move it to <split>/reference/_meta/summary.json or <split>/_meta/summary.json).",
+    "summary.json": {
+      "expected_path_outside_scorer_scope": "<split>/_meta/summary.json",
+      "kind": "metadata",
+      "schema": {
+        "cohort": {
+          "raw_rows": "int",
+          "clean_rows": "int",
+          "removed_missing_or_duplicates": "int",
+          "patients": "int",
+          "admissions": "int",
+          "icu_stays": "int"
+        },
+        "records": {
+          "diagnoses": "int",
+          "procedures": "int",
+          "labs": "int",
+          "medications": "int",
+          "icu_chart": "int",
+          "icu_input": "int",
+          "icu_output": "int"
+        },
+        "multimodal": "object"
+      },
+      "scoring": "existence_and_size_only"
+    }
+  }
+}

@@ -1,4 +1,4 @@
-"""核对：9 条结果的 composite / Det / Rep 是否都真的写进了各个汇总文件。"""
+"""核对：15 条结果的 composite / Det / Rep 是否都真的写进了各个汇总文件。"""
 import json
 from pathlib import Path
 
@@ -52,6 +52,9 @@ TRUTH = {
     "i48-4.7/cc": (
         RUNS / "i48_more_cc_v1_overall_score.json",
         RUNS / "i48_more_cc_v1_cc_error_metrics_v29.json"),
+    "k29-1800/agent": (
+        RUNS / "k29_1800_agent_overall_score.json",
+        RUNS / "k29_1800_agent_error_metrics_v29.json"),
 }
 
 truth = {}
