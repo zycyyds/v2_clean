@@ -55,6 +55,14 @@ RATE_PRESETS = {
         "rates": {"train": 0.0130, "validation": 0.0224, "test": 0.0158},
         "tag": "1.6pct",
     },
+    # 低密度档：**绝对条数**（不是比例）。
+    # 与 N18/I48/ICU5000 的 *_v2_rawerror_10train_400_800_1800 同规格，
+    # 但那三个是 legacy 引擎造的（future_window_leakage 退化成清空 charttime、
+    # stay_hadm_mismatch 写成字面量），这版走 fixed-v1 引擎。
+    "1800": {
+        "counts": {"train": 400, "validation": 800, "test": 1800},
+        "tag": "1800",
+    },
 }
 
 DATASETS = {
@@ -74,6 +82,17 @@ DATASETS = {
         "clean": "icu_5000_clean_eval_10_20_rest",
         "out_base": "icu_5000_v2_rawerror_test{tag}_614M",
         "split_key": "stay_id",
+        "split_dir": {"train": "train", "validation": "val", "test": "test"},
+    },
+    # K29（胃炎/十二指肠炎）。切分键是 hadm_id（split_manifest.json 的
+    # split_strategy = deterministic_random_split_by_hadm_id，seed 20260819），
+    # 干净数据的 keys.csv 首列也是 hadm_id ⇒ read_keys 自动读对。
+    # 注意 split_key 在引擎里其实是死参数，真正的「哪些行算在范围内」
+    # 由 all_keys（= keys.csv 首列）决定。
+    "k29": {
+        "clean": "K29_clean_eval_10_20_rest",
+        "out_base": "K29_clean_v2_rawerror_10train_400_800_{tag}",
+        "split_key": "hadm_id",
         "split_dir": {"train": "train", "validation": "val", "test": "test"},
     },
 }
@@ -245,12 +264,18 @@ def run_split(key: str, cfg: dict, split: str, preset: dict, dry_run: bool = Fal
 
     print(f"\n{'=' * 78}\n=== {key} / {split}\n{'=' * 78}", flush=True)
 
-    # 1. 目标：按 cell 率算
+    # 1. 目标：按 cell 率算（或按绝对条数，低密度档用）
     total_cells, total_rows = count_raw_cells(raw_src)
-    rate = preset["rates"][split]
-    target = int(round(total_cells * rate))
+    if "counts" in preset:
+        target = int(preset["counts"][split])
+        rate = target / total_cells
+        mode = f"绝对条数 {target:,} 条"
+    else:
+        rate = preset["rates"][split]
+        target = int(round(total_cells * rate))
+        mode = f"cell 率 {rate * 100:.4f}%"
     print(f"  全部 raw: {total_rows:,} 行 / {total_cells:,} cells")
-    print(f"  目标 cell 率 {rate * 100:.2f}%  →  target {target:,} 条", flush=True)
+    print(f"  目标 {mode}  →  target {target:,} 条", flush=True)
     if dry_run:
         return {"target_errors": target, "total_cells": total_cells, "total_rows": total_rows}
 
@@ -375,7 +400,10 @@ def main() -> int:
             "baseline": cfg["clean"],
             "injection_engine_version": ENGINE_VERSION,
             "rate_preset": args.rates,
-            "cell_rates": preset["rates"],
+            "cell_rates": preset.get("rates")
+            or {sp: (preset["counts"][sp] / max(
+                (r["total_cells"] for r in reports.values() if r and sp in r), default=1))
+                for sp in SPLITS if sp in reports},
             "splits": {},
         }
         if p.is_file():

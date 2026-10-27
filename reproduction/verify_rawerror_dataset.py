@@ -41,6 +41,14 @@ OUT_ROOT = ROOT / "datasets/注入错误数据集"
 CELL_RATES = {
     "4.7pct": {"train": 0.0233, "validation": 0.0089, "test": 0.0472},
     "1.6pct": {"train": 0.0130, "validation": 0.0224, "test": 0.0158},
+    # 低密度档：绝对条数 400/800/1800，换算成率（分母 = 各 split 干净基线的
+    # 全部 raw cell 数，实测 K29：112,984 / 728,158 / 265,583,987）。
+    "1800": {"train": 400 / 112984, "validation": 800 / 728158, "test": 1800 / 265583987},
+}
+# 低密度档的目标**绝对条数**（错误率在 1e-5 量级时，±0.0005 的率容差形同虚设，
+# 必须直接卡条数）
+TARGET_COUNTS = {
+    "1800": {"train": 400, "validation": 800, "test": 1800},
 }
 INJECTED_TABLES = [
     "hosp/patients.csv", "hosp/admissions.csv", "hosp/diagnoses_icd.csv",
@@ -59,6 +67,9 @@ DATASETS = {
     "icu5000": ("icu_5000_clean_eval_10_20_rest",
                  "icu_5000_v2_rawerror_test{tag}_614M",
                  {"train": "train", "validation": "val", "test": "test"}),
+    "k29": ("K29_clean_eval_10_20_rest",
+            "K29_clean_v2_rawerror_10train_400_800_{tag}",
+            {"train": "train", "validation": "val", "test": "test"}),
 }
 
 
@@ -169,7 +180,7 @@ def probe_rows(raw_file: Path, wanted: set[int], columns: list[str]):
 
 
 def check_split(key: str, split: str, clean_name: str, out_name: str, sd,
-                 rates: dict) -> dict:
+                 rates: dict, preset: str = "4.7pct") -> dict:
     res = {}
     clean_split = CLEAN_ROOT / clean_name / sd[split]
     out_split = OUT_ROOT / out_name / split
@@ -225,26 +236,52 @@ def check_split(key: str, split: str, clean_name: str, out_name: str, sd,
           % (total, "{:,}".format(cells), rate * 100, want * 100,
              "OK" if res["5_rate"] else "FAIL"))
 
+    # ---- 5b. 绝对条数（低密度档必备：率在 1e-5 量级时，±0.0005 的率容差形同虚设）
+    want_n = TARGET_COUNTS.get(preset, {}).get(split)
+    if want_n is not None:
+        res["5b_target_count"] = (total == want_n)
+        print("  [5b] 绝对条数: %d  (目标 %d)  %s"
+              % (total, want_n, "OK" if total == want_n else "FAIL"))
+
     # ---- 6. 干净模态零污染
+    # 有 CLEAN_MODALITIES 的（n18/i48/icu5000）：整个 modality 目录必须逐字节相同。
+    # 没有的（K29）：raw 是 28 张 MIMIC 源表铺在一棵树上，没有「干净的模态目录」，
+    # 干净的表是**除 7 张被注入表以外的所有表** —— 逐文件 md5 比对。
     clean_ok = True
-    for mod in CLEAN_MODALITIES.get(key, []):
-        src_dir = raw_src / mod
-        dst_dir = raw_out / mod
-        if not src_dir.is_dir():
-            continue
-        for p in sorted(src_dir.rglob("*")):
+    mods = CLEAN_MODALITIES.get(key, [])
+    if mods:
+        for mod in mods:
+            src_dir = raw_src / mod
+            dst_dir = raw_out / mod
+            if not src_dir.is_dir():
+                continue
+            for p in sorted(src_dir.rglob("*")):
+                if not p.is_file() or p.name == ".DS_Store":
+                    continue
+                rel = p.relative_to(src_dir)
+                q = dst_dir / rel
+                if not q.is_file():
+                    q = dst_dir / rel.with_suffix("")
+                if not q.is_file() or md5_bytes(p) != md5_bytes(q):
+                    clean_ok = False
+                    print("      !! %s/%s 内容不一致" % (mod, rel))
+    else:
+        n_clean = 0
+        for p in sorted(raw_src.rglob("*")):
             if not p.is_file() or p.name == ".DS_Store":
                 continue
-            rel = p.relative_to(src_dir)
-            q = dst_dir / rel
-            if not q.is_file():
-                q = dst_dir / rel.with_suffix("")
+            rel = p.relative_to(raw_src)
+            if rel.as_posix() in INJECTED_TABLES:
+                continue
+            n_clean += 1
+            q = raw_out / rel
             if not q.is_file() or md5_bytes(p) != md5_bytes(q):
                 clean_ok = False
-                print("      !! %s/%s 内容不一致" % (mod, rel))
+                print("      !! %s 内容不一致" % rel)
+        print("      （比对 %d 张未被注入的表）" % n_clean)
     res["6_clean_modalities"] = clean_ok
     print("  [6] 干净模态零污染 (%s): %s"
-          % (",".join(CLEAN_MODALITIES.get(key, [])) or "无",
+          % (",".join(mods) or "所有未被注入的表",
              "OK" if clean_ok else "FAIL"))
 
     # ---- 7. 索引位移语义
@@ -454,7 +491,7 @@ def main() -> int:
     splits = args.splits or ("train", "validation", "test")
     all_ok = True
     for sp in splits:
-        r = check_split(args.dataset, sp, clean_name, out_name, sd, rates)
+        r = check_split(args.dataset, sp, clean_name, out_name, sd, rates, args.rates)
         all_ok = all_ok and r.get("all_ok", False)
     print("\n" + "=" * 88)
     print("总判定: %s" % ("全部通过" if all_ok else "存在失败项"))

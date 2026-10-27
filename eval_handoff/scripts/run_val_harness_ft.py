@@ -107,6 +107,20 @@ PROFILES = {
                      / "v2_rawerror_i48_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
     },
+    # K29（胃炎/十二指肠炎）低密度档：train 400 / validation 800 / test 1,800 条错误
+    # （fixed-v1 引擎造的，0 自然噪声）。切分键 hadm_id、12 个输出文件、
+    # 多模态是 note/。视图走 datasets/val_views/（密封，父目录里没有别的东西）。
+    # 任务书用 v2 —— v1 里写的密度是 4.7pct 的数字，跟这一档对不上；
+    # v1 的 sha256 已被台账记为旧跑分（k29_1800_val_seed666_v1）的证据，不能改。
+    "k29_1800": {
+        "ds": PROJ / "datasets/val_views/k29_1800",
+        "prompt": PROMPT_DIR / "k29_1800_val_prompt_v2.md",
+        "exp_prefix": "k29_1800_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集"
+                     / "K29_clean_v2_rawerror_10train_400_800_1800"
+                     / "v2_rawerror_k29_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/k29_gastritis_duodenitis_v3_1.json",
+    },
 }
 
 MAX_TURN_RETRIES = 4

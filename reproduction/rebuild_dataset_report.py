@@ -84,7 +84,8 @@ def main() -> int:
         stay_min, stay_max = _min_max(by_stay)
 
         splits_report[split] = {
-            "target_errors": int(round(base_cells * preset["rates"][split])),
+            "target_errors": (preset["counts"][split] if "counts" in preset
+                              else int(round(base_cells * preset["rates"][split]))),
             "actual_errors": n,
             "cell_level_error_rate": round(n / final_cells, 6) if final_cells else 0,
             "total_cells": final_cells,
@@ -106,9 +107,11 @@ def main() -> int:
             "natural_noise_count": by_class.get("class0_baseline_gap", 0),
             "seed": deterministic_seed(key, split),
         }
+        want = (preset["counts"][split] if "counts" in preset
+                else int(round(base_cells * preset["rates"][split])))
         print(f"  {split}: {n:,} 条 / {final_cells:,} cells = "
               f"{splits_report[split]['cell_level_error_rate'] * 100:.4f}%  "
-              f"(目标 {preset['rates'][split] * 100:.2f}%)  "
+              f"(目标 {want:,} 条)  "
               f"subtypes={len(by_subtype)}  自然噪声={by_class.get('class0_baseline_gap', 0)}")
 
     report = {
@@ -116,7 +119,10 @@ def main() -> int:
         "baseline": cfg["clean"],
         "injection_engine_version": ENGINE_VERSION,
         "rate_preset": args.rates,
-        "cell_rates": preset["rates"],
+        "target_counts": preset.get("counts"),
+        "cell_rates": preset.get("rates")
+        or {sp: round(splits_report[sp]["cell_level_error_rate"], 10)
+            for sp in splits_report},
         "naming_convention": (
             "目录名里的 {N}M = 该数据集**注入前**的 raw cell 总数（490M/411M/614M）；"
             "K29 的 K29_v2_rawerror_test4.7pct_14.1M 用的是**错误条数**（14,123,558）。"

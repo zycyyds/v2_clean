@@ -169,7 +169,9 @@ def main() -> int:
     args = ap.parse_args()
     preset = RATE_PRESETS[args.rates]
     tag = preset["tag"]
-    rates = preset["rates"]
+    # 低密度档（1800）没有 "rates" 键（它给的是绝对条数）—— 用 .get 兜住，
+    # 真正要核的率由每个数据集自己的报告带（fixed-v1 分支读 cell_rates）。
+    rates = preset.get("rates") or {}
 
     out = []
     if not args.no_k29:

@@ -18,6 +18,9 @@ dir_name() {
     n18)     echo "N18_ckd_ED_v2_rawerror_test${RATES}_490M" ;;
     i48)     echo "I48_atrial_fibrillation_v2_rawerror_test${RATES}_411M" ;;
     icu5000) echo "icu_5000_v2_rawerror_test${RATES}_614M" ;;
+    # K29 的低密度档目录名不带错误率（固定 10train_400_800_{tag}），
+    # 只有 1800 这一档存在。
+    k29)     echo "K29_clean_v2_rawerror_10train_400_800_${RATES}" ;;
   esac
 }
 
