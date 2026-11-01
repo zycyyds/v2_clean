@@ -125,3 +125,36 @@ if miss:
         print("   缺:", m)
 else:
     print(f"   OK  {len(CORRECTION)} 个数据集的行级 + cell 级修复率全部命中")
+
+# ---- 校正类：按切分的检测 / 修复率也必须写进台账 §1.4 / §2 ----
+SPLIT_NUMBERS = {
+    "tax":     [("test 行级", "99.58%"), ("test cell级", "99.65%")],
+    "beers":   [("test 行级", "94.17%"), ("test cell级", "96.75%")],
+    "rayyan":  [("test 行级", "73.30%"), ("test cell级", "93.00%")],
+    "flights": [("test 行级", "8.39%"), ("test cell级", "38.26%"),
+                ("train 行级", "0.00%"), ("train cell级", "50.00%")],
+}
+miss = []
+for name, items in SPLIT_NUMBERS.items():
+    path = RUNS / f"correction_{name}_score_by_split.json"
+    if not path.is_file():
+        miss.append(f"{name}  切分分数文件缺失: {path}")
+        continue
+    d = json.loads(path.read_text(encoding="utf-8"))
+    te = d["test(correction)"]
+    for label, expect in items:
+        if label.startswith("test"):
+            want = te["row_repair_rate"] if "行级" in label else te["cell_repair_rate"]
+        else:
+            tr = d["train"]
+            want = tr["row_repair_rate"] if "行级" in label else tr["cell_repair_rate"]
+        if f"{want * 100:.2f}%" != expect:
+            miss.append(f"{name}  {label} 分数文件={want*100:.2f}% 与台账写的 {expect} 不一致")
+        elif expect not in ledger:
+            miss.append(f"{name}  {label} 修复率 {expect}（台账里找不到）")
+print("\n=== 校正类：train / test 切分的检测+修复率 ===")
+if miss:
+    for m in miss:
+        print("   缺:", m)
+else:
+    print(f"   OK  {len(SPLIT_NUMBERS)} 个数据集的切分口径数字与分数文件一致、且都写进了台账")
