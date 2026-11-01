@@ -158,3 +158,29 @@ if miss:
         print("   缺:", m)
 else:
     print(f"   OK  {len(SPLIT_NUMBERS)} 个数据集的切分口径数字与分数文件一致、且都写进了台账")
+
+# ---- 校正类：v29 口径的 Det F1 / Rep F1 也必须写进台账 ----
+F1_CHECK = {
+    "tax":     ("0.999794", "0.996516"),
+    "beers":   ("0.983498", "0.983498"),
+    "rayyan":  ("0.842691", "0.788863"),
+    "flights": ("0.582426", "0.542338"),
+}
+miss = []
+for name, (det, rep) in F1_CHECK.items():
+    path = RUNS / f"correction_{name}_f1_by_split.json"
+    if not path.is_file():
+        miss.append(f"{name}  F1 分数文件缺失: {path}")
+        continue
+    te = json.loads(path.read_text(encoding="utf-8"))["test(correction)"]
+    for tag, want, key in (("Det F1", det, "det_F1"), ("Rep F1", rep, "rep_F1")):
+        if f"{te[key]:.6f}" != want:
+            miss.append(f"{name}  {tag} 分数文件={te[key]:.6f} 与台账写的 {want} 不一致")
+        elif want not in ledger:
+            miss.append(f"{name}  {tag} {want}（台账里找不到）")
+print("\n=== 校正类：v29 口径 Det F1 / Rep F1（test 切分）===")
+if miss:
+    for m in miss:
+        print("   缺:", m)
+else:
+    print(f"   OK  {len(F1_CHECK)} 个数据集的 Det/Rep F1 与分数文件一致、且都写进了台账")
