@@ -149,6 +149,18 @@ PROFILES = {
         "eval_manifest": WT / "evaluation_manifests/raha_correction_hospital_v1.json",
         "validation_gold_subdir": "validation/gold",
     },
+    # flights 的**组密集**切分版：train 里每个航班给多行，
+    # 让「同航班共享常量」这条结构在 train 上可学、在 validation 上可验证
+    # （旧的 curated 选法每个航班只留 1 行 ⇒ 这条结构在 train/val 上根本不存在）。
+    "flights_correction_dense": {
+        "ds": PROJ / "datasets/correction/flights_curated10_groupdense_v1",
+        "prompt": WT / "eval_handoff/prompts/flights_correction_val_prompt_v1.md",
+        "exp_prefix": "flights_correction_dense_val_seed666",
+        "manifest": (PROJ / "datasets/correction/flights_curated10_groupdense_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_flights_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
 }
 
 MAX_TURN_RETRIES = 4
