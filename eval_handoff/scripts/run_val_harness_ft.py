@@ -43,6 +43,9 @@ from agent.pi_worker_client import JsonlWorkerClient  # noqa: E402
 
 RUN = Path(os.environ.get("RUN", str(PROJ / "k29_agent_run")))
 PROMPT_DIR = Path(os.environ.get("PROMPT_DIR", str(RUN / "prompts")))
+# 本 driver 所在的**工作树**根：evaluation_manifests / prompts 这些「跟代码走」的东西
+# 从这里取，别从 PROJ（共享 checkout，可能在别的分支上）取。
+WT = Path(os.environ.get("WT", str(Path(__file__).resolve().parents[2])))
 
 # profile → (视图目录, prompt 文件, 实验名前缀, dataset manifest 所在的完整数据集)
 PROFILES = {
@@ -121,6 +124,31 @@ PROFILES = {
                      / "v2_rawerror_k29_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/k29_gastritis_duodenitis_v3_1.json",
     },
+    # ---- 校正类（单表纠错）----
+    # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
+    # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
+    #   切分目录里 train/{raw,reference}、validation/{raw,gold}、correction/{raw,reference_private}
+    #   ⇒ 注意 gold 目录叫 **gold** 不是 reference（所以下面要覆盖 validation_gold_subdir）
+    #   ⇒ correction/reference_private 与 host_private 对 agent 不可读（sandbox 只放行
+    #     train raw / train reference / validation raw 三个根）
+    "flights_correction": {
+        "ds": PROJ / "datasets/correction/flights_curated10_val20_v1",
+        "prompt": WT / "eval_handoff/prompts/flights_correction_val_prompt_v1.md",
+        "exp_prefix": "flights_correction_val_seed666",
+        "manifest": (PROJ / "datasets/correction/flights_curated10_val20_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_flights_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
+    "hospital_correction": {
+        "ds": PROJ / "datasets/correction/raha_hospital_curated10_val20_dense_v1",
+        "prompt": WT / "eval_handoff/prompts/hospital_correction_val_prompt_v1.md",
+        "exp_prefix": "hospital_correction_val_seed666",
+        "manifest": (PROJ / "datasets/correction/raha_hospital_curated10_val20_dense_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_hospital_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
 }
 
 MAX_TURN_RETRIES = 4
@@ -158,7 +186,7 @@ def make_config(exp_name: str, prof: dict) -> PiValidationHarnessConfig:
         train_raw=ds / "train/raw",
         train_reference=ds / "train/reference",
         validation_raw=ds / "validation/raw",
-        validation_gold=ds / "validation/reference",
+        validation_gold=ds / prof.get("validation_gold_subdir", "validation/reference"),
         evaluation_manifest=prof.get(
             "eval_manifest",
             PROJ / "evaluation_manifests/icu_5000_v1.json"),

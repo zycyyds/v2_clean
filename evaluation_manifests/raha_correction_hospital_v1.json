@@ -1,0 +1,15 @@
+{
+ "schema_version": 1,
+ "task": "raha_correction_hospital",
+ "source_dataset": "Raha hospital (single-table correction)",
+ "description": "单表纠错：给定 10 行「脏↔干净」对照样例，归纳破坏规则并修好整张表。评分用 equal_file_row_aligned_v1（单文件：schema_f1 / key_structure_f1 / row_aligned_cell_f1 / exact_row_f1 按 0.1/0.2/0.4/0.3 加权）。gold 目录是 validation/gold/（20 行），test(=correction) 段的 gold 对 agent 不可见。",
+ "files": {
+  "hospital.csv": {
+   "key_columns": [
+    "index"
+   ],
+   "expected_rows": 20,
+   "notes": "单表；主键 index；20 列（切分里 dirty/clean 已统一成 snake_case 表头）"
+  }
+ }
+}
