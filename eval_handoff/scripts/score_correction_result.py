@@ -56,15 +56,13 @@ def f1(p, r):
     return 2 * p * r / (p + r) if (p + r) else 0.0
 
 
-def score(dataset, result_path, split_override=None):
+def score(dataset, result_path, split_override=None, only_test=False):
     dirty_rel, clean_rel, split, key, positional = DATASETS[dataset]
     if split_override:
         split = split_override
     dcols, drows = load(SRC / dirty_rel)
     ccols, crows = load(SRC / clean_rel)
     rcols, rrows = load(result_path)
-    if len(rrows) != len(drows):
-        raise SystemExit(f"结果行数 {len(rrows)} != 脏表 {len(drows)}")
     if not positional and rcols != dcols:
         raise SystemExit(f"结果列名与脏表不一致：\n  脏表 {dcols}\n  结果 {rcols}")
 
@@ -78,6 +76,7 @@ def score(dataset, result_path, split_override=None):
             d["__row_id"] = str(i)
 
     # 结果按 key 对齐（tax 的结果包里没有 __row_id 列 ⇒ 按行序）
+    partial = len(rrows) != len(drows)
     if key in rcols:
         rmap = defaultdict(list)
         for r in rrows:
@@ -89,6 +88,8 @@ def score(dataset, result_path, split_override=None):
     else:
         idx = list(rrows) + [None] * max(0, len(drows) - len(rrows))
 
+    if only_test:
+        splits = {"test(correction)": splits["test(correction)"]}
     out = {}
     for name, keys in splits.items():
         n = tp_det = tp_rep = b_wrong = fp = 0
@@ -145,19 +146,20 @@ def score(dataset, result_path, split_override=None):
             det_P=det_p, det_R=det_r, det_F1=f1(det_p, det_r),
             rep_P=rep_p, rep_R=rep_r, rep_F1=f1(rep_p, rep_r),
         )
-    # 全表 = train + test 两段合并
-    a, b = out["train"], out["test(correction)"]
-    rows_tot = a["dirty_rows"] + b["dirty_rows"]
-    out["whole_table"] = dict(
-        rows=a["rows"] + b["rows"], dirty_rows=rows_tot,
-        dirty_cells=a["dirty_cells"] + b["dirty_cells"],
-        row_exact=a["row_exact"] + b["row_exact"],
-        row_missed=a["row_missed"] + b["row_missed"],
-        row_incorrect=a["row_incorrect"] + b["row_incorrect"],
-        row_repair_rate=((a["row_exact"] + b["row_exact"]) / rows_tot) if rows_tot else 1.0,
-        clean_cells=a["clean_cells"] + b["clean_cells"],
-        collateral=a["collateral"] + b["collateral"],
-    )
+    # 全表 = train + test 两段合并（只有 test 段时跳过）
+    if "train" in out:
+        a, b = out["train"], out["test(correction)"]
+        rows_tot = a["dirty_rows"] + b["dirty_rows"]
+        out["whole_table"] = dict(
+            rows=a["rows"] + b["rows"], dirty_rows=rows_tot,
+            dirty_cells=a["dirty_cells"] + b["dirty_cells"],
+            row_exact=a["row_exact"] + b["row_exact"],
+            row_missed=a["row_missed"] + b["row_missed"],
+            row_incorrect=a["row_incorrect"] + b["row_incorrect"],
+            row_repair_rate=((a["row_exact"] + b["row_exact"]) / rows_tot) if rows_tot else 1.0,
+            clean_cells=a["clean_cells"] + b["clean_cells"],
+            collateral=a["collateral"] + b["collateral"],
+        )
     return out
 
 
@@ -169,9 +171,11 @@ def main():
     ap.add_argument("--label", default="")
     ap.add_argument("--split", default="",
                     help="覆盖切分目录（默认用 DATASETS 里登记的那个）")
+    ap.add_argument("--only-test", action="store_true",
+                    help="只评 test(=correction) 切分的行（结果只覆盖该切分时用）")
     args = ap.parse_args()
 
-    res = score(args.dataset, args.result, args.split or None)
+    res = score(args.dataset, args.result, args.split or None, args.only_test)
     payload = {
         "dataset": args.dataset,
         "label": args.label,
@@ -186,6 +190,8 @@ def main():
         Path(args.out).write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                                    encoding="utf-8")
     for split in ("train", "test(correction)", "whole_table"):
+        if split not in res:
+            continue
         s = res[split]
         print(f"[{split}] 脏行 {s['dirty_rows']:,} / 脏 cell {s['dirty_cells']:,}")
         if "row_repair_rate" in s:
