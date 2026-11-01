@@ -76,6 +76,15 @@ FILES = {
     "score_only/评测规范.md": WT / "score_only/评测规范.md",
 }
 
+# 校正类（单表纠错）这一族没有 composite / Det / Rep，
+# 它的指标是「错误修复率」—— 单独核对行级 + cell 级两个率。
+CORRECTION = {
+    "tax": RUNS / "correction_tax_score.json",
+    "beers": RUNS / "correction_beers_score.json",
+    "rayyan": RUNS / "correction_rayyan_score.json",
+    "flights": RUNS / "correction_flights_score.json",
+}
+
 for name, fp in FILES.items():
     if not fp.is_file():
         print(f"\n{name}: 文件不存在")
@@ -96,3 +105,23 @@ for name, fp in FILES.items():
             print("   缺:", m)
     else:
         print(f"   OK  {len(truth)} 条记录的 composite + Det + Rep 全部命中")
+
+# ---- 校正类（单表纠错）：核对「错误修复率」写进了台账 §1.4 / §2 ----
+ledger = (WT / "评测总表.md").read_text(encoding="utf-8")
+miss = []
+for name, path in CORRECTION.items():
+    if not Path(path).is_file():
+        miss.append(f"{name}  分数文件缺失: {path}")
+        continue
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    for label, rate in (("行级", d["row_level_exact_rate"]),
+                        ("cell级", d["cell_level_exact_rate"])):
+        pct = f"{rate * 100:.2f}%"
+        if pct not in ledger:
+            miss.append(f"{name}  {label}修复率 {pct}")
+print("\n=== 校正类（单表纠错）错误修复率 ===")
+if miss:
+    for m in miss:
+        print("   缺:", m)
+else:
+    print(f"   OK  {len(CORRECTION)} 个数据集的行级 + cell 级修复率全部命中")
