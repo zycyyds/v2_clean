@@ -273,9 +273,18 @@ def rewrite_reference(ref_path, fixes):
     return n
 
 
-# ───────────── 改写 raw 的指定行（用于注入示例） ─────────────
+# ───────────── 改写 raw 的指定行（用于注入示例 / 恢复叠脏格） ─────────────
 def rewrite_raw(raw_path, changes):
-    """changes: {raw_row_index: new_value}"""
+    """changes: {raw_row_index: (new_valuenum, new_value_or_None)}
+
+    ⚠️ **`value` 文本列必须与 `valuenum` 同步**。这是本项目实测出来的判据：
+       · MIMIC 原生错误 ⇒ raw 的 `value` 文本列记的**也是那个坏数**
+         （== valuenum，510/510 全部如此）⇒ 没有任何线索能还原 ⇒ 只能用中位数；
+       · 注入的量纲放大 ⇒ raw 的 `value` 列记的是**干净数**（!= valuenum）
+         ⇒ 可以直接还原成 value。
+       ⇒ 所以注入示例 / 恢复叠脏格时，`value` 必须写成与 `valuenum` 同一个坏数，
+          否则形态与测试集的真实分布相反，会把 agent 教反。
+    """
     n = 0
     tmp = raw_path.with_suffix(".csv.tmp")
     with raw_path.open(newline="", encoding="utf-8") as f, \
@@ -286,7 +295,9 @@ def rewrite_raw(raw_path, changes):
         for ri, row in enumerate(rd):
             nv = changes.get(ri)
             if nv is not None:
-                row["valuenum"] = nv
+                row["valuenum"] = nv[0]
+                if nv[1] is not None and "value" in row:
+                    row["value"] = nv[1]
                 n += 1
             w.writerow(row)
     tmp.replace(raw_path)
@@ -413,7 +424,9 @@ def process_existing(split_sp, split):
             #    的原值，权威来源），让这一格只剩**一个**错误（原生错误）⇒
             #    目标唯一、可判定、可评测。注入层因此少评这几百格（可忽略）。
             n_inj += 1
-            raw_restores[raw_idx] = v
+            # `value` 文本列同步写成同一个坏数 ⇒ 与「纯原生格」形态一致
+            # （value == valuenum == 坏数 ⇒ 没有任何线索能还原 ⇒ 只能用中位数）
+            raw_restores[raw_idx] = (fmt(v), fmt(v))
             dirty = v
         entries.append(mk_entry(split, seq, L, sub, dirty, fixes[L]))
         rg = HARD_RANGE.get(it)
@@ -537,7 +550,9 @@ def inject_examples(split_sp, split, n_target):
         dirty = fmt(dv)
         ref_fixes[L] = fmt(med)
         r = L if use_zero else L + bisect_left(ins_pos, L)
-        raw_changes[r] = dirty
+        # ⚠️ `value` 文本列同步写成脏值 —— 必须与测试集真实分布同构：
+        #    原生错误的 value 记的就是坏数（== valuenum），不是干净数。
+        raw_changes[r] = (dirty, dirty)
         entries.append(mk_entry(split, seq, L, "mimic_native_injected_example", dirty, fmt(med)))
         nat_rows.append([
             "%s-mimic-%04d" % (split, seq), split, CE_FILE, str(L), "valuenum",

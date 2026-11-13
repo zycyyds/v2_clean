@@ -17,6 +17,7 @@ import argparse
 import csv
 import hashlib
 import sys
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -142,6 +143,36 @@ def main():
     nat_rows = {int(r["raw_row_index"]) for r in nat}
     check(nat_rows <= set(per_cell), "溯源表的每一行都在 log 里有条目")
 
+    print("\n①b `value` 文本列与 `valuenum` 的一致性（原生错误的判据）")
+    # MIMIC 原生错误 ⇒ raw 的 value 文本列记的也是那个坏数（== valuenum）
+    # 注入的量纲放大 ⇒ value 记的是干净数（!= valuenum）
+    # ⇒ 原生层每一个格都必须是 value == valuenum
+    nat_rowset = {int(r["raw_row_index"]) for r in nat}
+    # ⚠️ log 索引空间(= reference 行号) → raw 行号：r = L + bisect_left(ins_pos, L)
+    ins_pos = []
+    with (dst / "test/modification_log.csv").open(newline="", encoding="utf-8") as f:
+        for e in csv.DictReader(f):
+            if e.get("raw_file") == CE and e.get("operation") in ("insert", "duplicate"):
+                ins_pos.append(int(e["raw_row_index"]))
+    ins_pos.sort()
+    want = {L + bisect_left(ins_pos, L): L for L in nat_rowset}
+    c = Counter()
+    with (dst / "test/raw" / CE).open(newline="", encoding="utf-8") as f:
+        rd = csv.DictReader(f)
+        for ri, r in enumerate(rd):
+            if ri not in want:
+                continue
+            v = fnum(r.get("valuenum")); val = fnum(r.get("value"))
+            if val is None:
+                c["value 非数值"] += 1
+            elif v is not None and abs(val - v) < 1e-9:
+                c["value == valuenum（原生错误形态，正确）"] += 1
+            else:
+                c["value != valuenum（形态错！）"] += 1
+    print("     分布: %s" % dict(c))
+    check(c["value != valuenum（形态错！）"] == 0 and c["value 非数值"] == 0,
+          "test 的每个原生格，raw 的 value 文本列都 == valuenum（与真实 MIMIC 原生错误同构）")
+
     print("\n⑤ log 行号与 reference 行号对齐（抽样 500 条核对 clean_value）")
     ref_vals = []
     with (dst / "test/reference" / CE).open(newline="", encoding="utf-8") as f:
@@ -243,6 +274,32 @@ def main():
             not_out += 1
         check(not_out == 0,
               "%s：所有示例的 dirty 值都越界/是哨兵码（不合格 %d）" % (split, not_out))
+        # ★ value 文本列必须 == 脏值（与测试集真实原生错误同构）
+        ins_pos2 = []
+        with (dst / split / "modification_log.csv").open(newline="", encoding="utf-8") as f:
+            for e in csv.DictReader(f):
+                if e.get("raw_file") == CE and e.get("operation") in ("insert", "duplicate"):
+                    ins_pos2.append(int(e["raw_row_index"]))
+        ins_pos2.sort()
+        want2 = {int(r["raw_row_index"]) + bisect_left(ins_pos2, int(r["raw_row_index"])):
+                 r for r in rows}
+        cv = Counter()
+        with (dst / split / "raw" / CE).open(newline="", encoding="utf-8") as f:
+            rd = csv.DictReader(f)
+            for ri, r in enumerate(rd):
+                if ri not in want2:
+                    continue
+                d = fnum(want2[ri].get("raw_dirty_value"))
+                val = fnum(r.get("value"))
+                if val is None:
+                    cv["value 非数值"] += 1
+                elif d is not None and abs(val - d) < 1e-9:
+                    cv["value == 脏值（正确）"] += 1
+                else:
+                    cv["value != 脏值（形态错！）"] += 1
+        check(cv["value != 脏值（形态错！）"] == 0 and cv["value 非数值"] == 0,
+              "%s：示例的 value 文本列 == 脏值（与真实原生错误同构）；分布 %s"
+              % (split, dict(cv)))
         # log 里这些格有条目
         got = 0
         with (dst / split / "modification_log.csv").open(newline="", encoding="utf-8") as f:
