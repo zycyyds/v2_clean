@@ -1,0 +1,122 @@
+{
+  "dataset": "/Users/mac/PycharmProjects/v2_clean/datasets/注入错误数据集/k29/K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror",
+  "result": "/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/k29_agent_run/experiments/k29_mimicraw_4p7_test_seed666_v1/host/test_result_package",
+  "split": "test",
+  "n_native_cells": 873,
+  "buckets": {
+    "b_clean": 773,
+    "b_dirty": 42,
+    "b_missing": 58
+  },
+  "repair_rate": 0.885452,
+  "detection_rate": 0.885452,
+  "per_itemid": {
+    "220074": {
+      "b_clean": 380,
+      "b_missing": 18
+    },
+    "220052": {
+      "b_clean": 208,
+      "b_missing": 24,
+      "b_dirty": 2
+    },
+    "220180": {
+      "b_clean": 57,
+      "b_missing": 3
+    },
+    "220050": {
+      "b_clean": 43,
+      "b_missing": 3
+    },
+    "220051": {
+      "b_clean": 36,
+      "b_missing": 2
+    },
+    "220179": {
+      "b_clean": 13,
+      "b_missing": 1
+    },
+    "220181": {
+      "b_clean": 11
+    },
+    "223762": {
+      "b_clean": 7,
+      "b_missing": 1
+    },
+    "227456": {
+      "b_dirty": 8
+    },
+    "227465": {
+      "b_dirty": 5
+    },
+    "227467": {
+      "b_dirty": 5
+    },
+    "227457": {
+      "b_dirty": 5
+    },
+    "220045": {
+      "b_missing": 2,
+      "b_clean": 3
+    },
+    "224689": {
+      "b_clean": 5
+    },
+    "220228": {
+      "b_dirty": 3,
+      "b_missing": 1
+    },
+    "220545": {
+      "b_dirty": 3,
+      "b_missing": 1
+    },
+    "220546": {
+      "b_dirty": 3,
+      "b_missing": 1
+    },
+    "220061": {
+      "b_clean": 4
+    },
+    "224690": {
+      "b_clean": 3
+    },
+    "224688": {
+      "b_clean": 2
+    },
+    "225624": {
+      "b_dirty": 2
+    },
+    "225668": {
+      "b_dirty": 2
+    },
+    "220210": {
+      "b_clean": 1
+    },
+    "220274": {
+      "b_dirty": 1
+    },
+    "226062": {
+      "b_dirty": 1
+    },
+    "226063": {
+      "b_dirty": 1
+    },
+    "227466": {
+      "b_dirty": 1
+    },
+    "227446": {
+      "b_missing": 1
+    }
+  },
+  "per_subtype": {
+    "mimic_native_impossible_value": {
+      "b_clean": 773,
+      "b_missing": 54,
+      "b_dirty": 2
+    },
+    "mimic_native_sentinel_value": {
+      "b_dirty": 40,
+      "b_missing": 4
+    }
+  }
+}
