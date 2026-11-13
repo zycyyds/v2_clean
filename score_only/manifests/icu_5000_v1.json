@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "task": "ICU_5000",
+  "source_dataset": "MIMIC-IV v3.1 (ICU cohort, 5000 patients / 6500 admissions / 7210 ICU stays)",
+  "cohort_filter": "cohort.csv rows with cohort_type='icu', cohort_label='ICU' (one row per hadm_id that had at least one ICU stay)",
+  "description": "13 structured csv files (7 top-level + 4 icu + 2 multimodal/ecg). Split key is stay_id (not hadm_id). scorer grades all 13 via equal_file_row_aligned_v1. summary.json is metadata only and is intentionally NOT in reference/ (the harness walks reference/ recursively and would fail load_evaluation_manifest's key_columns check on summary.json). multimodal/notes.csv is not included because ICU_5000 source has no discharge notes.",
+  "files": {
+    "admissions.csv": {
+      "key_columns": ["hadm_id"]
+    },
+    "cohort.csv": {
+      "key_columns": ["subject_id", "hadm_id"],
+      "notes": "cohort table; one row per hadm_id that has at least one ICU stay; subject_id + hadm_id is the unique row key"
+    },
+    "demographics.csv": {
+      "key_columns": ["subject_id"],
+      "notes": "subject-keyed (one row per subject). Routed to whichever split owns the subject via the stay→subject mapping."
+    },
+    "diagnoses.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "procedures.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "medications.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "starttime",
+        "stoptime",
+        "drug",
+        "dose_val_rx",
+        "dose_unit_rx",
+        "route"
+      ],
+      "notes": "all 8 columns used as a composite key; raw may contain ~6 dup rows after compression"
+    },
+    "labs.csv": {
+      "key_columns": ["subject_id", "hadm_id", "itemid", "charttime", "valuenum", "valueuom"]
+    },
+    "icu/icustays.csv": {
+      "key_columns": ["stay_id"],
+      "notes": "one row per ICU stay; the split key"
+    },
+    "icu/chartevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "valuenum",
+        "valueuom"
+      ],
+      "notes": "all 7 columns used as a composite key; raw may contain ~70 dup rows after compression"
+    },
+    "icu/inputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "starttime",
+        "itemid",
+        "amount"
+      ]
+    },
+    "icu/outputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "value"
+      ]
+    },
+    "multimodal/ecg_manifest.csv": {
+      "key_columns": ["study_id"],
+      "notes": "ECG study manifest; one row per ECG study, has stay_id to join back to ICU stay"
+    },
+    "multimodal/ecg_measurements.csv": {
+      "key_columns": ["study_id"],
+      "notes": "ECG measurements + 18 free-text report fields (report_0..report_17) + 11 numerical measurements (rr_interval, p_onset, p_end, qrs_onset, qrs_end, t_end, p_axis, qrs_axis, t_axis, bandwidth, filtering, cart_id). Score via row-keyed alignment only on study_id; report fields and measurement columns are scored as-is."
+    }
+  },
+  "_auxiliary_files": {
+    "_comment": "summary.json is intentionally NOT in 'files'. scorer would error trying to extract columns from a JSON document, and load_evaluation_manifest would raise 'missing key configuration: summary.json'. summary.json stays in the source split tree (e.g. /Users/mac/Downloads/ICU_5000_split_10_20_rest/<split>/summary.json) but is NOT copied into the reference/ tree used by the harness.",
+    "summary.json": {
+      "kind": "metadata",
+      "expected_role": "kept in source split; not part of scoring",
+      "schema": {
+        "cohort": {
+          "raw_rows": "int",
+          "clean_rows": "int",
+          "removed_missing_or_duplicates": "int",
+          "patients": "int",
+          "admissions": "int",
+          "icu_stays": "int"
+        },
+        "records": {
+          "diagnoses": "int",
+          "procedures": "int",
+          "labs": "int",
+          "medications": "int",
+          "icu_chart": "int",
+          "icu_input": "int",
+          "icu_output": "int"
+        },
+        "multimodal": {
+          "ecg": {
+            "records": "int",
+            "studies": "int",
+            "patients": "int",
+            "icu_stays": "int",
+            "measurements": "int",
+            "invalid_times": "int",
+            "missing_waveforms": "int",
+            "patient_coverage": "float",
+            "icu_stay_coverage": "float",
+            "available_waveforms": "int"
+          }
+        }
+      }
+    }
+  },
+  "absent_files": {
+    "_comment": "Files NOT present in ICU_5000 source that might be expected in other MIMIC-IV tasks.",
+    "multimodal/notes.csv": "ICU_5000 source has no discharge notes; this file is omitted from 'files' to avoid 'manifest references unknown gold files'."
+  }
+}

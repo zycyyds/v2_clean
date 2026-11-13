@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "task": "N18_ckd_ED_notes",
+  "source_dataset": "MIMIC-IV v3.1 + MIMIC-IV-ED 1.0 + MIMIC-IV note/",
+  "cohort_filter": "ICD N18.* (chronic kidney disease) on hospital admissions, with required ED + discharge-note modalities",
+  "description": "18 structured csv files (7 top-level + 4 icu + 6 multimodal/ed + 1 multimodal/notes). Split key is SUBJECT_ID (10 train / 20 val / 2970 test): subject-disjoint guarantees train/val/test are fully disjoint at subject / hadm / stay / ed_stay / note granularity, so ref ⊆ raw for every modality. cohort.csv is one row per hadm_id (subject_id + hadm_id composite key) and is sliced by hadm_id via hadm→subject mapping. 4 cohort.csv columns are agent-derived: cohort_type/cohort_label/icd_root (from ICD N18 filter) + hospital_expire_flag (copy from admissions). demographics.csv carries 6 columns fully aligned with raw hosp/patients.csv; anchor_year_group is the agent-derived 5-year bucket. ED modality (6 tables) is sliced by subject_id directly because every ED table carries subject_id. notes.csv is the merge of note/{discharge, radiology} parent rows (sliced by hadm_id) + note/{discharge_detail, radiology_detail} detail rows (sliced by note_id collected from parent). scorer grades all 18 via equal_file_row_aligned_v1. summary.json is metadata only and is intentionally NOT copied into reference/ (the harness walks reference/ recursively and would fail load_evaluation_manifest's key_columns check on summary.json).",
+  "files": {
+    "admissions.csv": {
+      "key_columns": ["hadm_id"],
+      "notes": "13 columns: ref ⊂ raw (raw hosp/admissions.csv.gz has 16 columns; ref drops admit_provider_id/edregtime/edouttime). One row per hadm_id."
+    },
+    "cohort.csv": {
+      "key_columns": ["subject_id", "hadm_id"],
+      "notes": "cohort table; one row per (subject_id, hadm_id) that has at least one ICD N18.* diagnosis. 6 columns: subject_id+hadm_id from admissions; cohort_type/cohort_label/icd_root/hospital_expire_flag are agent-derived. In N18 train these 4 derived columns are constant per row (cohort_type='disease_with_required_modality', cohort_label='N18', icd_root='N18'), so the agent must NOT rely on raw to populate them — must derive from ICD filter on diagnoses_icd + value copy from admissions."
+    },
+    "demographics.csv": {
+      "key_columns": ["subject_id"],
+      "notes": "6 columns fully aligned with raw hosp/patients.csv: subject_id+gender+anchor_age+anchor_year+anchor_year_group+dod. Sliced by subject_id (subject-level split ⇒ one row per split, no cross-split duplicates). anchor_year_group is a 5-year bucket string derived from anchor_year (agent must derive: e.g. anchor_year 2138 → '2011 - 2013' per MIMIC-IV de-identification rules)."
+    },
+    "diagnoses.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "procedures.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "medications.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "starttime",
+        "stoptime",
+        "drug",
+        "dose_val_rx",
+        "dose_unit_rx",
+        "route"
+      ],
+      "notes": "All 8 columns used as composite key. Ref ⊂ raw (raw hosp/prescriptions.csv.gz has ~14 columns; ref drops pharmacy_id, formulary_drug_code, etc.)."
+    },
+    "labs.csv": {
+      "key_columns": ["subject_id", "hadm_id", "itemid", "charttime", "valuenum", "valueuom"],
+      "notes": "6 columns: ref ⊂ raw (raw hosp/labevents.csv.gz has 15 columns; ref drops labevent_id, specimen_id, order_provider_id, storetime, value, ref_range_lower, ref_range_upper, flag, priority, comments)."
+    },
+    "icu/icustays.csv": {
+      "key_columns": ["stay_id"],
+      "notes": "7 columns: subject_id, hadm_id, stay_id, intime, outtime, los. Ref drops first_careunit, last_careunit from raw."
+    },
+    "icu/chartevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "valuenum",
+        "valueuom"
+      ],
+      "notes": "7 columns as composite key. Ref ⊂ raw (raw icu/chartevents.csv.gz drops caregiver_id, storetime, value, warning)."
+    },
+    "icu/inputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "starttime",
+        "endtime",
+        "itemid",
+        "amount"
+      ],
+      "notes": "7 columns as composite key. Ref ⊂ raw (raw drops caregiver_id, orderid, linkorderid, ordercategoryname, secondaryordercategoryname, totalamount, totalamountuom, rate, rateuom, etc.)."
+    },
+    "icu/outputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "value"
+      ],
+      "notes": "6 columns as composite key. Ref ⊂ raw (raw drops caregiver_id)."
+    },
+    "multimodal/edstays.csv": {
+      "key_columns": ["stay_id"],
+      "notes": "9 columns: subject_id, hadm_id, stay_id, intime, outtime, gender, race, arrival_transport, disposition. All 9 columns IDENTICAL to raw mimiciv_ed/edstays.csv (N18 carries gender/race/arrival_transport/disposition as separate columns). Sliced by subject_id directly. WARNING: raw hadm_id is stored as float string (e.g. '20642784.0'); agent must strip the '.0' to match ref. Sliced by subject_id (subject-level split ⇒ ref ⊆ raw; some ED stays in raw may not be in ref if the subject has non-cohort ED visits — agent must keep all ED rows that exist for cohort subjects)."
+    },
+    "multimodal/ed_diagnosis.csv": {
+      "key_columns": ["subject_id", "stay_id", "seq_num", "icd_code", "icd_version"],
+      "notes": "6 columns including icd_title (ref adds icd_title on top of raw mimiciv_ed/diagnosis.csv). Sliced by subject_id."
+    },
+    "multimodal/ed_pyxis.csv": {
+      "key_columns": ["subject_id", "stay_id", "charttime", "med_rn", "name", "gsn_rn", "gsn"],
+      "notes": "7 columns. Sliced by subject_id."
+    },
+    "multimodal/ed_medrecon.csv": {
+      "key_columns": ["subject_id", "stay_id", "charttime", "name", "gsn", "ndc", "etc_rn", "etccode", "etcdescription"],
+      "notes": "9 columns. Sliced by subject_id."
+    },
+    "multimodal/ed_triage.csv": {
+      "key_columns": ["subject_id", "stay_id"],
+      "notes": "11 columns: temperature, heartrate, resprate, o2sat, sbp, dbp, pain, acuity, chiefcomplaint (one row per ED stay). Sliced by subject_id."
+    },
+    "multimodal/ed_vitalsign.csv": {
+      "key_columns": ["subject_id", "stay_id", "charttime"],
+      "notes": "11 columns: temperature, heartrate, resprate, o2sat, sbp, dbp, rhythm, pain (multiple rows per ED stay; charttime + stay_id disambiguates). Sliced by subject_id."
+    },
+    "multimodal/notes.csv": {
+      "key_columns": ["note_id"],
+      "notes": "8 columns: note_id, subject_id, hadm_id, note_type, note_seq, charttime, storetime, text. Built by agent from note/{discharge, radiology} parent rows (sliced by hadm_id) + note/{discharge_detail, radiology_detail} detail rows (sliced by note_id). note_type codes: 'DS' = discharge summary, 'RR' = radiology report. Sliced by subject_id (via parent note_id → subject_id). text column carries full de-identified note body and may contain \n and ___ placeholder markers."
+    }
+  },
+  "_auxiliary_files": {
+    "_comment": "summary.json is intentionally NOT in 'files'. scorer would error trying to extract columns from a JSON document, and load_evaluation_manifest would raise 'missing key configuration: summary.json'. summary.json stays in the source split tree (e.g. /Users/mac/Downloads/归档/N18_ckd_ED_notes_3000/summary.json) but is NOT copied into the reference/ tree used by the harness.",
+    "summary.json": {
+      "kind": "metadata",
+      "expected_role": "kept in source; not part of scoring",
+      "schema": {
+        "cohort": {
+          "raw_rows": "int",
+          "clean_rows": "int",
+          "removed_missing_or_duplicates": "int",
+          "patients": "int",
+          "admissions": "int",
+          "icu_stays": "int",
+          "ed_visits": "int",
+          "discharge_notes": "int"
+        },
+        "records": {
+          "diagnoses": "int",
+          "procedures": "int",
+          "labs": "int",
+          "medications": "int",
+          "icu_chart": "int",
+          "icu_input": "int",
+          "icu_output": "int"
+        },
+        "multimodal": {
+          "ed": {
+            "records": "int",
+            "stays": "int",
+            "patients": "int",
+            "diagnosis_rows": "int",
+            "pyxis_rows": "int",
+            "medrecon_rows": "int",
+            "triage_rows": "int",
+            "vitalsign_rows": "int",
+            "patient_coverage": "float",
+            "ed_stay_coverage": "float"
+          },
+          "notes": {
+            "records": "int",
+            "discharge_notes": "int",
+            "radiology_notes": "int",
+            "patients": "int",
+            "hadm_coverage": "float"
+          }
+        }
+      }
+    }
+  },
+  "absent_files": {
+    "_comment": "Files NOT present in N18 source that might be expected in other MIMIC-IV tasks.",
+    "multimodal/ecg_manifest.csv": "N18 source has no ECG; this file is omitted from 'files'.",
+    "multimodal/ecg_measurements.csv": "N18 source has no ECG; this file is omitted from 'files'."
+  }
+}

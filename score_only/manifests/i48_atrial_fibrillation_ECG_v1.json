@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "task": "I48_atrial_fibrillation_ECG",
+  "source_dataset": "MIMIC-IV v3.1 + mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0",
+  "cohort_filter": "ICD I48.* (atrial fibrillation and flutter) on hospital admissions",
+  "description": "13 structured csv files (7 top-level + 4 icu + 2 multimodal/ecg). Split key is SUBJECT_ID (not hadm_id): train/val/test are fully disjoint at subject / hadm / stay / study granularity, so ref ⊆ raw for ECG multimodal. cohort.csv has one row per hadm, so it is sliced by hadm_id via hadm→subject mapping. scorer grades all 13 via equal_file_row_aligned_v1. summary.json is metadata only and is intentionally NOT copied into reference/ (the harness walks reference/ recursively and would fail load_evaluation_manifest's key_columns check on summary.json). multimodal/notes.csv is not included because I48 source has no discharge notes.",
+  "files": {
+    "admissions.csv": {
+      "key_columns": ["hadm_id"]
+    },
+    "cohort.csv": {
+      "key_columns": ["hadm_id"],
+      "notes": "cohort table; one row per hadm_id in the I48 cohort; hadm_id is the unique row key. Derived from admissions + ICD filter on diagnoses_icd. Sliced by hadm_id via hadm→subject→split mapping (subject-level split ⇒ hadm partition follows)."
+    },
+    "demographics.csv": {
+      "key_columns": ["subject_id"],
+      "notes": "subject-keyed (one row per subject). Routed by the owning subject_id (subject-level split ⇒ one row per split, no cross-split duplicates)."
+    },
+    "diagnoses.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "procedures.csv": {
+      "key_columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    "medications.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "starttime",
+        "stoptime",
+        "drug",
+        "dose_val_rx",
+        "dose_unit_rx",
+        "route"
+      ],
+      "notes": "all 8 columns used as a composite key; raw may contain ~6 dup rows after compression"
+    },
+    "labs.csv": {
+      "key_columns": ["subject_id", "hadm_id", "itemid", "charttime", "valuenum", "valueuom"]
+    },
+    "icu/icustays.csv": {
+      "key_columns": ["stay_id"],
+      "notes": "one row per ICU stay; hadm_id-anchored, but the unique row key is stay_id"
+    },
+    "icu/chartevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "valuenum",
+        "valueuom"
+      ],
+      "notes": "all 7 columns used as a composite key; raw may contain ~70 dup rows after compression"
+    },
+    "icu/inputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "starttime",
+        "itemid",
+        "amount"
+      ]
+    },
+    "icu/outputevents.csv": {
+      "key_columns": [
+        "subject_id",
+        "hadm_id",
+        "stay_id",
+        "charttime",
+        "itemid",
+        "value"
+      ]
+    },
+    "multimodal/ecg_manifest.csv": {
+      "key_columns": ["study_id"],
+      "notes": "ECG study manifest; one row per ECG study. has hadm_id + subject_id + waveform_path (GPU_10T external path; hea_exists/dat_exists are metadata flags, NOT filesystem checks). Routed by subject_id (subject-level split ⇒ study_id ⊆ split's subject partition ⇒ ref ⊆ raw)."
+    },
+    "multimodal/ecg_measurements.csv": {
+      "key_columns": ["study_id"],
+      "notes": "ECG measurements + 18 free-text report fields (report_0..report_17) + 11 numerical measurements (rr_interval, p_onset, p_end, qrs_onset, qrs_end, t_end, p_axis, qrs_axis, t_axis, bandwidth, filtering, cart_id). Score via row-keyed alignment only on study_id; report fields and measurement columns are scored as-is."
+    }
+  },
+  "_auxiliary_files": {
+    "_comment": "summary.json is intentionally NOT in 'files'. scorer would error trying to extract columns from a JSON document, and load_evaluation_manifest would raise 'missing key configuration: summary.json'. summary.json stays in the source split tree (e.g. /Users/mac/Downloads/归档/I48_atrial_fibrillation_ECG_3000/summary.json) but is NOT copied into the reference/ tree used by the harness.",
+    "summary.json": {
+      "kind": "metadata",
+      "expected_role": "kept in source; not part of scoring",
+      "schema": {
+        "cohort": {
+          "raw_rows": "int",
+          "clean_rows": "int",
+          "removed_missing_or_duplicates": "int",
+          "patients": "int",
+          "admissions": "int",
+          "icu_stays": "int"
+        },
+        "records": {
+          "diagnoses": "int",
+          "procedures": "int",
+          "labs": "int",
+          "medications": "int",
+          "icu_chart": "int",
+          "icu_input": "int",
+          "icu_output": "int"
+        },
+        "multimodal": {
+          "ecg": {
+            "records": "int",
+            "studies": "int",
+            "patients": "int",
+            "icu_stays": "int",
+            "measurements": "int",
+            "invalid_times": "int",
+            "missing_waveforms": "int",
+            "patient_coverage": "float",
+            "icu_stay_coverage": "float",
+            "available_waveforms": "int"
+          }
+        }
+      }
+    }
+  },
+  "absent_files": {
+    "_comment": "Files NOT present in I48 source that might be expected in other MIMIC-IV tasks.",
+    "multimodal/notes.csv": "I48 source has no discharge notes; this file is omitted from 'files' to avoid 'manifest references unknown gold files'."
+  }
+}
