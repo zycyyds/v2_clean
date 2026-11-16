@@ -13,10 +13,29 @@ set -uo pipefail
 PROJ="${PROJ:-/Users/mac/PycharmProjects/v2_clean}"
 WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SCORE_ONLY="${SCORE_ONLY:-$WT/score_only}"
-DS="${DS:-$PROJ/datasets/注入错误数据集/k29/K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror}"
-RESULT="${RESULT:-$WT/k29_agent_run/experiments/k29_mimicraw_4p7_test_seed666_v1/host/test_result_package}"
-OUT="${OUT:-$PROJ/runs/k29_mimicraw_47_agent_error_metrics_v29.json}"
-LOG="${LOG:-/Users/mac/.claude/jobs/448aad57/tmp/err_k29_mimicraw_47_agent.log}"
+
+# 档位：TIER=47（默认，4.7pct）/ TIER=16（1.6pct）
+# ⚠️ 两个档位的 ds-key 必须不同 —— 评分缓存（agent 输出 + reference 的 sqlite）
+#    是按 ds-key 命名空间存的。
+TIER="${TIER:-47}"
+case "$TIER" in
+  47)
+    FULLBASE="K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror"
+    EXPPREFIX="k29_mimicraw_4p7"; DSKEY="k29_mimicraw_47_agent"
+    OUTBASE="k29_mimicraw_47_agent_error_metrics_v29.json"
+    ;;
+  16)
+    FULLBASE="K29_v2_rawerror_test1.6pct_4.2M_mimicrawerror"
+    EXPPREFIX="k29_mimicraw_1p6"; DSKEY="k29_mimicraw_16_agent"
+    OUTBASE="k29_mimicraw_16_agent_error_metrics_v29.json"
+    ;;
+  *) echo "TIER 只能是 47 或 16" >&2; exit 2 ;;
+esac
+
+DS="${DS:-$PROJ/datasets/注入错误数据集/k29/$FULLBASE}"
+RESULT="${RESULT:-$WT/k29_agent_run/experiments/${EXPPREFIX}_test_seed666_v1/host/test_result_package}"
+OUT="${OUT:-$PROJ/runs/$OUTBASE}"
+LOG="${LOG:-/Users/mac/.claude/jobs/448aad57/tmp/err_${DSKEY}.log}"
 
 if [ ! -d "$RESULT" ]; then
   echo "!! 找不到结果包：$RESULT" >&2
@@ -24,7 +43,8 @@ if [ ! -d "$RESULT" ]; then
 fi
 echo "dataset = $DS"
 echo "result  = $RESULT"
+echo "ds-key  = $DSKEY"
 echo "out     = $OUT"
 echo "log     = $LOG"
 
-bash "$SCORE_ONLY/run_error_metrics.sh" "$DS" "$RESULT" k29_mimicraw_47_agent "$OUT" "$LOG"
+bash "$SCORE_ONLY/run_error_metrics.sh" "$DS" "$RESULT" "$DSKEY" "$OUT" "$LOG"

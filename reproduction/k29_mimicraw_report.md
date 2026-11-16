@@ -363,7 +363,48 @@ legacy 注入引擎（`injection_engine_version: legacy`）只记日志、没把
   ⇒ **与 4.7pct 的 prompt 只有那 3 行密度数字不同**（去掉数字后两份逐字节一致）：
   train 1,472 / validation 16,330 / test 4,193,127 —— 与权威验证报告吻合
 - 校验器：**16/17 通过**（唯一未过项 = 6.3 那一格，已归因）
-- val 跑批：**进行中**（`k29_mimicraw_1p6_val_seed666_v1`）
+
+#### 6.5 val 结果（17 轮 + 1 轮重放修复）
+
+| 项 | 值 |
+|---|---|
+| status / stop_reason | **SUCCESS_REPRODUCIBLE** / patience |
+| rounds / repair_rounds | **17 / 1** |
+| best_score | **0.888065**（r14） |
+| reproducible_score | **0.888065**（独立重放逐位复现） |
+| 用量 | 1,261 次模型调用 / 3.85 亿 input tokens / 315 万 output tokens / 12.1 小时墙钟 / 3 次 API 故障转移 / 6 次压缩 |
+
+**⚠️ 收尾时踩了一个坑（agent 自己修好的）**：harness 的独立重放是
+`execvp("scripts/k29_pipeline.py", …)` —— **把脚本当可执行程序直接 exec**，
+而 agent 的那个文件是 644 ⇒ `Permission denied` ⇒ `EXECUTION_FAILED`。
+harness 转入 `replay repair` 轮，agent 改成「带 shebang + 可执行位」后
+`replay repair 1: status=SUCCESS score=0.888065` ✓
+（已核实 harness 的 `_copy_path` 用 `shutil.copy2` ⇒ **保留权限位**，
+修复轮的改动会被最终快照采纳 ✓）。
+
+#### 6.6 ⚠️ 与 4.7pct 的分差归因：**是 agent 的 admissions 规则，不是原生错误、也不是行缺口**
+
+| file | 4.7pct | 1.6pct | 差 | gold/result 行数（两档） |
+|---|---:|---:|---:|---|
+| **admissions.csv** | 0.884231 | **0.669231** | **+0.215000** ← 占 composite 差的 **82%** | 20/20 |
+| demographics.csv | 0.666667 | 0.630000 | +0.036667 | 20/20 |
+| outputevents.csv | 0.523967 | 0.489256 | +0.034711 | 363/363 |
+| inputevents.csv | 0.908163 | 0.880612 | +0.027551 | 784/784 |
+| labs.csv | 0.998931 | 0.990382 | +0.008549 | 5053/5053 |
+| **chartevents.csv** | 0.991582 | **0.997301** | **−0.005719** ← 1.6pct 反而更好 | 28012/28012 |
+| cohort / diagnoses / icustays / medications / notes / procedures | 1.0 | 1.0 | 0 | 一致 |
+
+差之和 0.316759 ÷ 12 = **0.026397** = composite 差（0.914462 − 0.888065）✓ 精确对上。
+
+⇒ **三个关键结论**：
+1. **分差的主因是 `admissions.csv`**（占 82%）—— 那是 agent 在 val 反馈里学到的
+   **推导规则**，与原生错误层无关。
+2. **两档的 gold/result 行数完全一致** ⇒ **validation 切片没有 6.3 那个行缺口**
+   ⇒ 6.3 的 13.5 万行缺口**只影响 test 切片** ⇒ **test composite 会被它压住，
+   而 val composite 不受影响**。
+3. **含 873 格原生错误的 `chartevents`，1.6pct 反而比 4.7pct 高**（0.997301 vs 0.991582）
+   —— 密度低 ⇒ 注入少 ⇒ 更容易洗干净 ✓ 与 4.7pct 档的结论一致。
+
 
 ---
 
