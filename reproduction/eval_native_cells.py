@@ -38,8 +38,12 @@ def fnum(x):
         return None
 
 
-def same(a, b):
+def same(a, b, numeric=True):
+    """numeric=True：数值感知（'0' 与 '0.0' 算相同）—— 与 v29 评分器的新口径一致
+       numeric=False：纯字符串（老口径，'0' 与 '0.0' 算不同）"""
     if a is None or b is None:
+        return str(a) == str(b)
+    if not numeric:
         return str(a) == str(b)
     fa, fb = fnum(a), fnum(b)
     if fa is not None and fb is not None:
@@ -53,7 +57,10 @@ def main():
     ap.add_argument("--result", required=True, help="agent 的结果包目录")
     ap.add_argument("--split", default="test")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--string-compare", action="store_true",
+                    help="老口径：纯字符串比对（'0' 与 '0.0' 算不同）")
     args = ap.parse_args()
+    numeric = not args.string_compare
     ds = Path(args.dataset)
     res = Path(args.result)
     sp = args.split
@@ -119,9 +126,9 @@ def main():
             continue
         if L not in agent_val:
             b = "b_missing"
-        elif same(agent_val[L], e["clean"]):
+        elif same(agent_val[L], e["clean"], numeric):
             b = "b_clean"
-        elif same(agent_val[L], e["dirty"]):
+        elif same(agent_val[L], e["dirty"], numeric):
             b = "b_dirty"
         else:
             b = "b_wrong"
