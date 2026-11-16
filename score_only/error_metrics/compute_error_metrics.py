@@ -244,25 +244,36 @@ def main():
             newline='', encoding='utf-8')) - 1
     raw2log = {}
     ins_kind_by_raw = {}
-    for rf in RAW_TO_OUTPUT:
-        posl = ins_pos.get(rf, [])
-        n = n_raw_of[rf]
-        arr = array('i', [-1]) * n if n > 0 else array('i')
-        kindlist = ins_kind.get(rf, [])
-        # ins_pos / ins_kind 已经成对排好序（见上面的 ins_pairs）：
-        # 同一 raw_row_index 上日志顺序 = dup 先、leak 后，
-        # 跟 apply_modification_log.py 写 raw 的顺序一致
-        n_ins_here = len(posl)
-        kinds_sorted = kindlist
+    offset_mode = {}
+
+    def build_raw2log(rf, n, posl, kindlist, use_zero):
+        """raw 行号 ↔ log（原始表）行号的映射。
+
+        ⚠️ **两种索引空间，必须逐文件自动判定，不能写死**：
+          A) bisect：raw 里真的多出 duplicate/insert 行
+             ⇒ raw 行号 = L + bisect_left(posl, L)
+          B) zero ：raw 与 reference 逐行对应
+             ⇒ raw 行号 = L
+        - **4.7pct 档 = A**（chartevents 多 3,041,189 行 = 1,496,840 dup + 1,544,349 insert）
+        - **1.6pct 档 = B**（log 里有 52 万条 duplicate，但 raw **一行没多** ——
+          legacy 引擎只记日志没落行）
+        ⚠️ 在 B 模式下，log 里的 duplicate/insert 条目**绝不能**当成
+        「agent 应该删掉的注入行」—— raw 里根本没有那些行，
+        删了反而会误伤基线行（就是账本里 cc 踩的「自伤链条」）。
+        """
+        if n <= 0:
+            return array('i'), bytearray(0), []
+        if use_zero:
+            # 恒等映射：raw 行号 = log 行号；没有任何「注入行」⇒ kinds 为空
+            return array('i', range(n)), bytearray(b'\x01' * n), []
+        arr = array('i', [-1]) * n
         used = bytearray(n)
         for L in range(n):
             r = L + bisect_left(posl, L)
             if 0 <= r < n and not used[r]:
                 arr[r] = L
                 used[r] = 1
-        raw2log[rf] = arr
-        # free slots are injected rows; order them by raw index
-        ins_kind_by_raw[rf] = (used, kinds_sorted, posl, n_ins_here)
+        return arr, used, list(kindlist)
     print("  cell_update=%d duplicate=%d insert=%d total=%d"
           % (n_cell, n_dup, n_ins, n_cell + n_dup + n_ins), flush=True)
 
@@ -290,6 +301,27 @@ def main():
                  ref.n_rows, ref._mem is not None), flush=True)
 
         pos = ins_pos.get(raw_file, [])
+        # ── 索引空间自动判定：raw 比 reference 多出的行数 vs log 里 insert/dup 条数 ──
+        n_raw_this = n_raw_of[raw_file]
+        extra = n_raw_this - ref.n_rows
+        n_ins_log = len(pos)
+        use_zero = (extra == 0)
+        if not use_zero and extra != n_ins_log:
+            print("  ⚠️ %s: raw 比 reference 多 %d 行，但 log 里只有 %d 条 insert/duplicate"
+                  " —— 索引空间异常，按 zero 处理" % (raw_file, extra, n_ins_log), flush=True)
+            use_zero = True
+        offset_mode[raw_file] = "zero" if use_zero else "bisect"
+        if use_zero and n_ins_log:
+            # log 声称有这些 duplicate/insert 行，但 raw 里一行没多 ⇒ 它们没有实体，
+            # agent 无从删除 ⇒ 不参与计分（否则会诱导 agent 误删基线行）
+            T['injected_rows_not_materialized'] += n_ins_log
+        arr, used, kinds_sorted = build_raw2log(
+            raw_file, n_raw_this, pos, ins_kind.get(raw_file, []), use_zero)
+        raw2log[raw_file] = arr
+        ins_kind_by_raw[raw_file] = (used, kinds_sorted, pos, len(kinds_sorted))
+        print("  索引空间: %s（raw=%d reference=%d 多出 %d 行 / log insert+dup %d 条）"
+              % (offset_mode[raw_file], n_raw_this, ref.n_rows, extra, n_ins_log),
+              flush=True)
         cells = cell_by_ri.get(raw_file, {})
         jp = 0
         f_ = defaultdict(int)
@@ -522,10 +554,14 @@ def main():
         'note': 'v29: index-shift corrected (raw_idx = log_idx + |inserts<log_idx|); '
                 'multi-injected cells use last dirty_value; full accounting; '
                 'partial key fallback only for key-column injections; natural noise excluded; '
-                'rows absent from both agent output and gold are excluded (not a detection FN)',
+                'rows absent from both agent output and gold are excluded (not a detection FN); '
+                'index space auto-detected per file (zero/bisect) — '
+                'log duplicate/insert entries with no entity in raw are NOT scored',
         'recover_clean_key': RECOVER_CLEAN_KEY,
         'exclude_rows_not_in_gold': EXCLUDE_ROWS_NOT_IN_GOLD,
         'numeric_compare': NUMERIC_COMPARE,
+        'offset_mode': dict(offset_mode),
+        'injected_rows_not_materialized': T['injected_rows_not_materialized'],
         'injected': {'cell_update': n_cell, 'duplicate': n_dup, 'insert': n_ins,
                      'total': n_cell + n_dup + n_ins},
         'evaluated': {'cell': n_cell_eval, 'dup': n_dup_eval,

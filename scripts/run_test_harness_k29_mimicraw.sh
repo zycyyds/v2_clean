@@ -14,10 +14,18 @@ PROJ="${PROJ:-/Users/mac/PycharmProjects/v2_clean}"
 WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 RUN="${RUN:-$WT/k29_agent_run}"
 
-EXP="${EXP:-$RUN/experiments/k29_mimicraw_4p7_val_seed666_v1}"
-TEST_EXP="${TEST_EXP:-$RUN/experiments/k29_mimicraw_4p7_test_seed666_v1}"
-FULL="${FULL:-$PROJ/datasets/注入错误数据集/k29/K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror}"
-LOG="${LOG:-$RUN/logs/k29_mimicraw_4p7_test_seed666_v1.log}"
+# 档位：TIER=47（默认，4.7pct）/ TIER=16（1.6pct）
+TIER="${TIER:-47}"
+case "$TIER" in
+  47) FULLBASE="K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror"; EXPPREFIX="k29_mimicraw_4p7" ;;
+  16) FULLBASE="K29_v2_rawerror_test1.6pct_4.2M_mimicrawerror"; EXPPREFIX="k29_mimicraw_1p6" ;;
+  *) echo "TIER 只能是 47 或 16" >&2; exit 2 ;;
+esac
+
+EXP="${EXP:-$RUN/experiments/${EXPPREFIX}_val_seed666_v1}"
+TEST_EXP="${TEST_EXP:-$RUN/experiments/${EXPPREFIX}_test_seed666_v1}"
+FULL="${FULL:-$PROJ/datasets/注入错误数据集/k29/$FULLBASE}"
+LOG="${LOG:-$RUN/logs/${EXPPREFIX}_test_seed666_v1.log}"
 
 for d in "$FULL/test/raw" "$FULL/test/reference"; do
   if [ ! -d "$d" ]; then

@@ -17,12 +17,30 @@ PROJ="${PROJ:-/Users/mac/PycharmProjects/v2_clean}"
 WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 RUN="${RUN:-$WT/k29_agent_run}"
 DRIVER="${DRIVER:-$WT/eval_handoff/scripts/run_val_harness_ft.py}"
-DS="${DS:-$PROJ/datasets/注入错误数据集/k29_mimicraw_47}"
-FULL="${FULL:-$PROJ/datasets/注入错误数据集/k29/K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror}"
 SUFFIX="${1:-v1}"
-EXP="${EXP:-$RUN/experiments/k29_mimicraw_4p7_val_seed666_$SUFFIX}"
-PROMPT="${PROMPT:-$RUN/prompts/k29_4.7pct_mimicraw_val_prompt_v1.md}"
-LOG="${LOG:-$RUN/logs/k29_mimicraw_4p7_val_seed666_$SUFFIX.log}"
+
+# 档位：TIER=47（默认，4.7pct）/ TIER=16（1.6pct）。两个档位的**原生错误层完全相同**
+# （同样 873 格），差别只在注入密度 ⇒ prompt 只有那 3 行密度数字不同。
+TIER="${TIER:-47}"
+case "$TIER" in
+  47)
+    TAG="4.7pct"; VIEW="k29_mimicraw_47"
+    FULLBASE="K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror"
+    PROFILE="k29_mimicraw"; EXPPREFIX="k29_mimicraw_4p7_val_seed666"
+    ;;
+  16)
+    TAG="1.6pct"; VIEW="k29_mimicraw_16"
+    FULLBASE="K29_v2_rawerror_test1.6pct_4.2M_mimicrawerror"
+    PROFILE="k29_mimicraw_16"; EXPPREFIX="k29_mimicraw_1p6_val_seed666"
+    ;;
+  *) echo "TIER 只能是 47 或 16" >&2; exit 2 ;;
+esac
+
+DS="${DS:-$PROJ/datasets/注入错误数据集/$VIEW}"
+FULL="${FULL:-$PROJ/datasets/注入错误数据集/k29/$FULLBASE}"
+EXP="${EXP:-$RUN/experiments/${EXPPREFIX}_$SUFFIX}"
+PROMPT="${PROMPT:-$RUN/prompts/k29_${TAG}_mimicraw_val_prompt_v1.md}"
+LOG="${LOG:-$RUN/logs/${EXPPREFIX}_$SUFFIX.log}"
 
 for f in "$PROMPT" "$DRIVER" \
          "$FULL/v2_rawerror_k29_rebuild_final_report.json" \
@@ -62,7 +80,7 @@ echo
 cd /tmp
 conda run -n py311agent2 --no-capture-output env \
   PYTHONPATH="$PROJ" RUN="$RUN" PROMPT_DIR="$RUN/prompts" WT="$WT" \
-  python "$DRIVER" k29_mimicraw "$SUFFIX" 2>&1 | tee "$LOG"
+  python "$DRIVER" "$PROFILE" "$SUFFIX" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
 echo
 echo "val harness exit=$rc   log=$LOG"

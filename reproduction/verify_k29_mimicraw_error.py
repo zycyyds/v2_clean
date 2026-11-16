@@ -23,6 +23,7 @@ from pathlib import Path
 
 csv.field_size_limit(2 ** 31)
 CE = "icu/chartevents.csv"
+CE_KEY = ["subject_id", "hadm_id", "stay_id", "charttime", "itemid"]
 SENT = {-999.0, -998.0, -997.0, -990.0, 9999.0, 99999.0,
         999999.0, 9999999.0, 220000.0, 220045.0}
 HARD = {220045: (20, 300), 220050: (40, 400), 220051: (20, 250), 220052: (20, 250),
@@ -52,6 +53,82 @@ def fnum(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def detect_offset(rows_by_L, ins_pos, raw_path, sample=200):
+    """探测 raw 行号 ↔ reference 行号的偏移规则（**不能硬编码**）。
+
+    两种情形都真实存在：
+      A) raw 里真的多出插入/重复行 ⇒ raw 行号 = L + bisect_left(ins_pos, L)
+      B) raw 与 reference 逐行对应（log 里的 duplicate 条目指向已存在的行）
+         ⇒ raw 行号 = L
+    ⚠️ **1.6pct 档是 B、4.7pct 档是 A**。写死 A 会让校验器在 1.6pct 上整段读错行
+    （实测：写死 A ⇒ 853/873 命中、560 格被误报成「value 非数值」；
+      自动探测 ⇒ 873/873 命中、872 格形态正确）。
+
+    判据与 builder 一致：raw 行的 key 是否与 reference 行一致（**不依赖 value 性质**，
+    避免循环论证）。
+    """
+    Ls = list(rows_by_L)[:sample]
+    if not Ls:
+        return True
+    need = set()
+    for L in Ls:
+        need.add(L)
+        need.add(L + bisect_left(ins_pos, L))
+    rows_at = {}
+    with raw_path.open(newline="", encoding="utf-8") as f:
+        rd = csv.DictReader(f)
+        for ri, row in enumerate(rd):
+            if ri in need:
+                rows_at[ri] = row
+            if ri >= max(need):
+                break
+
+    def key_of(row):
+        return tuple(row.get(c) for c in CE_KEY)
+
+    zero_hit = bis_hit = 0
+    for L in Ls:
+        k = key_of(rows_by_L[L])
+        rz = rows_at.get(L)
+        if rz is not None and key_of(rz) == k:
+            zero_hit += 1
+        rb = rows_at.get(L + bisect_left(ins_pos, L))
+        if rb is not None and key_of(rb) == k:
+            bis_hit += 1
+    use_zero = zero_hit >= bis_hit
+    print("     偏移探测: zero 命中 %d / bisect 命中 %d ⇒ raw 行号 = %s"
+          % (zero_hit, bis_hit, "L" if use_zero else "L + 插入偏移"))
+    return use_zero
+
+
+def reference_rows_at(ref_path, Ls):
+    """取 reference 里指定行号的行：{L: row}"""
+    want = set(Ls)
+    out = {}
+    if not want:
+        return out
+    mx = max(want)
+    with ref_path.open(newline="", encoding="utf-8") as f:
+        rd = csv.DictReader(f)
+        for L, row in enumerate(rd):
+            if L in want:
+                out[L] = row
+            if L >= mx:
+                break
+    return out
+
+
+def ins_positions(log_path):
+    """log 里 insert/duplicate 的 raw_row_index（升序）"""
+    pos = []
+    with log_path.open(newline="", encoding="utf-8") as f:
+        for e in csv.DictReader(f):
+            if e.get("raw_file") == CE and e.get("operation") in ("insert", "duplicate"):
+                pos.append(int(e["raw_row_index"]))
+    pos.sort()
+    return pos
 
 
 def native_cells(path):
@@ -148,14 +225,13 @@ def main():
     # 注入的量纲放大 ⇒ value 记的是干净数（!= valuenum）
     # ⇒ 原生层每一个格都必须是 value == valuenum
     nat_rowset = {int(r["raw_row_index"]) for r in nat}
-    # ⚠️ log 索引空间(= reference 行号) → raw 行号：r = L + bisect_left(ins_pos, L)
-    ins_pos = []
-    with (dst / "test/modification_log.csv").open(newline="", encoding="utf-8") as f:
-        for e in csv.DictReader(f):
-            if e.get("raw_file") == CE and e.get("operation") in ("insert", "duplicate"):
-                ins_pos.append(int(e["raw_row_index"]))
-    ins_pos.sort()
-    want = {L + bisect_left(ins_pos, L): L for L in nat_rowset}
+    # ⚠️ log 索引空间(= reference 行号) → raw 行号：**必须自动探测偏移**，
+    #    不能写死 r = L + bisect_left(ins_pos, L) —— 1.6pct 档是零偏移。
+    ins_pos = ins_positions(dst / "test/modification_log.csv")
+    ref_rows = reference_rows_at(dst / "test/reference" / CE, nat_rowset)
+    use_zero = detect_offset(ref_rows, ins_pos, dst / "test/raw" / CE)
+    want = {L: L for L in nat_rowset} if use_zero else \
+        {L + bisect_left(ins_pos, L): L for L in nat_rowset}
     c = Counter()
     with (dst / "test/raw" / CE).open(newline="", encoding="utf-8") as f:
         rd = csv.DictReader(f)
@@ -275,14 +351,16 @@ def main():
         check(not_out == 0,
               "%s：所有示例的 dirty 值都越界/是哨兵码（不合格 %d）" % (split, not_out))
         # ★ value 文本列必须 == 脏值（与测试集真实原生错误同构）
-        ins_pos2 = []
-        with (dst / split / "modification_log.csv").open(newline="", encoding="utf-8") as f:
-            for e in csv.DictReader(f):
-                if e.get("raw_file") == CE and e.get("operation") in ("insert", "duplicate"):
-                    ins_pos2.append(int(e["raw_row_index"]))
-        ins_pos2.sort()
-        want2 = {int(r["raw_row_index"]) + bisect_left(ins_pos2, int(r["raw_row_index"])):
-                 r for r in rows}
+        #   ⚠️ 同样**必须自动探测偏移**（1.6pct 档零偏移、4.7pct 档带偏移）
+        ins_pos2 = ins_positions(dst / split / "modification_log.csv")
+        by_L2 = {int(r["raw_row_index"]): r for r in rows}
+        Ls2 = set(by_L2)
+        ref_rows2 = reference_rows_at(dst / split / "reference" / CE, Ls2)
+        use_zero2 = detect_offset(ref_rows2, ins_pos2, dst / split / "raw" / CE)
+        # want2: raw 行号 → 溯源表里那一行（后面要取 raw_dirty_value）
+        want2 = {ri: by_L2[L] for ri, L in
+                 ((L, L) if use_zero2 else (L + bisect_left(ins_pos2, L), L)
+                  for L in Ls2)}
         cv = Counter()
         with (dst / split / "raw" / CE).open(newline="", encoding="utf-8") as f:
             rd = csv.DictReader(f)
