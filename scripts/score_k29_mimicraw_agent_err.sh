@@ -33,7 +33,15 @@ case "$TIER" in
 esac
 
 DS="${DS:-$PROJ/datasets/注入错误数据集/k29/$FULLBASE}"
-RESULT="${RESULT:-$WT/k29_agent_run/experiments/${EXPPREFIX}_test_seed666_v1/host/test_result_package}"
+PKG="${PKG:-$WT/k29_agent_run/experiments/${EXPPREFIX}_test_seed666_v1/host/test_result_package}"
+# ⚠️ agent 可能把结果放在**子目录**里（submission.json 的 result_root）。
+#    1.6pct 档的 agent 就是 `result_root="result"` ⇒ CSV 在 test_result_package/result/ 下；
+#    4.7pct 档是平铺在 test_result_package/ 下。⇒ 统一按 submission.json 解析。
+RESULT="${RESULT:-$PKG}"
+if [ -f "$PKG/submission.json" ]; then
+  RR=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('result_root',''))" "$PKG/submission.json" 2>/dev/null || true)
+  [ -n "$RR" ] && [ -d "$PKG/$RR" ] && RESULT="$PKG/$RR"
+fi
 OUT="${OUT:-$PROJ/runs/$OUTBASE}"
 LOG="${LOG:-/Users/mac/.claude/jobs/448aad57/tmp/err_${DSKEY}.log}"
 

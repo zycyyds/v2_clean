@@ -334,25 +334,44 @@ legacy 注入引擎（`injection_engine_version: legacy`）只记日志、没把
   `offset_mode` / `injected_rows_not_materialized`。
 - **回归测试**：改完后重算 4.7pct，所有 bucket 与 Det/Rep F1 **逐位相同** ⇒ 对既有结果零影响。
 
-### 6.3 ⚠️ 源数据集的 legacy 构建缺陷：raw 少了约 13.5 万行
+### 6.3 ⚠️【本节初稿结论已被订正】注入器改 key ≠ 丢行；而且 agent 能把 key 修回来
 
-1.6pct 的 raw 与 reference 行数相等，但**内容对不上**：
+> ⚠️ **初稿写的是**「1.6pct 的 raw 少了约 13.5 万行 reference 里有、raw 里没有的基线行
+> ⇒ test composite 有不可消除的上限」。**这个结论是错的，已撤销。**
 
-| 指标（chartevents） | 值 |
-|---|---:|
-| raw 里的不同 key 数 / reference 里的不同 key 数 | 8,089,669 / 8,084,050 |
-| raw 有、reference 没有的不同 key | **250,556** |
-| reference 有、raw 没有的不同 key | **244,937** |
-| 抽样 20 万个「reference 有 raw 没有」的行，在 raw **同一位置**上连 subject/hadm/stay 都不同的 | **45.6%** |
-| 上面那 2 万个 key 里，**在 4.7pct 的 raw 里能找到**的 | **55.3%** ⇒ 确实是 1.6pct 构建丢的 |
+**初稿的测法有位置偏倚**：它取 reference 文件**开头**的 2 万个缺失 key
+（缺失集中在一段），再拿其中 55.3% 去 4.7pct 的 raw 里找 ⇒ 外推成 13.5 万。
 
-⇒ **1.6pct 的 raw 少了约 13.5 万行 reference 里有、raw 里没有的基线行**
-（≈ chartevents 的 1.5%）—— 这是**源数据集的老引擎缺陷**，
-不是这次 mimicraw 构建引入的（两个档位的 reference md5 完全相同，是同一份基线）。
-⇒ **后果**：agent 不可能产出这些行 ⇒ 该档的**行级 / composite 分数有不可消除的上限**，
-横向比 4.7pct 时必须带这个 caveat。
-⇒ 原生错误层受影响 **1 格**（873 格里那一格 `value != valuenum`、形态是 `value = valuenum/100`，
-就是这一机制造成的）。
+**无偏复测**（全量扫描、8 字节哈希去重、按 reference 行号分桶）：
+
+| 档位 | raw 缺 reference 的**行**数 | 占比 | 位置分布 |
+|---|---:|---:|---|
+| **4.7pct** | **4,246,921** | **46.3%** | 均匀（每 50 万行约 23 万） |
+| **1.6pct** | **245,045** | **2.7%** | 均匀（每 50 万行约 1.3 万） |
+
+⇒ 真相是：**注入器改掉了很大比例行的 key**
+（`chart_itemid_alias_split` / `baseline_extra_row` / label-leak 这一族）——
+**4.7pct 上 46%、1.6pct 上 2.7%** ⇒ 这是**注入数据集的常态**，
+**不是 1.6pct 独有的缺陷**（初稿把它当特例，是把两件事混了）。
+⇒ **「key 变了」≠「行丢了」**：这些行**都在 raw 里**，只是 key 变了。
+
+**决定性的一条**：1.6pct 抽样 244,937 个「raw 里没有的 reference key」，
+在 **agent 输出里有 242,953 个（99.2%）** ⇒ **agent 把这些 key 修回来了**
+⇒ **没有「不可消除的行级上限」** ⇒ 初稿的 caveat **撤销**。
+
+**旁证（agent 输出侧的行数账，两档 reference 行数完全相同）**：
+
+| file | reference 行数 | 4.7pct 缺行 | 1.6pct 缺行 |
+|---|---:|---:|---:|
+| icu/chartevents.csv | 9,180,655 | 159,835 | **34,255** |
+| icu/inputevents.csv | 220,502 | 29,434 | **24,448** |
+| icu/outputevents.csv | 100,665 | 45,229 | **58,059** |
+| labs.csv | 2,118,455 | 1,962 | **29,407** |
+| 其余 8 个文件 | — | 0 | 0 |
+| **合计** | | **236,460** | **146,169** |
+
+⇒ **1.6pct 的 agent 缺的行比 4.7pct 更少** ⇒ 1.6pct 的 test composite **没有**额外的行级惩罚。
+⇒ 且 1.6pct 的 chartevents 输出行数 = 9,180,655 = reference 行数（分毫不差）✔
 
 ### 6.4 当前状态
 
@@ -414,3 +433,66 @@ harness 转入 `replay repair` 轮，agent 改成「带 shebang + 可执行位�
 - [x] 补跑 1.6pct 档（数据集已构建、校验、视图与 prompt 已就位；val 进行中）
 - [ ] 1.6pct 的 val/test 跑完 + 打分 + 补进台账
 - [ ] 往 `评测总表.md` 加 ㉓ 条目（该台账在 `eval-movies-cleaning` worktree 里，本次未改）
+
+#### 6.7 ✅ test 结果（纯重放，无 LLM）
+
+| 项 | 值 | 4.7pct 对照 |
+|---|---:|---:|
+| status / phase | **SUCCESS / complete** | SUCCESS |
+| test_execution_count | **1** | 1 |
+| replay_status | SUCCESS | SUCCESS |
+| **composite** | **0.881516** | 0.909930 |
+| schema_f1 / file_coverage | 1.0 / 1.0 | 1.0 / 1.0 |
+| key_structure_f1 | 0.941230 | 0.949911 |
+| row_aligned_cell_f1 | 0.913314 | 0.931399 |
+| exact_row_f1 | 0.759816 | 0.824626 |
+
+#### 6.8 ✅ v29 错误级指标（**零偏移模式**）
+
+```
+offset_mode = {7 个文件全部 zero}      injected_rows_not_materialized = 521,771
+injected   : cell_update=3,671,356  duplicate=521,771  insert=0
+evaluated  : cell=3,671,318  dup=0
+
+Det F1 = 0.993843   (P 0.991785 / R 0.995910)
+Rep F1 = 0.990200   (P 0.988149 / R 0.992259)
+
+b_clean 3,642,899   b_dirty 15,014   b_wrong 13,405   b_missing 0
+fp_det 30,286   natural_noise 382
+dup_removed 0 / dup_kept 0      leak_removed 0 / leak_kept 0
+crow_recovered 135,664
+```
+
+⇒ **零偏移模式按设计工作**：log 里那 521,771 条 duplicate 在 raw 里没有实体
+⇒ `injected_rows_not_materialized = 521,771`，`dup_removed / leak_removed = 0`
+⇒ **不会诱导 agent 去删合法基线行**（那正是账本里 cc 踩过的「自伤链条」）。
+⇒ `b_missing = 0`（零偏移 + key 还原把行级缺口补齐了）。
+
+**与 4.7pct 对照**：Det 0.993843 vs 0.995626（略低），**Rep 0.990200 vs 0.978995（更高）**
+—— 密度低 ⇒ 注入少 ⇒ 修对率更高。
+
+#### 6.9 🎯 原生错误格（873 格）—— **这一档把哨兵码修对了**
+
+| 判定 | 数值感知 | 纯字符串（老口径） | 4.7pct 数值感知 |
+|---|---:|---:|---:|
+| **b_clean（修对）** | **836（95.8%）** | **836（95.8%）** | 773（88.5%） |
+| b_wrong（改错） | **1** | 35 | 0 |
+| b_dirty（没修好） | 34 | 0 | 42 |
+| b_missing（键对不上） | 2 | 2 | 58 |
+
+**按 subtype**：
+
+| subtype | 格数 | b_clean | b_wrong | b_dirty | b_missing |
+|---|---:|---:|---:|---:|---:|
+| `mimic_native_impossible_value` | 829 | **793** | 1 | 33 | 2 |
+| `mimic_native_sentinel_value` | 44 | **43** ⭐ | 0 | 1 | 0 |
+
+⭐⭐ **最重要的发现**：**哨兵码这一类 44 格修对了 43 格**，
+而 **4.7pct 那次是 0/44**（一格没修对）。
+⇒ 两档用的是**同一份 prompt**（只差 3 行密度数字）⇒
+**4.7pct 的哨兵码失败不是 prompt 的必然结果，而是那次 run 的具体失败**
+⇒ 我在 4.7pct 报告里归因的「prompt 内部矛盾」**是可绕过的**
+（agent 从 train 示例 / val 反馈里自己能推出正确规则），
+下一版 prompt 修那个矛盾**仍然值得做，但不该再当成"必然失败"来看**。
+
+⇒ **原生错误修复率 88.5% → 95.8%**，改错只有 1 格。
