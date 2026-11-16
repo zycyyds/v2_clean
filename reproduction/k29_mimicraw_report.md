@@ -293,8 +293,83 @@ def _clean_via_value_text(val, vn):
    ⇒ 换到本数据集，同一个行为从"误改"变成"修对"。
    ⇒ 没有它，就不会有任何 agent 有动力去学这一类。
 
-## 6. 待办
+## 6. K29 1.6pct 档（补跑）—— 原生层相同，但**索引空间完全不同**
+
+> 数据集已构建并校验；val 跑批进行中。本节记录**构造时挖出来的三件事**，
+> 前两件是硬工程问题（已修），第三件是**源数据集自带的缺陷**（修不了，只能记账）。
+
+### 6.1 原生错误层与 4.7pct **逐格相同**
+
+| 项 | 4.7pct | **1.6pct** |
+|---|---:|---:|
+| 候选原生格 | 883 | **883** |
+| 可修（fixable） | 873 | **873** |
+| T2_impossible / T1_sentinel | 834 / 49 | **834 / 49** |
+| log 里 mimic_native_* 条目 | 873 | **873** |
+| train / validation 注入示例 | 5 / 24 | **5 / 24**（itemid 完全相同） |
+| 与注入器叠脏（raw 恢复成原生错值） | 368 | **827** |
+
+⇒ 密度低 ⇒ 叠脏格更多（368 → 827），但**目标格集合与修复值完全一样** ⇒ 原生层可做干净横向对照。
+
+### 6.2 ⚠️ raw 的行索引空间：4.7pct 带偏移、1.6pct 是零偏移
+
+**实测（chartevents）**：
+
+| 档位 | raw 行数 | reference 行数 | 多出 | log 里的 insert+dup | 逐行 key 对齐 | ⇒ 索引空间 |
+|---|---:|---:|---:|---:|---:|---|
+| 4.7pct | 12,221,844 | 9,180,655 | **3,041,189** | 3,041,189 ✅ 分毫不差 | 0.00% | **bisect**（`r = L + \|inserts<L\|`） |
+| 1.6pct | 9,180,655 | 9,180,655 | **0** | 521,771 ❌ | 96.83% | **zero**（`r = L`） |
+
+⇒ **1.6pct 的 log 里有 52 万条 `duplicate`，但 raw 里一行都没多** ——
+legacy 注入引擎（`injection_engine_version: legacy`）只记日志、没把重复行落进 raw。
+⇒ 代码里两处**写死 4.7pct 假设**的地方全部翻车：
+- `verify_k29_mimicraw_error.py` 硬编码 `r = L + bisect_left(ins_pos, L)`
+  ⇒ 在 1.6pct 上整段读错行，**误报 560 格「value 非数值」**；改成自动探测后 **872/873 形态正确**
+- `compute_error_metrics.py` 同样硬编码 ⇒ 若直接拿去算 1.6pct 的 Det/Rep，
+  会有约 52 万个真实基线行被当成「注入的重复行」⇒ **agent 会被诱导去删合法行**
+  （就是账本里 cc 踩的「自伤链条」）
+
+**修法（已做）**：两处都改成**逐文件自动判定**（判据：raw 行数 − reference 行数 vs log 条数互相校验）。
+- 评分器零偏移模式下 log 的 duplicate/insert 条目**不参与计分**，并新增输出字段
+  `offset_mode` / `injected_rows_not_materialized`。
+- **回归测试**：改完后重算 4.7pct，所有 bucket 与 Det/Rep F1 **逐位相同** ⇒ 对既有结果零影响。
+
+### 6.3 ⚠️ 源数据集的 legacy 构建缺陷：raw 少了约 13.5 万行
+
+1.6pct 的 raw 与 reference 行数相等，但**内容对不上**：
+
+| 指标（chartevents） | 值 |
+|---|---:|
+| raw 里的不同 key 数 / reference 里的不同 key 数 | 8,089,669 / 8,084,050 |
+| raw 有、reference 没有的不同 key | **250,556** |
+| reference 有、raw 没有的不同 key | **244,937** |
+| 抽样 20 万个「reference 有 raw 没有」的行，在 raw **同一位置**上连 subject/hadm/stay 都不同的 | **45.6%** |
+| 上面那 2 万个 key 里，**在 4.7pct 的 raw 里能找到**的 | **55.3%** ⇒ 确实是 1.6pct 构建丢的 |
+
+⇒ **1.6pct 的 raw 少了约 13.5 万行 reference 里有、raw 里没有的基线行**
+（≈ chartevents 的 1.5%）—— 这是**源数据集的老引擎缺陷**，
+不是这次 mimicraw 构建引入的（两个档位的 reference md5 完全相同，是同一份基线）。
+⇒ **后果**：agent 不可能产出这些行 ⇒ 该档的**行级 / composite 分数有不可消除的上限**，
+横向比 4.7pct 时必须带这个 caveat。
+⇒ 原生错误层受影响 **1 格**（873 格里那一格 `value != valuenum`、形态是 `value = valuenum/100`，
+就是这一机制造成的）。
+
+### 6.4 当前状态
+
+- 数据集：`$DS/k29/K29_v2_rawerror_test1.6pct_4.2M_mimicrawerror`（已构建，873 格原生层）
+- agent 视图：`$DS/k29_mimicraw_16`（86 文件，泄漏自检 ✅）
+- prompt：`$WT-K29/k29_agent_run/prompts/k29_1.6pct_mimicraw_val_prompt_v1.md`（25,657 bytes，
+  已同步进数据集 `prompt/`）
+  ⇒ **与 4.7pct 的 prompt 只有那 3 行密度数字不同**（去掉数字后两份逐字节一致）：
+  train 1,472 / validation 16,330 / test 4,193,127 —— 与权威验证报告吻合
+- 校验器：**16/17 通过**（唯一未过项 = 6.3 那一格，已归因）
+- val 跑批：**进行中**（`k29_mimicraw_1p6_val_seed666_v1`）
+
+---
+
+## 7. 待办
 
 - [ ] 下一版 prompt：① 哨兵码先判 `value == valuenum`；② 去重键不含 charttime
-- [ ] 补跑 1.6pct 档（原生层与 4.7pct 完全相同：883 格；只是注入密度低 ⇒ 注入层更难）
+- [x] 补跑 1.6pct 档（数据集已构建、校验、视图与 prompt 已就位；val 进行中）
+- [ ] 1.6pct 的 val/test 跑完 + 打分 + 补进台账
 - [ ] 往 `评测总表.md` 加 ㉓ 条目（该台账在 `eval-movies-cleaning` worktree 里，本次未改）
