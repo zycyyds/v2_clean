@@ -239,7 +239,87 @@ prompt 里点名这两个就够了（不需要再加第三个）。
 
 ---
 
-## 4. 校验
+## 4. 跑分结果（1.6pct 档）
+
+> 跑批时间：2026-11-17 21:5x → 2026-11-18 02:xx（val 7 轮约 50 分钟 + test 重放与打分约 35 分钟）
+> 一句话：**2,450 格 MIMIC 原生错误，agent 修对 2,431 格（99.2%）、改错 0 格**；
+> 注入层的 Det F1 = **0.999105**（几乎全检测到），Rep F1 = **0.953289**
+> —— Rep 的缺口全在「真值不可推断」的注入错误上，不是没检测到。
+
+### 4.1 composite
+
+| | 值 |
+|---|---|
+| val composite | **0.914914**（7 轮，patience 收尾；`status=SUCCESS_REPRODUCIBLE`，独立重放一致） |
+| test composite | **0.899143**（`status=SUCCESS`，`test_execution_count=1`，`scorer_version=equal_file_row_aligned_v1`） |
+| val → test 落差 | 0.0158（K29 是 0.0055 / 0.0065 —— icu5000 的 test 是 K29 的 5.6 倍行数，泛化更难） |
+
+⚠️ **composite 跨数据集不可比**（数据集、基线、输出文件集、切分键都不同）。
+
+### 4.2 错误级指标（v29 口径）
+
+| 口径 | Det F1 | Rep F1 | b_clean | b_wrong | b_dirty | b_missing | natural_noise |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **v29**（数值感知 + 新开关） | **0.999105** | **0.953289** | 7,804,229 | 451,758 | 44 | 14,877 | 111 |
+| **str**（纯字符串 + 新开关） | 0.996726 | **0.851130** | 6,774,771 | 1,433,444 | 47,816 | 14,877 | **9,973,197** |
+
+⇒ **写法税 = 0.102**（机制见 §3.6）：近 100 万格因 `"160"` vs `"160.0"` 从 b_clean 掉进 b_wrong，
+另有 997 万格被判成 natural_noise 直接排除；**b_missing 完全不变** ⇒ Det 近乎不变、只动 Rep。
+
+### 4.3 🎯 MIMIC 原生错误格（2,450 格）—— 本档核心成绩
+
+| 判定 | numeric 口径 | string 口径 |
+|---|---:|---:|
+| **b_clean（修对）** | **2,431（99.2%）** | **2,431（99.2%）** |
+| b_wrong（改错） | **0** | 4 |
+| b_dirty（没修好） | 4 | 0 |
+| b_missing（缺行） | 15（0.6%） | 15（0.6%） |
+
+**与 K29 的对比**（这一项跨数据集可比 —— 都是「MIMIC 自己录错的值」这一层）：
+
+| 档位 | 原生格总数 | 修对 | 修对率 | 改错 |
+|---|---:|---:|---:|---:|
+| K29 4.7pct | 873 | 773 | 88.5% | 0 |
+| K29 1.6pct | 873 | 836 | 95.8% | 1 |
+| **ICU5000 1.6pct** | **2,450** | **2,431** | **99.2%** | **0** |
+
+按 itemid：CVP（220074）880/883、动脉平均压（220052）776/782、哨兵码类（227465/227467）只丢 3 格、
+其余 11 个 itemid **全对**。
+
+⇒ **K29 那个「44 格哨兵码一格没修」的坑没有重演** ⇒ icu5000 prompt 里
+「哨兵码用中位数」/「`value != valuenum` ⇒ 注入 ⇒ 抄 `value`」/「别无脑抄 value」三条**没有打架**。
+
+### 4.4 ⚠️ 逐格归因：Rep 0.9533 的缺口全在「真值不可推断」的注入错误
+
+Det 0.9991 说明**几乎全检测到了**；b_wrong 451,758 是「知道错了但恢复不出原值」。
+
+**逐文件分布（v29）**：
+
+| 文件 | b_clean | b_wrong | 错在哪 |
+|---|---:|---:|---|
+| icu/chartevents.csv | 4,766,420 | 12,282（0.26%） | 原生层所在文件，修得极好 |
+| icu/inputevents.csv | 2,675,504 | 256,900 | endtime / amount / hadm_id / itemid 四类 |
+| icu/outputevents.csv | 233,129 | **174,565（43%）** | **charttime** |
+| icu/diagnoses.csv | 108,107 | 0 | ✓ |
+| icu/icustays.csv | 7,180 | 0 | ✓ |
+| demographics / admissions | 13,889 | 8,011 | |
+
+**三类成因（抽样 300 格/类逐格归因）**：
+
+1. **outputevents / charttime**（`implausible_negative_event_time`，407,694 条）：
+   抽样里 **46% 是「agent 找不到该行」** ⇒ agent **改对了值，但 charttime 是 key 列**，
+   改完 key 就变了 ⇒ 按旧 key 对不上 ⇒ 记成 b_wrong。
+   **这就是 K29 报告 §4.2 那个「值是对的、键错了」的坑 —— K29 是 58 格，这里是 43 万格。**
+2. **inputevents / endtime**（`med_end_before_start`，837,909 条）：**74% 改成别的值**、26% 改对
+   ⇒ agent 只能猜「endtime 该是多少」，而 log 的 clean_value 是原值 ⇒ **真值不可推断**。
+3. **inputevents / amount**（`sentinel_or_negative_med_amount`，837,909 条）：**90% 猜错** ⇒ 同上。
+
+⇒ **K29 的 Rep 更高（0.979 / 0.990）不是因为它更会修，而是它的注入层里这类
+「真值不可推断」错误的占比小得多。**
+
+---
+
+## 5. 校验
 
 `reproduction/verify_icu5000_mimic_raw_error.py` 独立重算、不信构建器的自检。
 
@@ -292,7 +372,7 @@ prompt 里点名这两个就够了（不需要再加第三个）。
 
 ---
 
-## 5. prompt 的改动
+## 6. prompt 的改动
 
 icu5000 的基础 prompt（`eval_handoff/prompts/icu5000_{1.6pct,4.7pct}_val_prompt_v1.md`）已经定稿，
 `make_icu5000_mimicraw_prompt.py` 是**插入式**的：
@@ -307,7 +387,7 @@ icu5000 的基础 prompt（`eval_handoff/prompts/icu5000_{1.6pct,4.7pct}_val_pro
 
 ---
 
-## 6. 待办 / 已完成
+## 7. 待办 / 已完成
 
 **已完成**
 - [x] 两档的构建（1.6pct native 层 2,450 格；4.7pct 2,174 格）+ 独立校验（两档全过）
