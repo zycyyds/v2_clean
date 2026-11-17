@@ -1,0 +1,92 @@
+{
+  "summary": {
+    "unit_scale_error": {
+      "total_in_log": 4750154,
+      "sampled": 20000,
+      "classes": {
+        "not_num（value 不是数值）": 13897,
+        "eq_str（value == clean_value）": 6075,
+        "other_num（别的数值）": 28
+      }
+    },
+    "sentinel_chart_value": {
+      "total_in_log": 8033664,
+      "sampled": 20000,
+      "classes": {
+        "not_num（value 不是数值）": 13996,
+        "eq_str（value == clean_value）": 5966,
+        "other_num（别的数值）": 38
+      }
+    }
+  },
+  "examples": {
+    "unit_scale_error": [
+      {
+        "kind": "not_num",
+        "value": "Variable"
+      },
+      {
+        "kind": "not_num",
+        "value": "On"
+      },
+      {
+        "kind": "not_num",
+        "value": "HME"
+      },
+      {
+        "kind": "not_num",
+        "value": "7mm"
+      },
+      {
+        "kind": "not_num",
+        "value": "22cm"
+      },
+      {
+        "kind": "not_num",
+        "value": "Compression sleeve"
+      },
+      {
+        "kind": "not_num",
+        "value": "PVC's"
+      },
+      {
+        "kind": "not_num",
+        "value": "AtmosAir Mattress"
+      }
+    ],
+    "sentinel_chart_value": [
+      {
+        "kind": "not_num",
+        "value": "Infection will be recognized early to al"
+      },
+      {
+        "kind": "not_num",
+        "value": "Side to Side"
+      },
+      {
+        "kind": "not_num",
+        "value": "On"
+      },
+      {
+        "kind": "not_num",
+        "value": "No"
+      },
+      {
+        "kind": "not_num",
+        "value": "Standard"
+      },
+      {
+        "kind": "not_num",
+        "value": "Oral Center"
+      },
+      {
+        "kind": "not_num",
+        "value": "Provide relief of pain / discomfort as i"
+      },
+      {
+        "kind": "not_num",
+        "value": "Variable"
+      }
+    ]
+  }
+}
