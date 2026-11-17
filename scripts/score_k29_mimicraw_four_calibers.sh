@@ -7,17 +7,25 @@
 #            / --no-recover-clean-key --keep-rows-not-in-gold（旧开关）
 #   组合：v29（numeric+新开关） / str（string+新开关） / oldsw（numeric+旧开关） / old（string+旧开关）
 #
-# ⚠️ 口径只在**同一档内**可比；跨档比老口径绝对值没有意义（见报告 §6.8）。
+# ⚠️ 纯字符串口径的**绝对值**跨档仍不可比（两档的「写法税」机制已同源，
+#    但注入错误的列构成不同 ⇒ 税的绝对量不同）。见报告 §6.10。
 #
 # 用法：
 #   bash scripts/score_k29_mimicraw_four_calibers.sh 16 [suffix]
 #   bash scripts/score_k29_mimicraw_four_calibers.sh 47 [suffix]
+# 不给 suffix 会自动加时间戳（**不会**覆盖历史存档）。
 set -uo pipefail
 
 PROJ="${PROJ:-/Users/mac/PycharmProjects/v2_clean}"
 WT="${WT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 TIER="${1:-16}"
 SUFFIX="${2:-}"
+# ⚠️ 不带后缀会**覆盖历史存档**（如 k29_mimicraw_16_agent_error_metrics_v29.json
+#    存的是「改 log 之前」的数字）⇒ 没给后缀就自动加时间戳，绝不静默覆盖。
+if [ -z "$SUFFIX" ]; then
+  SUFFIX="run$(date +%Y%m%d_%H%M%S)"
+  echo "提示：未指定后缀，自动使用 '$SUFFIX'（避免覆盖历史存档）"
+fi
 case "$TIER" in
   47)
     FULLBASE="K29_v2_rawerror_test4.7pct_14.1M_mimicrawerror"
