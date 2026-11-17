@@ -167,12 +167,16 @@ log 侧：原 log 10,009,412 条；chartevents 插入行 1,740,790 行；被注�
 
 ### 3.4 枚举型 itemid：icu5000 里和 K29 一致（两个都在）
 
-`reproduction/icu5000_enum_scan.py`（全量扫 test reference 的 2,112 种 itemid）：
+`reproduction/icu5000_enum_scan.py`（全量扫 test reference 的 2,112 种 itemid，
+先统计每个 itemid 的行数，再对「行数在 10 ~ 5,000」区间的 **1,327 个** itemid 逐组查多值）：
 
 | itemid | test reference 行数 | 多值组数 |
 |---|---:|---:|
 | 230033（Stool Management 排泄管理） | 1,871 | **104** |
 | 229864（Pressure Injury Location 压疮部位） | 150 | **25** |
+
+⇒ **整个中低频区间里只有这两个有合法多值**，与 K29 完全一致 ⇒ prompt 里点名这两个就够了，
+**不需要再加第三个**。（行数 >5,000 的 itemid 里也没有多值组 —— 高频 chart 项全是单值数值型。）
 
 ⚠️ 扫描的一个**中间结论**：**行数最多的前 80 个 itemid 里，一个多值组都没有** ——
 高频 chart 项全是单值数值型（心率、血压、体温…），多值只出现在**中低频**的枚举项上
