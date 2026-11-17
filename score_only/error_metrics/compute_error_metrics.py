@@ -80,6 +80,23 @@ EXCLUDE_ROWS_NOT_IN_GOLD = True
 # 默认开启；--string-compare 可退回纯字符串比对，与历史 A/B/C/D 对齐。
 NUMERIC_COMPARE = True
 
+# 「正确值」从 log 改从 **gold(reference)** 取。
+#
+# 背景：纯字符串口径（--string-compare）拿 **log 的 clean_value** 当「这一格该修成什么」
+# 的判据，而各档 log 的 clean_value **渲染不同**（4.7pct = MIMIC 原始串 '160'、
+# 1.6pct = float repr '160.0'，改成一致后又全部是原始串），
+# 而 agent 输出统一是 float repr ⇒ **老口径罚的全是「与 gold 逐字节相同」的做对了的格子**。
+# 实测（1.6pct，6 万格抽样）：agent 输出与 gold 逐字节相同 99.97%，
+# 但纯字符串口径判它「没修好」的比例高达 95.7%。
+#
+# ⇒ 打开这个开关后，判据是 **gold 那一列的值** —— 这是唯一的「正确答案」，
+#    与 log 怎么渲染无关 ⇒ **跨档绝对可比**。
+#
+# ⚠️ 默认关闭：打开会改变各档的历史数字（4.7pct 的纯字符串 Rep F1 0.870933 → ~0.98）。
+#    数值感知口径（v29）打开前后应当**完全一致**（log 的 clean_value 与 gold 数值相等）——
+#    这本身就是这个开关的正确性检验。
+CLEAN_FROM_GOLD = False
+
 
 def same_value(a, b):
     """两个 cell 值是否算「相同」。
@@ -364,6 +381,7 @@ def main():
                             f_mismatch += 1
 
                 crow = get_full(kt)
+                used_key = kt
                 # ---- 干净 key 还原 ----
                 # key 列被注入破坏时（如 stay_hadm_mismatch 改 hadm_id、
                 # medication_itemid_alias_split 改 itemid），raw 这一行的完整 key
@@ -384,6 +402,7 @@ def main():
                             dirty_key = True
                     if dirty_key:
                         crow = get_full(tuple(kt_clean))
+                        used_key = tuple(kt_clean)
                         if crow is not None:
                             f_['crow_recovered'] += 1
 
@@ -426,9 +445,19 @@ def main():
                         f_['row_not_in_gold_cells'] += len(cinj)
                         continue
 
+                gold_row = None
                 for col, e in cinj.items():
                     clean_v = e[1]
                     dirty_v = e[0]
+                    if CLEAN_FROM_GOLD:
+                        # 判据改用 gold(reference) 那一列的值 —— 与 log 怎么渲染无关
+                        if gold_row is None:
+                            gold_row = ref.get_full(used_key)
+                        if gold_row is not None and col in ref.cidx:
+                            gv = gold_row[ref.cidx[col]]
+                            if gv is not None:
+                                clean_v = gv
+                                f_['clean_from_gold_cells'] += 1
                     if col in codex.cidx:
                         if col in keys:
                             f_['kcol_inj'] += 1
@@ -494,7 +523,8 @@ def main():
                   'leak_removed', 'leak_kept',
                   'fp_det', 'natural_noise', 'kcol_inj', 'kcol_strict_hit',
                   'kcol_partial_hit', 'ncol_strict_hit', 'ncol_strict_miss',
-                  'crow_recovered', 'row_not_in_gold', 'row_not_in_gold_cells'):
+                  'crow_recovered', 'row_not_in_gold', 'row_not_in_gold_cells',
+                  'clean_from_gold_cells'):
             T[k] += f_[k]
         per_file[out_rel] = dict(f_)
         per_file[out_rel]['raw_rows'] = n_raw
@@ -560,6 +590,7 @@ def main():
         'recover_clean_key': RECOVER_CLEAN_KEY,
         'exclude_rows_not_in_gold': EXCLUDE_ROWS_NOT_IN_GOLD,
         'numeric_compare': NUMERIC_COMPARE,
+        'clean_from_gold': CLEAN_FROM_GOLD,
         'offset_mode': dict(offset_mode),
         'injected_rows_not_materialized': T['injected_rows_not_materialized'],
         'injected': {'cell_update': n_cell, 'duplicate': n_dup, 'insert': n_ins,
@@ -594,8 +625,12 @@ if __name__ == '__main__':
                     help="不排除「gold 里也不存在」的行（旧口径，会把 agent 正确删掉的行记成漏检）")
     ap.add_argument("--string-compare", action="store_true",
                     help="退回纯字符串比对（'0' 与 '0.0' 视为不同），与历史 A/B/C/D 对齐")
+    ap.add_argument("--clean-from-gold", action="store_true",
+                    help="判据改用 gold(reference) 的值，而不是 log 的 clean_value —— "
+                         "跨档绝对可比（log 怎么渲染不再影响判定）")
     a = ap.parse_args()
     NUMERIC_COMPARE = not a.string_compare
+    CLEAN_FROM_GOLD = a.clean_from_gold
     RECOVER_CLEAN_KEY = not a.no_recover_clean_key
     EXCLUDE_ROWS_NOT_IN_GOLD = not a.keep_rows_not_in_gold
     DS = Path(a.dataset_dir)
