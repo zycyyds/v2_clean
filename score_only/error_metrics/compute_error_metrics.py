@@ -92,8 +92,14 @@ NUMERIC_COMPARE = True
 # ⇒ 打开这个开关后，判据是 **gold 那一列的值** —— 这是唯一的「正确答案」，
 #    与 log 怎么渲染无关 ⇒ **跨档绝对可比**。
 #
+# ⚠️ 取 gold 那一行必须**按行号**（log 的 `raw_row_index` = reference 行号，
+#    ref.db 的 rowid = 行号+1），**不能按 key** ——
+#    实测 4.7pct 的 inputevents：gold 里有 **2,496 个重复 key / 2,581 条冗余行**
+#    ⇒ `get_full` 按 key 查只返回第一行，会拿到「不是这一行」的值。
+#
 # ⚠️ 默认关闭：打开会改变各档的历史数字（4.7pct 的纯字符串 Rep F1 0.870933 → ~0.98）。
-#    数值感知口径（v29）打开前后应当**完全一致**（log 的 clean_value 与 gold 数值相等）——
+#    数值感知口径（v29）打开前后应当**几乎一致**（log 的 clean_value 与 gold 数值相等；
+#    残余差异来自 NaN：agent 写 'nan' 而 log 记空串 ⇒ 数值感知判不等、字符串相等）。
 #    这本身就是这个开关的正确性检验。
 CLEAN_FROM_GOLD = False
 
@@ -157,9 +163,14 @@ class DB:
             cur = self.conn.execute(
                 "SELECT %s FROM data" % ",".join('"%s"' % c for c in self.db_cols))
             self._mem = {}
+            self._mem_by_rowid = {}
             for row in cur:
                 self._mem[tuple(row[i] for i in self.kidx)] = row
+                # rowid 从 1 连续（建表是顺序 INSERT；已实测 min=1 / max=N / distinct=N）
+                self._mem_by_rowid[len(self._mem_by_rowid) + 1] = row
             self._cnt = {k: 1 for k in self._mem}
+        else:
+            self._mem_by_rowid = None
 
     def _sub_index(self, omit_key):
         if omit_key in self._sub:
@@ -175,6 +186,21 @@ class DB:
         if self._mem is not None:
             return self._mem.get(kt)
         return self.conn.execute(self._sql_full, kt).fetchone()
+
+    def get_by_rowid(self, n):
+        """按 rowid 取一行（**不是**按 key）。
+
+        为什么需要它：`get_full` 按 key 查，**key 不唯一时只返回第一行**。
+        实测 4.7pct 的 inputevents：gold 里有 2,496 个重复 key / 2,581 条冗余行
+        ⇒ 按 key 取会拿到「不是这一行」的值。
+        log 的 `raw_row_index` 就是 **reference 行号**，而 ref.db 的 rowid = 行号+1
+        ⇒ 按行号取才是准确的。
+        """
+        if self._mem is not None:
+            return self._mem_by_rowid.get(n)
+        return self.conn.execute(
+            "SELECT %s FROM data WHERE rowid=?" % ",".join('"%s"' % c for c in self.db_cols),
+            (n,)).fetchone()
 
     def get_nonkey(self, kt):
         if self._mem is not None:
@@ -450,9 +476,14 @@ def main():
                     clean_v = e[1]
                     dirty_v = e[0]
                     if CLEAN_FROM_GOLD:
-                        # 判据改用 gold(reference) 那一列的值 —— 与 log 怎么渲染无关
+                        # 判据改用 gold(reference) 那一列的值 —— 与 log 怎么渲染无关。
+                        # ⚠️ 必须**按行号**取，不能按 key：4.7pct 的 inputevents 的 gold
+                        #    里有 2,496 个重复 key ⇒ 按 key 只会拿到第一行（可能是别的行）。
+                        #    log 的 raw_row_index 就是 reference 行号，ref.db 的 rowid = 行号+1。
                         if gold_row is None:
-                            gold_row = ref.get_full(used_key)
+                            gold_row = ref.get_by_rowid(log_ri + 1)
+                            if gold_row is None:
+                                gold_row = ref.get_full(used_key)   # 兜底
                         if gold_row is not None and col in ref.cidx:
                             gv = gold_row[ref.cidx[col]]
                             if gv is not None:
