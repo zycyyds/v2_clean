@@ -94,10 +94,13 @@ run_cal oldsw  --no-recover-clean-key --keep-rows-not-in-gold
 run_cal old    --no-recover-clean-key --keep-rows-not-in-gold --string-compare
 
 # ---- 「gold 判据」口径：判据改用 reference 的值 ⇒ 跨档绝对可比 ----
-# ① goldv29 = 数值感知 + gold 判据（应当与 v29 完全一致 —— 这是实现的正确性检验）
-# ② goldstr = 纯字符串 + gold 判据（**唯一有意义的纯字符串口径**）
+# ① goldv29  = 数值感知 + gold 判据（应当与 v29 一致 —— 这是实现的正确性检验）
+# ② goldstr  = 纯字符串 + gold 判据
+# ③ goldold  = **B 完全老口径**（纯字符串 + 不还原 key + 不排除 gold 外行）+ gold 判据
+#              ⇒ 「完全老口径」在两档同判据下可比
 run_cal goldv29 --clean-from-gold
 run_cal goldstr --clean-from-gold --string-compare
+run_cal goldold --clean-from-gold --no-recover-clean-key --keep-rows-not-in-gold --string-compare
 
 echo "--- 原生格重判（873 格）---"
 for m in numeric string; do
