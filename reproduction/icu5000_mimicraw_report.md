@@ -142,6 +142,24 @@ log 侧：原 log 10,009,412 条；chartevents 插入行 1,740,790 行；被注�
 要严格跨档可比，得只看**两档都登记了的交集格**；否则要把「4.7pct 少评 276 格」这件事记在结论里。
 ⇒ 这与 K29 不同（K29 两档的原生层是**逐格相同**的 873 格）—— 差别就在 §2 的第②③条上。
 
+### 3.2c ✅ 交集格分析：**2,059 格**是完全同源的严格可比子集
+
+`reproduction/icu5000_native_overlap.py`（按 log 的 `raw_row_index` = reference 行号对齐，两档 reference 相同 ⇒ 行号可比）：
+
+| 项 | 值 |
+|---|---:|
+| 1.6pct 登记 | 2,450 |
+| 4.7pct 登记 | 2,174 |
+| **交集（两档都登记）** | **2,059** |
+| 只在 1.6pct（划归了注入层的更多） | 391 |
+| 只在 4.7pct | 115 |
+| **交集格里两档 `repaired_value` 不一致的** | **0** |
+| **交集格里两档 `mimic_native_value` 不一致的** | **0** |
+
+⇒ 交集格里两档的**原生错值与修复值逐格完全一致** ⇒ 这 2,059 格是**严格可比的**。
+⇒ **跨档比原生错误修复率时，分母用 2,059**（而不是 2,450 / 2,174）。
+（自洽性：391 + 115 = 506 = 2,450 + 2,174 − 2×2,059 ✓）
+
 ### 3.3 ⚠️ 构造过程中抓到的两个 bug（都已修）
 
 1. **`fixes` 没剔除「itemid 也被改过」的 141 格** ⇒ reference 改了、log 却没登记 ⇒ agent 修对了反而被判错。构建器的自检（`改了 N 格但登记 M 条`）把它抓了出来。已修：排除的格同时从 `fixes` 里剔掉，`rewrite_reference` / `drop_valuenum_rows` 都用剔过的集合。
@@ -206,8 +224,33 @@ icu5000 的基础 prompt（`eval_handoff/prompts/icu5000_{1.6pct,4.7pct}_val_pro
 
 ---
 
-## 6. 待办
+## 6. 待办 / 已完成
 
-- [ ] 4.7pct 档的构建与校验
-- [ ] 枚举型 itemid 全量扫描（确认 icu5000 没有 K29 之外的高频多值 itemid）
+**已完成**
+- [x] 两档的构建（1.6pct native 层 2,450 格；4.7pct 2,174 格）+ 独立校验
+- [x] 两档的 manifest（单位统一成百分数）
+- [x] 两档的 agent 视图（train/validation，无答案文件泄漏）
+- [x] 两档的实测统计（偏离度 / CVP / 别名 / 枚举 / value 可靠性）
+- [x] 两档的 prompt（基础 prompt + 原生错误节 + itemid 别名节），已同步进各自数据集
+- [x] 报告与台账
+
+**未做**
+- [ ] 枚举型 itemid **全量**扫描（`reproduction/icu5000_enum_scan.py` 已写好）——
+      目前只确认了 230033 / 229864 两个在 icu5000 里同样存在（1,871 行/104 组多值、
+      150 行/25 组多值），未验证有没有 K29 之外的高频多值 itemid
 - [ ] harness 跑分（本次 scope 只到「可直接跑」的产物，跑分留待后续）
+- [ ] 两档交集格分析（`reproduction/icu5000_native_overlap.py` 已写好，待跑）
+
+**下一步该跑什么**
+```bash
+# ① 全量枚举扫描（确认 prompt 里那两个枚举 itemid 够不够）
+python3 reproduction/icu5000_enum_scan.py \
+  --dataset $DS/icu5000/icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror \
+  --out reproduction/icu5000_enum_16.json
+
+# ② 两档交集（跨档比修复率时用它保证分母一致）
+python3 reproduction/icu5000_native_overlap.py \
+  --a $DS/icu5000/icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror \
+  --b $DS/icu5000/icu_5000_v2_rawerror_test4.7pct_614M_mimicrawerror \
+  --out reproduction/icu5000_native_overlap.json
+```
