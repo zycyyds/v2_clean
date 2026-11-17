@@ -196,6 +196,41 @@ PROFILES = {
                      / "v2_rawerror_k29_rebuild_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/k29_gastritis_duodenitis_v3_1.json",
     },
+    # ICU5000 1.6pct「MIMIC 原生错误」增强版（mimic-raw-error）：
+    #   母数据集 icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror
+    #   与原版（less1）的唯一区别：**train/validation 的 reference 里，MIMIC 自身的
+    #   原生错误（生理不可能的孤立尖峰 + 哨兵错误码）已经修好**，并在 modification_log
+    #   里登记 ⇒ agent 在 train 对照里第一次能看见这类错误模式，有 train 证据可学
+    #   （train 注入 20 例 / validation 注入 50 例，覆盖 16 个 HARD itemid）。
+    #   ⚠️ icu5000 特有的三处（K29 没有）：
+    #     ① raw 的行索引空间是**混合**的（chartevents 带插入偏移、input/outputevents 零偏移）
+    #     ② itemid 列上多一层 CareVue 别名注入（220 万条 key 列错误，规则 100% 符合
+    #        「992 + (2|3) + 原 itemid 末 4 位」）⇒ prompt 里专门写了一节
+    #     ③ 「itemid 也被注入器改过」的 141 格是两层错误叠加、形态同构不可判定
+    #        ⇒ 不进 native 层、留给注入层评测（native 层 2,450 格）
+    #   视图只含 train/validation，**没有 test**（val 阶段不需要）。
+    "icu5000_mimicraw_16": {
+        "ds": PROJ / "datasets/val_views/icu5000_mimicraw_16",
+        "prompt": WT / "eval_handoff/prompts/icu5000_1.6pct_mimicraw_val_prompt_v1.md",
+        "exp_prefix": "icu5000_mimicraw_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/icu5000"
+                     / "icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror"
+                     / "v2_rawerror_icu5000_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/icu_5000_v1.json",
+    },
+    # ICU5000 4.7pct「MIMIC 原生错误」增强版 —— 1.6pct 版的姊妹数据集，
+    # 原生错误层规则一字未改，只有注入层预设不同（4.7pct，native 层 2,174 格）。
+    # ⚠️ 密度剖面是**反转**的：train 2.34% / validation 0.89% / test 4.72%
+    #    ⇒ validation 比 test 稀疏 5.3 倍，val 上验证过的规则未必在 test 上成立。
+    "icu5000_mimicraw_47": {
+        "ds": PROJ / "datasets/val_views/icu5000_mimicraw_47",
+        "prompt": WT / "eval_handoff/prompts/icu5000_4.7pct_mimicraw_val_prompt_v1.md",
+        "exp_prefix": "icu5000_mimicraw_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/icu5000"
+                     / "icu_5000_v2_rawerror_test4.7pct_614M_mimicrawerror"
+                     / "v2_rawerror_icu5000_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/icu_5000_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。

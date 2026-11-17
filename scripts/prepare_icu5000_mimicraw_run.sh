@@ -20,7 +20,10 @@ case "${1:-47}" in
 esac
 
 FULL="$DSROOT/${SRC}_mimicrawerror"
-VIEW="$DSROOT/icu5000_mimicraw_$1"
+# ⚠️ 视图放在 **datasets/val_views/** 这个「密封位置」（与 icu5000 原版 less1/more1
+#    一致），**不放** $DSROOT 下面 —— 那里的父目录里躺着完整数据集（含 test/reference
+#    = 答案、modification_log.csv = 答案键），agent 枚举父目录就可能看到。
+VIEW="$PROJ/datasets/val_views/icu5000_mimicraw_$1"
 PROMPTDIR="$WT/eval_handoff/prompts"
 BASE="$PROMPTDIR/icu5000_${TAG}_val_prompt_v1.md"
 PROMPT="$PROMPTDIR/icu5000_${TAG}_mimicraw_val_prompt_v1.md"
