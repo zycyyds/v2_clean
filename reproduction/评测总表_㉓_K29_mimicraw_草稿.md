@@ -133,3 +133,15 @@ agent 正确删掉、gold 里也没有的行被算成漏检）。
 **完整报告**：`reproduction/k29_mimicraw_report.md`（§6 是 1.6pct 档，§6.10 是 log 约定统一）
 **跑批台账**：`reproduction/台账.md`
 **复现脚本**：`scripts/score_k29_mimicraw_four_calibers.sh`（四口径 + 原生格重判，两档通用）
+
+#### ㉓⑦ ⚠️ **跨档比纯字符串口径：必须用「gold 判据」**
+
+> 老口径（`--string-compare`）拿 **log 的 `clean_value`** 当「这格该修成什么」的判据，
+> 而各档 log 的渲染不同 ⇒ **同一份 agent 输出在两档能差 0.76 Rep F1**
+> （4.7pct 0.870933 vs 1.6pct 0.108270）⇒ 那不是清洗质量的差距，是 log 渲染造成的假差距。
+> ⇒ 评分器新增 **`--clean-from-gold`**：判据改用 **gold(reference) 那一列的值**
+> ⇒ 与 log 怎么渲染无关 ⇒ **两档绝对可比**。
+> ⚠️ 取 gold 那一行必须**按行号**（log 的 `raw_row_index` = reference 行号），
+> **不能按 key** —— 实测两档的 inputevents gold 里有 2,496 个重复 key / 2,581 条冗余行。
+> ⇒ **正确性检验**：数值感知 + gold 判据 ⇒ 与现有 v29 几乎一致
+> （log 的 `clean_value` 与 gold 的值数值上 100% 相等，已全量核对）。
