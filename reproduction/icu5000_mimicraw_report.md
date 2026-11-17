@@ -127,18 +127,31 @@ log 侧：原 log 10,009,412 条；chartevents 插入行 1,740,790 行；被注�
 
 ## 4. 校验
 
-`reproduction/verify_icu5000_mimic_raw_error.py` 独立重算、不信构建器的自检：
+`reproduction/verify_icu5000_mimic_raw_error.py` 独立重算、不信构建器的自检。
 
-| # | 检查项 |
-|---|---|
-| ① | test 的 raw 与源数据集的差异**只**出现在「叠脏格」上（差异后的值 == MIMIC 原生错值） |
-| ② | reference 里残留的原生错误格数 = ①不可判定 + ②itemid 叠脏（两类之和） |
-| ③④ | log 里 `mimic_native_*` 条目数 == 溯源表行数；每个原生格在 log 里**恰好 1 条** valuenum 条目 |
-| ①b | test 的每个原生格，raw 的 `value` 文本列都 == `valuenum`（与真实 MIMIC 原生错误同构） |
-| ⑤ | log 的 `raw_row_index` 与 reference 行号对齐（抽样 500 条核对 `clean_value`） |
-| ⑤b | 用**源数据集**的 reference 独立重算 R2 中位数，与登记的 `repaired_value` 逐格一致 |
-| ⑥ | train/validation 的注入示例：raw 是脏值、reference 是中位数、log 有条目、dirty 值确实越界、`value` 文本列 == 脏值 |
-| ⑦ | 溯源表列齐全 |
+### 4.1 1.6pct 档：**✅ 全部通过**（exit 0）
+
+| # | 检查项 | 实测 |
+|---|---|---|
+| ① | test 的 raw 与源数据集的差异**只**出现在「叠脏格」上 | 差异 **164 行** = 叠脏 164 格 ✅ |
+| ② | reference 里残留的原生错误格 = ①不可判定 + ②itemid 叠脏 | 残留 **208** = 67 + 141 ✅ **精确吻合** |
+| ③④ | log 里 `mimic_native_*` 条目数 == 溯源表行数；每格**恰好 1 条** valuenum 条目 | 2,450 == 2,450；重复 0、缺 0 ✅ |
+| ①b | test 每个原生格的 raw `value` 文本列 == `valuenum` | **2,450 / 2,450** ✅ |
+| ⑤ | log 的 `raw_row_index` 与 reference 行号对齐 | 抽样 500 条，不一致 **0** ✅ |
+| ⑤b | 用**源数据集** reference 独立重算 R2 中位数 | **2,450 / 2,450** 一致，跳过 0 ✅ |
+| ⑥ | train / validation 的注入示例 | train 20 例、validation 50 例，全部通过 ✅ |
+| ⑦ | 溯源表列齐全 | 19 列 ✅ |
+
+⚠️ **② 是对新排除逻辑的一次独立验证**：verify 从产物重算「残留的原生错误格」，
+得到 **208**，正好等于构造时判定的「67（无可用读数）+ 141（itemid 叠脏）」——
+两处独立算出来的数分毫不差。
+
+类别分布：`T2_impossible` 2,307 + `T1_sentinel` 143 = 2,450；
+其中同时被注入器叠脏 **164**（与构造值一致）。
+
+### 4.2 4.7pct 档
+
+（构建完成后跑，结论见下）
 
 ---
 
