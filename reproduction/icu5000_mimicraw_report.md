@@ -36,7 +36,7 @@
 
 ---
 
-## 2. 与 K29 ㉓ 的差异（**三处必须单独处理**）
+## 2. 与 K29 ㉓ 的差异（**四处必须单独处理**）
 
 | 维度 | K29 ㉓ | **ICU5000 ㉔（本次）** |
 |---|---|---|
@@ -165,7 +165,22 @@ log 侧：原 log 10,009,412 条；chartevents 插入行 1,740,790 行；被注�
 1. **`fixes` 没剔除「itemid 也被改过」的 141 格** ⇒ reference 改了、log 却没登记 ⇒ agent 修对了反而被判错。构建器的自检（`改了 N 格但登记 M 条`）把它抓了出来。已修：排除的格同时从 `fixes` 里剔掉，`rewrite_reference` / `drop_valuenum_rows` 都用剔过的集合。
 2. **`NATIVE_REPR` 一开始按 raw 的 itemid 分组** ⇒ 把注入器改出来的 `9923xxxx` 当成了测量项（清单里出现 57 项，其中一半是假 itemid）。已修：改按 **reference 的 itemid** 分组 ⇒ 57 项全部是真 itemid。
 
-### 3.4 `NATIVE_REPR` 必须按 icu5000 自己统计
+### 3.4 枚举型 itemid：icu5000 里和 K29 一致（两个都在）
+
+`reproduction/icu5000_enum_scan.py`（全量扫 test reference 的 2,112 种 itemid）：
+
+| itemid | test reference 行数 | 多值组数 |
+|---|---:|---:|
+| 230033（Stool Management 排泄管理） | 1,871 | **104** |
+| 229864（Pressure Injury Location 压疮部位） | 150 | **25** |
+
+⚠️ 扫描的一个**中间结论**：**行数最多的前 80 个 itemid 里，一个多值组都没有** ——
+高频 chart 项全是单值数值型（心率、血压、体温…），多值只出现在**中低频**的枚举项上
+（230033 才 1,871 行，压根不在 top 80 内）。
+⇒ 含义：**agent 按 itemid 做去重时，误删风险集中在低频枚举项**，而这些项恰好是
+「同一时刻多条不同取值（多部位 / 多选项）」的合法多值记录 ⇒ prompt 里必须点名。
+
+### 3.5 `NATIVE_REPR` 必须按 icu5000 自己统计
 
 注入 train/validation 示例时，脏值的**形态**必须和 test 的真实分布一致，否则 agent 学成「只认 K29 的形态」、在 test 上大面积漏检。
 
