@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import os
 from collections import Counter
 from pathlib import Path
@@ -71,6 +72,41 @@ def fnum(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def conv_key(e):
+    """条目的唯一定位（同一 (文件, 行, 列) 可能有多条注入，取行号+列+序号更稳）"""
+    return "%s|%s|%s" % (e.get("raw_file", ""), e.get("raw_row_index", ""),
+                         e.get("column", ""))
+
+
+def eligible(e):
+    """这条要不要参与转换？（注入器自己的条目、非键列）"""
+    if e.get("operation") != "cell_update":
+        return False
+    if e.get("error_subtype", "").startswith("mimic_native"):
+        return False
+    rf = e.get("raw_file", "")
+    col = e.get("column", "")
+    keycols = KEY_COLUMNS.get(rf)
+    if keycols and col in keycols:
+        return False
+    return True
+
+
+def pick(eligible_keys, ratio, seed):
+    """确定性地选出 ratio 比例的条目（用 blake2b 哈希排序 ⇒ 可复现、与顺序无关）。"""
+    if ratio >= 1.0:
+        return set(eligible_keys)
+    if ratio <= 0.0:
+        return set()
+    scored = []
+    for k in eligible_keys:
+        h = hashlib.blake2b(("%s|%s" % (seed, k)).encode("utf-8"), digest_size=8).digest()
+        scored.append((h, k))
+    scored.sort()
+    n = int(round(len(scored) * ratio))
+    return set(k for _, k in scored[:n])
 
 
 def to_int_form(s):
@@ -106,6 +142,10 @@ def main():
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--splits", default="test,train,validation")
     ap.add_argument("--fix", action="store_true")
+    ap.add_argument("--ratio", type=float, default=1.0,
+                    help="只把这么比例的可转换条目改成整数形式（0~1）。"
+                         "确定性抽样（blake2b 哈希排序），--seed 控制选哪些")
+    ap.add_argument("--seed", default="k29-mimicraw")
     args = ap.parse_args()
     ds = Path(args.dataset)
 
@@ -114,36 +154,47 @@ def main():
         if not log_path.is_file():
             print("=== %s：没有 log，跳过" % split)
             continue
-        stat = Counter()
-        rows = []
+
+        # ---- 第一遍：读全部行，收集可转换候选的 key ----
         with log_path.open(newline="", encoding="utf-8") as f:
             rd = csv.DictReader(f)
             header = rd.fieldnames
-            for e in rd:
-                if e.get("operation") == "cell_update" \
-                        and not e.get("error_subtype", "").startswith("mimic_native"):
-                    rf = e.get("raw_file", "")
-                    col = e.get("column", "")
-                    keycols = KEY_COLUMNS.get(rf)
-                    if keycols and col in keycols:
-                        # 键列：clean_value 参与评分器的 key 还原，必须与 agent 写法逐字节一致
-                        stat["键列条目（不动）"] += 1
-                        rows.append(e)
-                        continue
-                    cv = e.get("clean_value")
-                    new = to_int_form(cv)
-                    if new != cv:
-                        stat["注入器条目：会改成整数形式"] += 1
-                        if args.fix:
-                            e["clean_value"] = new
-                    else:
-                        stat["注入器条目：本来就是整数形式/非数值"] += 1
-                elif e.get("operation") == "cell_update":
+            rows = list(rd)
+
+        keys = []
+        for e in rows:
+            if not eligible(e):
+                continue
+            cv = e.get("clean_value")
+            if to_int_form(cv) != cv:
+                keys.append(conv_key(e))
+        chosen = pick(keys, args.ratio, args.seed)
+
+        # ---- 第二遍：按比例写回 ----
+        stat = Counter()
+        for e in rows:
+            if not eligible(e):
+                if e.get("operation") == "cell_update" and \
+                        e.get("error_subtype", "").startswith("mimic_native"):
                     stat["原生条目（不动）"] += 1
+                elif e.get("operation") == "cell_update":
+                    stat["键列条目（不动）"] += 1
                 else:
                     stat["非 cell_update 条目（不动）"] += 1
-                rows.append(e)
-        print("=== %s ===" % split)
+                continue
+            cv = e.get("clean_value")
+            new = to_int_form(cv)
+            if new == cv:
+                stat["注入器条目：本来就是整数形式/非数值"] += 1
+            elif conv_key(e) in chosen:
+                stat["注入器条目：**已转**成整数形式"] += 1
+                if args.fix:
+                    e["clean_value"] = new
+            else:
+                stat["注入器条目：保留浮点形式（未转）"] += 1
+
+        print("=== %s ===  ratio=%.4f  (候选 %s 条，选中 %s 条)"
+              % (split, args.ratio, f"{len(keys):,}", f"{len(chosen):,}"))
         for k, v in stat.most_common():
             print("   %-36s %12s" % (k, f"{v:,}"))
         if args.fix:
