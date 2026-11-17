@@ -1,0 +1,92 @@
+{
+  "summary": {
+    "unit_scale_error": {
+      "total_in_log": 1360895,
+      "sampled": 20000,
+      "classes": {
+        "not_num（value 不是数值）": 14131,
+        "eq_str（value == clean_value）": 5849,
+        "other_num（别的数值）": 20
+      }
+    },
+    "sentinel_chart_value": {
+      "total_in_log": 559135,
+      "sampled": 20000,
+      "classes": {
+        "not_num（value 不是数值）": 13992,
+        "eq_str（value == clean_value）": 5995,
+        "other_num（别的数值）": 13
+      }
+    }
+  },
+  "examples": {
+    "unit_scale_error": [
+      {
+        "kind": "not_num",
+        "value": "Face tent"
+      },
+      {
+        "kind": "not_num",
+        "value": "None"
+      },
+      {
+        "kind": "not_num",
+        "value": "Medium"
+      },
+      {
+        "kind": "not_num",
+        "value": "Normal"
+      },
+      {
+        "kind": "not_num",
+        "value": "Normal"
+      },
+      {
+        "kind": "not_num",
+        "value": "Continued"
+      },
+      {
+        "kind": "not_num",
+        "value": "Refer to restraint policy"
+      },
+      {
+        "kind": "not_num",
+        "value": "3mm"
+      }
+    ],
+    "sentinel_chart_value": [
+      {
+        "kind": "not_num",
+        "value": "Consistently"
+      },
+      {
+        "kind": "not_num",
+        "value": "Provide relief of pain / discomfort as i"
+      },
+      {
+        "kind": "not_num",
+        "value": "3 rails up"
+      },
+      {
+        "kind": "not_num",
+        "value": "Impaired"
+      },
+      {
+        "kind": "not_num",
+        "value": "2 Person Assist"
+      },
+      {
+        "kind": "not_num",
+        "value": "Family at bedside"
+      },
+      {
+        "kind": "not_num",
+        "value": "Activity"
+      },
+      {
+        "kind": "not_num",
+        "value": "Oral-R"
+      }
+    ]
+  }
+}

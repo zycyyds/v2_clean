@@ -42,19 +42,51 @@
 |---|---|---|
 | **① raw 的行索引空间** | 4.7pct 带偏移、1.6pct 零偏移（**两档不同**） | **混合**：chartevents 是 bisect 偏移（raw 比 reference 多 1,740,790 行）；inputevents / outputevents 是零偏移 ⇒ **必须逐文件自动判定**，写死任何一种都会读错行 |
 | **② itemid 列上的别名注入** | K29 没有这一层 | **1,632,972 条 `chart_itemid_alias_split`**（chartevents）+ 574,828 条 `medication_itemid_alias_split` ⇒ **raw 的 itemid 被改成了 `992{2\|3}XXXX`**（实测 99.94% 符合「`992` + (2 或 3) + 原 itemid 末 4 位」）。这是 **key 列**上的错误，不修就大面积键对不上 |
-| **③ 两层错误叠加（itemid 那一层）** | 构建器只处理了 valuenum 那一层 | **141 格**的 itemid 也被注入器改过、同时又是原生错误格 ⇒ 两层错误形态同构、不可判定 ⇒ **不进 native 层**，留给注入层评测（K29 报告 §2.1 原则的延伸） |
+| **③ 两层错误叠加（itemid 那一层）** | 构建器只处理了 valuenum 那一层 | **141 格**（4.7pct 417 格）的 itemid 也被注入器改过、同时又是原生错误格 ⇒ 两层错误形态同构、不可判定 ⇒ **不进 native 层**，留给注入层评测（K29 报告 §2.1 原则的延伸） |
+| **④ `value` 文本列的可靠性** | `unit_scale_error` 里 **99.6%** 的格 `value` == clean_value ⇒ prompt 敢说「修注入错误直接抄 `value` 比 ÷100 可靠」 | **只有约 29%** —— icu5000 的 chartevents 里有大量**文本型 chart 行**，`value` 列记的是描述性文本（`Normal` / `Medium` / `3 rails up`）⇒ **照抄 K29 那句会误导 agent**，prompt 已改（见 §2.2） |
 
 ### 2.1 ②的实测：别名规则
 
 ```
-chart_itemid_alias_split 共 1,632,972 条
-  其中 1,631,929 条（99.94%）符合：dirty = "992" + (2 或 3) + clean_value 末 4 位
-  反例形态：230045 → 99230045（前缀是 9923 而不是 9922）
-  涉及文件：全部在 icu/chartevents.csv
+column=itemid 的注入共 2,207,800 条（chartevents 1,632,972 + inputevents 574,828）
+  全部 2,207,800 条（100.0%）符合：dirty = "992" + (2 或 3) + clean_value 末 4 位
+  前缀分布：9922 = 2,206,749 条、9923 = 1,051 条
+  涉及文件：icu/chartevents.csv（1,632,972）、icu/inputevents.csv（574,828）
 ```
 
 ⇒ agent 只要把 `992{2,3}XXXX` 还原成 `220XXX` 就能修好这 163 万条 key 列错误。
 这条规则**写进了 prompt**（K29 的 prompt 里没有这一层）。
+
+### 2.2 ⭐ `value` 文本列在 icu5000 上**只有约三成可用**（K29 是 99.6%）
+
+K29 的 prompt 里有这么一段（直接抄过来会出事）：
+
+> ⇒ **反过来也成立，对你修注入错误同样有用**：注入类的错误……**在 raw 里的 `value` 文本列记的就是那个正确值**
+> —— 实测 `unit_scale_error` 的 497,408 格里 495,623 格（99.6%）、`sentinel_chart_value` 的 1,935,724 格里
+> 634,397 格的 `value` 直接等于 log 里登记的 clean_value。
+> ⇒ **修这类注入错误时，直接采用 `value` 文本列比"÷100"或"猜一个中位数"都可靠**。
+
+**icu5000 实测（抽样 20,000 格/类）**：
+
+| 类别 | `value` == clean_value（字符串相同） | `value` **不是数值** | 别的数值 |
+|---|---:|---:|---:|
+| `unit_scale_error`（log 里共 1,360,895 条） | 5,849（**29.2%**） | **14,131（70.7%）** | 20 |
+| `sentinel_chart_value`（log 里共 559,135 条） | 5,995（**30.0%**） | **13,992（70.0%）** | 13 |
+
+⇒ 那七成的 `value` 记的是**护理描述性文本**，不是数值 —— 例如
+`Face tent`、`Medium`、`Normal`、`Refer to restraint policy`、`3 rails up`、`2 Person Assist`。
+**根因**：icu5000 的 `icu/chartevents.csv` 里有大量**文本型 chart 行**（氧疗方式、约束等级、
+活动能力、疼痛评估…），它们的 `value` 列本来就不该是数值，而注入器给它们的 `valuenum`
+注入了数值类错误（×100 / 哨兵码）。
+
+⚠️ **但判据本身仍然成立**：验证器确认 test 的 2,450 个原生格 **`value` 文本列 100% == `valuenum`** ——
+原生错误格是数值型 itemid，`value` 记的就是那个坏数本身。
+⇒ **「`value == valuenum` ⇒ 原生错误」这条判据照常有效**；
+   失效的只是「反过来拿 `value` 去修注入错误」这条**修复建议**。
+
+⇒ prompt 已改：改成「**只有当 `value` 能解析成数值、且与 `valuenum` 明显不在一个量级时，
+才优先采用 `value`；`value` 不是数值的那些格（文本型 chart 行）不要套这条**」。
+（工具：`reproduction/icu5000_value_reliability.py`，输出按 6 类归并的计数，不含病人级信息。）
 
 ---
 

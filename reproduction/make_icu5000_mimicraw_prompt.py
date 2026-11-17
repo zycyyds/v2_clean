@@ -217,6 +217,30 @@ def build_section(ctx):
     else:
         vec_txt = "（本档未测得 value 对照统计）"
 
+    vr = ctx.get("value_reliability")
+    if vr and vr.get("summary"):
+        s2 = vr["summary"]
+        parts = []
+        for st in ("unit_scale_error", "sentinel_chart_value"):
+            d = s2.get(st) or {}
+            c = d.get("classes", {})
+            eq = c.get("eq_str（value == clean_value）", 0)
+            non = c.get("not_num（value 不是数值）", 0)
+            n = d.get("sampled", 0)
+            parts.append("`%s` 的 %s 格里 **%s 格（%.1f%%）**的 `value` 文本列正好等于"
+                         " log 登记的 clean_value，另外 %s 格的 `value` **根本不是数值**"
+                         % (st, fmt_num(n), fmt_num(eq), 100.0 * eq / max(1, n),
+                            fmt_num(non)))
+        vec_txt = ("实测：" + "；".join(parts) + "。\n\n"
+                   "⚠️ **剩下的那七成不是「value 记错了」，而是这些行的 `value` 压根不是数值** —— "
+                   "icu5000 的 `icu/chartevents.csv` 里有大量**文本型 chart 行**"
+                   "（护理评估、约束等级、氧疗方式、活动能力…），`value` 列记的是描述性文本"
+                   "（`Normal` / `Medium` / `3 rails up` 这类），而注入器给这些行的 `valuenum` "
+                   "注入了数值类错误。\n\n"
+                   "⇒ **只有当 `value` 本身能解析成数值、且正好等于 clean_value 时，才能拿它当还原线索**；"
+                   "`value` 不是数值的那批格，得另想办法（按 itemid 的量纲规律 ÷100 / 用中位数 / "
+                   "按 train 对照反推）。**别无脑套「÷100」或「抄 value」**。")
+
     if alias:
         alias_txt = ("test 的 modification_log 里 `column=itemid` 的条目共 **%s 条**，"
                      "raw 的 itemid 被改成了 `992{2|3}XXXX` 形式 —— 例如 `220045` → "
@@ -339,7 +363,7 @@ raw 的 `icu/chartevents.csv` 里有两列：**`value`（文本）** 和 **`valu
 
 ⚠️ **reference 里没有 `value` 列**（只有 `valuenum` / `valueuom`）⇒ `value` 只能在 **raw** 里看，它是你的**推理线索**，不是你要输出的内容。
 
-⇒ **反过来也成立，对你修注入错误同样有用**：注入类的错误（×100 量纲放大、哨兵码）**在 raw 里的 `value` 文本列记的就是那个正确值** —— {VEC}。⇒ **修这类注入错误时，直接采用 `value` 文本列比"÷100"或"猜一个中位数"都可靠**（`value` 是非数值的那些格才需要另想办法）。
+⇒ **反过来，对你修注入错误也有用 —— 但要挑着用**：注入类的错误（×100 量纲放大、哨兵码）在 raw 的 `value` 文本列里**有时**记的就是那个正确值。{VEC} ⇒ **当 `value` 能解析成数值、且与 `valuenum` 明显不在一个量级时，优先采用 `value`；`value` 不是数值的那些格（文本型 chart 行）不要套这条，得另想办法。**
 
 ⚠️ **不要用"÷100 之后落不落回区间"来判**：{CVP}。
 
@@ -437,6 +461,9 @@ def main():
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--base-prompt", required=True)
     ap.add_argument("--stats", required=True)
+    ap.add_argument("--value-stats", default=None,
+                    help="icu5000_value_reliability.py 的输出 JSON（value 文本列的"
+                         "可靠性分类；不给就退回 stats 里的粗比例）")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     ds = Path(args.dataset)
@@ -461,6 +488,9 @@ def main():
         "cvp": (stats.get("deviation") or {}).get("cvp"),
         "alias": stats.get("alias"),
         "vec": stats.get("value_eq_clean"),
+        "value_reliability": (
+            json.loads(Path(args.value_stats).read_text(encoding="utf-8"))
+            if args.value_stats else None),
         "enum": stats.get("enum") or {"rows": {}, "multi_groups": {}},
     }
 

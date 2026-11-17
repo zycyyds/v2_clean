@@ -25,6 +25,7 @@ PROMPTDIR="$WT/eval_handoff/prompts"
 BASE="$PROMPTDIR/icu5000_${TAG}_val_prompt_v1.md"
 PROMPT="$PROMPTDIR/icu5000_${TAG}_mimicraw_val_prompt_v1.md"
 STATS="$WT/reproduction/icu5000_native_stats_$1.json"
+VALSTATS="$WT/reproduction/icu5000_value_reliability_$1.json"
 
 [ -d "$FULL" ] || { echo "FATAL: 缺数据集 $FULL" >&2; exit 5; }
 [ -f "$BASE" ] || { echo "FATAL: 缺基础 prompt $BASE" >&2; exit 5; }
@@ -41,11 +42,15 @@ python3 "$WT/reproduction/make_agent_view.py" --src "$FULL" --dst "$VIEW"
 echo
 echo "=== ③ 实测统计（prompt 里引用的每个数字都来自这里）"
 python3 "$WT/reproduction/icu5000_native_stats.py" --dataset "$FULL" --out "$STATS"
+# value 文本列的可靠性分类（icu5000 有大量文本型 chart 行 ⇒ 「直接抄 value」只适用约三成）
+python3 "$WT/reproduction/icu5000_value_reliability.py" \
+  --dataset "$FULL" --sample 20000 --out "$VALSTATS"
 
 echo
 echo "=== ④ prompt"
 python3 "$WT/reproduction/make_icu5000_mimicraw_prompt.py" \
-  --dataset "$FULL" --base-prompt "$BASE" --stats "$STATS" --out "$PROMPT"
+  --dataset "$FULL" --base-prompt "$BASE" --stats "$STATS" \
+  --value-stats "$VALSTATS" --out "$PROMPT"
 echo "prompt: $PROMPT  ($(wc -c < "$PROMPT") bytes)"
 
 echo
@@ -60,3 +65,4 @@ echo "  完整数据集 : $FULL"
 echo "  agent 视图 : $VIEW"
 echo "  prompt     : $PROMPT"
 echo "  统计       : $STATS"
+echo "  value 分类 : $VALSTATS"
