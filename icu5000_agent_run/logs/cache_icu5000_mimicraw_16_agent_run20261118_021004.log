@@ -1,0 +1,8 @@
+result-dir = /Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/icu5000_agent_run/experiments/icu5000_mimicraw_1p6_test_seed666_v1/host/test_result_package
+ref-dir    = /Users/mac/PycharmProjects/v2_clean/datasets/注入错误数据集/icu5000/icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror/test/reference
+ds-key     = icu5000_mimicraw_16_agent
+=== agent output ===
+built icu5000_mimicraw_16_agent__hosp_patients.csv__codex.db       4803 rows   6 cols  (codex)
+built icu5000_mimicraw_16_agent__hosp_admissions.csv__codex.db       6150 rows  13 cols  (codex)
+built icu5000_mimicraw_16_agent__hosp_diagnoses_icd.csv__codex.db     108107 rows   5 cols  (codex)
+built icu5000_mimicraw_16_agent__icu_icustays.csv__codex.db       7180 rows   6 cols  (codex)

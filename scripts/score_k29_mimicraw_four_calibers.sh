@@ -88,6 +88,23 @@ PY
   return 0
 }
 
+# ⚠️ **必须先建缓存**：compute_error_metrics.py 依赖 build_eval_cache.py 建好的
+#    sqlite 索引（agent 输出 + gold 各一份）；缓存不存在时它会把**每个文件都 SKIP**
+#    ⇒ 指标全 0（看起来像「agent 一格没修」，其实是没读到东西）。
+#    （这个脚本原先直接调 compute_error_metrics.py，依赖「前面恰好跑过
+#      run_error_metrics.sh、缓存已存在」这个隐式顺序 —— 现在不依赖它。）
+echo "--- 建缓存（agent 输出 + gold 的 sqlite 索引）---"
+( cd "$WT/score_only" && python3 -u error_metrics/build_eval_cache.py \
+    --result-dir "$RESULT" --ref-dir "$DS/test/reference" --ds-key "$DSKEY" ) \
+  > "$WT/k29_agent_run/logs/cache_${DSKEY}${SFX}.log" 2>&1
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "!! build_eval_cache 失败 (rc=$rc)" >&2
+  tail -20 "$WT/k29_agent_run/logs/cache_${DSKEY}${SFX}.log" >&2
+  exit $rc
+fi
+tail -3 "$WT/k29_agent_run/logs/cache_${DSKEY}${SFX}.log"
+
 run_cal v29
 run_cal str    --string-compare
 run_cal oldsw  --no-recover-clean-key --keep-rows-not-in-gold

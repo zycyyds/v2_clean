@@ -1,0 +1,26 @@
+Loading mod_log ...
+  cell_update=8270908 duplicate=1336035 insert=404755 total=10011698
+SKIP hosp/patients.csv
+SKIP hosp/admissions.csv
+SKIP hosp/diagnoses_icd.csv
+SKIP icu/icustays.csv
+SKIP icu/chartevents.csv
+SKIP icu/inputevents.csv
+SKIP icu/outputevents.csv
+
+==================================================================
+icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror  --  v29 (index-shift corrected)
+==================================================================
+injected   : cell_update=8270908 duplicate=1336035 insert=404755
+evaluated  : cell=0  dup=0
+  excluded (行不在 gold 里，agent 删对): rows=0 cells=0
+  clean=0  dirty=0  wrong=0  row_missing=0
+  dup_removed=0  dup_kept=0  dup_row_gone=0  dup_row_short=0
+  leak_removed=0  leak_kept=0
+  FP_det=0  natural_noise(excluded)=0  raw_dirty_mismatch=0
+DETECTION  TP=0 FN=0 FP=0
+           P=0.000000 R=0.000000 F1=0.000000
+REPAIR     TP=0 FN=0 FP=0
+           P=0.000000 R=0.000000 F1=0.000000
+total 35s
+saved: /Users/mac/PycharmProjects/v2_clean/runs/icu5000_mimicraw_16_agent_error_metrics_str_run20261118_020040.json
