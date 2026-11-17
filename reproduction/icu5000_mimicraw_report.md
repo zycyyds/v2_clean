@@ -168,15 +168,18 @@ log 侧：原 log 10,009,412 条；chartevents 插入行 1,740,790 行；被注�
 ### 3.4 枚举型 itemid：icu5000 里和 K29 一致（两个都在）
 
 `reproduction/icu5000_enum_scan.py`（全量扫 test reference 的 2,112 种 itemid，
-先统计每个 itemid 的行数，再对「行数在 10 ~ 5,000」区间的 **1,327 个** itemid 逐组查多值）：
+分三段覆盖：行数最多的 top 80 + 10~5,000 行的 1,327 个 + 5,001~50,000 行的 455 个；
+剩下约 250 个是行数 < 10 的噪声 itemid，最多 9 行、不可能构成有意义的多值组）：
 
-| itemid | test reference 行数 | 多值组数 |
-|---|---:|---:|
-| 230033（Stool Management 排泄管理） | 1,871 | **104** |
-| 229864（Pressure Injury Location 压疮部位） | 150 | **25** |
+| itemid | test reference 行数 | 多值组数 | 判定 |
+|---|---:|---:|---|
+| 230033（Stool Management 排泄管理） | 1,871 | **104** | **枚举型** |
+| 229864（Pressure Injury Location 压疮部位） | 150 | **25** | **枚举型** |
+| 224696 | 22,015 | **1** | 边缘个案（比枚举型少三个数量级，疑似同一读数被记两次） |
+| 其余 2,109 个 itemid | — | **0** | — |
 
-⇒ **整个中低频区间里只有这两个有合法多值**，与 K29 完全一致 ⇒ prompt 里点名这两个就够了，
-**不需要再加第三个**。（行数 >5,000 的 itemid 里也没有多值组 —— 高频 chart 项全是单值数值型。）
+⇒ **整个数据集里真正的枚举型 itemid 就 230033 / 229864 两个**，与 K29 完全一致 ⇒
+prompt 里点名这两个就够了（不需要再加第三个）。
 
 ⚠️ 扫描的一个**中间结论**：**行数最多的前 80 个 itemid 里，一个多值组都没有** ——
 高频 chart 项全是单值数值型（心率、血压、体温…），多值只出现在**中低频**的枚举项上
@@ -269,30 +272,22 @@ icu5000 的基础 prompt（`eval_handoff/prompts/icu5000_{1.6pct,4.7pct}_val_pro
 ## 6. 待办 / 已完成
 
 **已完成**
-- [x] 两档的构建（1.6pct native 层 2,450 格；4.7pct 2,174 格）+ 独立校验
+- [x] 两档的构建（1.6pct native 层 2,450 格；4.7pct 2,174 格）+ 独立校验（两档全过）
 - [x] 两档的 manifest（单位统一成百分数）
 - [x] 两档的 agent 视图（train/validation，无答案文件泄漏）
 - [x] 两档的实测统计（偏离度 / CVP / 别名 / 枚举 / value 可靠性）
 - [x] 两档的 prompt（基础 prompt + 原生错误节 + itemid 别名节），已同步进各自数据集
+- [x] **枚举型 itemid 全量扫描**（2,112 种 itemid 分三段覆盖）⇒ 真正的枚举型只有
+      230033 / 229864 两个，与 K29 一致 ⇒ prompt 不用改
+- [x] **两档交集格分析** ⇒ 2,059 格完全同源，跨档比修复率的分母用它
 - [x] 报告与台账
 
 **未做**
-- [ ] 枚举型 itemid **全量**扫描（`reproduction/icu5000_enum_scan.py` 已写好）——
-      目前只确认了 230033 / 229864 两个在 icu5000 里同样存在（1,871 行/104 组多值、
-      150 行/25 组多值），未验证有没有 K29 之外的高频多值 itemid
 - [ ] harness 跑分（本次 scope 只到「可直接跑」的产物，跑分留待后续）
-- [ ] 两档交集格分析（`reproduction/icu5000_native_overlap.py` 已写好，待跑）
 
 **下一步该跑什么**
 ```bash
-# ① 全量枚举扫描（确认 prompt 里那两个枚举 itemid 够不够）
-python3 reproduction/icu5000_enum_scan.py \
-  --dataset $DS/icu5000/icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror \
-  --out reproduction/icu5000_enum_16.json
-
-# ② 两档交集（跨档比修复率时用它保证分母一致）
-python3 reproduction/icu5000_native_overlap.py \
-  --a $DS/icu5000/icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror \
-  --b $DS/icu5000/icu_5000_v2_rawerror_test4.7pct_614M_mimicrawerror \
-  --out reproduction/icu5000_native_overlap.json
+# 跑 harness（scope 之外）
+bash scripts/prepare_icu5000_mimicraw_run.sh 16      # 或 47
+# → 之后接 eval_handoff 的 val harness（需要新加一个 icu5000_mimicraw profile）
 ```
