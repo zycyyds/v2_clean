@@ -391,14 +391,18 @@ train 分片里只有 **{N_TRAIN_EX} 个测量项（{TRAIN_EX_ITEMS}）有上面
 """
 
 
-def replace_magnitude_lines(base: str, logs: dict) -> str:
+def replace_magnitude_lines(base: str, logs: dict, total_cells: dict) -> str:
     """把「错误注入量级」那三行的数字换成 mimicraw 档的实测值。
 
     原行形如：
       - train: 约 14,966 cell_update + 1,972 duplicate_row + 1,090 label_leakage 插入行 = 18,028 个错误分布在 10 个 stay 上（cell-level 1.30%，97,950 行）
+
+    cell-level % = cell_update 条数 / total_cells（total_cells 取自权威 manifest），
+    随 mimicraw 档新增的原生错误条目一起重算。
     """
-    pat = re.compile(
-        r"^- (train|validation|最终测试集): .*$", re.M)
+    pat = re.compile(r"^- (train|validation|最终测试集): .*$", re.M)
+    tail_re = re.compile(
+        r"个错误分布在\s*(.*?)\s*个 stay 上（cell-level\s*([\d.]+)%，([\d,]+)\s*行）")
 
     def repl(m):
         key = m.group(1)
@@ -411,15 +415,18 @@ def replace_magnitude_lines(base: str, logs: dict) -> str:
         parts = []
         for o, label in (("cell_update", "cell_update"),
                          ("duplicate", "duplicate_row"),
-                         ("insert", "插入行")):
+                         ("insert", "label_leakage 插入行")):
             if op.get(o):
                 parts.append("%s %s" % (fmt_num(op[o]), label))
         total = st["n"]
         line = "- %s: 约 %s = %s 个错误" % (key, " + ".join(parts), fmt_num(total))
-        # 保留原行里的「分布在 N 个 stay 上（cell-level X%，Y 行）」尾巴
-        tail = re.search(r"(分布在 .*)$", m.group(0))
+        tail = tail_re.search(m.group(0))
         if tail:
-            line += " " + tail.group(1)
+            n_stay, _pct, rows = tail.group(1), tail.group(2), tail.group(3)
+            tc = total_cells.get(split)
+            pct = "%.2f" % (100.0 * op.get("cell_update", 0) / tc) if tc else _pct
+            line += ("分布在 %s 个 stay 上（cell-level %s%%，%s 行）"
+                     % (n_stay, pct, rows))
         return line
 
     return pat.sub(repl, base)
@@ -458,7 +465,15 @@ def main():
     }
 
     base = Path(args.base_prompt).read_text(encoding="utf-8")
-    base = replace_magnitude_lines(base, logs)
+    # total_cells 取自权威 manifest（prepare 步骤①先生成）—— 没有就用原行里的 %
+    total_cells = {}
+    mf = ds / "v2_rawerror_icu5000_final_report.json"
+    if mf.is_file():
+        md = json.loads(mf.read_text(encoding="utf-8"))
+        for s, v in md.get("splits", {}).items():
+            if v.get("total_cells"):
+                total_cells[s] = v["total_cells"]
+    base = replace_magnitude_lines(base, logs, total_cells)
 
     if ANCHOR not in base:
         raise SystemExit("FATAL: 基础 prompt 里找不到锚点 %r" % ANCHOR)
