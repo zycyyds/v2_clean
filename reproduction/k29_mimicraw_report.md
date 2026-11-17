@@ -506,13 +506,17 @@ Rep F1 **0.988637**（P 0.987172 / R 0.990107）
 
 #### ✅ 完整链条（同一批 40,000 行三方对照，全部实测）
 
-| 环节 | 4.7pct | 1.6pct |
+| 环节（chartevents 全量形状分布） | 4.7pct | 1.6pct |
 |---|---|---|
-| raw 的 valuenum 字符串 | MIMIC **原始字符串**（`'160'`） | MIMIC **原始字符串**（`'160'`） |
-| reference（gold）的 valuenum 字符串 | **float repr**（`'160.0'`） | **float repr**（`'160.0'`） |
-| **log 的 clean_value 字符串** | **原始字符串**（`'160'`）⚠️ **与 gold 不同形式** | **float repr**（`'160.0'`）✅ 与 gold 同形式 |
-| agent 输出的 valuenum 字符串 | **float repr**（`'160.0'`） | **float repr**（`'160.0'`） |
+| **raw** 的 valuenum | 整数字面量 **4,705,998** / 非数值 5,434,398 / 浮点 2,081,448 | 整数字面量 **3,334,800** / 非数值 5,400,003 / 浮点 445,852 |
+| **reference（gold）** 的 valuenum | 浮点 3,637,542 / 非数值 5,543,113 | 浮点 3,637,542 / 非数值 5,543,113（**与左逐位相同**） |
+| **log 的 clean_value** | 非数值 2,458,848 / **整数字面量 1,469,748** / 浮点 143,834 ⚠️ | **浮点 3,214,231** / 非数值 138,615 ✅ |
+| agent 输出的 valuenum | float repr（`'160.0'`） | float repr（`'160.0'`） |
 | **agent 与 gold 逐字节相同的比例** | **96.3%**（38,530/40,000） | **99.995%**（39,998/40,000） |
+
+⇒ **两档的 raw 与 gold 都一样**（raw 以整数字面量为主、gold 都是 float repr）
+⇒ **唯一的变量是 log 的 clean_value 的渲染**：
+4.7pct 保留 MIMIC 原始串、1.6pct 渲染成 float repr。
 
 ⇒ **agent 写的就是 gold 的形式**（两档都是）。
 ⇒ **老口径的判据却是 log 里的 `clean_value`** ⇒ 在 4.7pct 上，
@@ -523,6 +527,11 @@ Rep F1 **0.988637**（P 0.987172 / R 0.990107）
 ⇒ **根因不是 agent、不是数据，而是两档写 log 的引擎不同**：
 4.7pct 用 v2 重建引擎（`build_k29_rebuild_inject.py`，log 保留原始字符串），
 1.6pct 用 legacy 引擎（log 写 float repr）。
+
+⇒ ⚠️ **顺带暴露一个数据集级瑕疵**：**4.7pct 的 log 与它自己的 reference 字符串形式不一致**
+（log 的 clean_value 是原始串、gold 是 float repr）⇒ **数值等价、字符串不等价**。
+v29 的数值感知口径**看不见**这个不一致 ⇒ 日常评分不受影响；
+但任何按字符串比的地方（`--string-compare`、导出的 diff、人工看 CSV）都会踩到。
 
 ⇒ **实务结论**：
 ① `--string-compare` 的 Det/Rep **绝对值不可跨档比**（同一份 agent 输出在两档能差 0.11）；
