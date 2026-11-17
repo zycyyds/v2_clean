@@ -6,3 +6,15 @@ built icu5000_mimicraw_16_agent__hosp_patients.csv__codex.db       4803 rows   6
 built icu5000_mimicraw_16_agent__hosp_admissions.csv__codex.db       6150 rows  13 cols  (codex)
 built icu5000_mimicraw_16_agent__hosp_diagnoses_icd.csv__codex.db     108107 rows   5 cols  (codex)
 built icu5000_mimicraw_16_agent__icu_icustays.csv__codex.db       7180 rows   6 cols  (codex)
+built icu5000_mimicraw_16_agent__icu_chartevents.csv__codex.db   32314585 rows   7 cols  (codex)
+built icu5000_mimicraw_16_agent__icu_inputevents.csv__codex.db     837909 rows   7 cols  (codex)
+built icu5000_mimicraw_16_agent__icu_outputevents.csv__codex.db     407694 rows   6 cols  (codex)
+=== gold (from /Users/mac/PycharmProjects/v2_clean/datasets/注入错误数据集/icu5000/icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror/test/reference) ===
+built icu5000_mimicraw_16_agent__hosp_patients.csv__ref.db       4977 rows   6 cols  (ref)
+built icu5000_mimicraw_16_agent__hosp_admissions.csv__ref.db       6477 rows  13 cols  (ref)
+built icu5000_mimicraw_16_agent__hosp_diagnoses_icd.csv__ref.db     115746 rows   5 cols  (ref)
+built icu5000_mimicraw_16_agent__icu_icustays.csv__ref.db        7180 rows   6 cols  (ref)
+built icu5000_mimicraw_16_agent__icu_chartevents.csv__ref.db   32315301 rows   7 cols  (ref)
+built icu5000_mimicraw_16_agent__icu_inputevents.csv__ref.db     837909 rows   7 cols  (ref)
+built icu5000_mimicraw_16_agent__icu_outputevents.csv__ref.db     407694 rows   6 cols  (ref)
+done

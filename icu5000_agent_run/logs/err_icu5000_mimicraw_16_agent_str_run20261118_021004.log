@@ -1,0 +1,75 @@
+Loading mod_log ...
+  cell_update=8270908 duplicate=1336035 insert=404755 total=10011698
+
+--- hosp/patients.csv ---
+  codex=4803(mem=True) ref=4977(mem=True)
+  ⚠️ hosp/patients.csv: raw 比 reference 多 2 行，但 log 里只有 0 条 insert/duplicate —— 索引空间异常，按 zero 处理
+  索引空间: zero（raw=4979 reference=4977 多出 2 行 / log insert+dup 0 条）
+  cell: clean=4434 dirty=0 wrong=5166 missing=358  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  0s
+
+--- hosp/admissions.csv ---
+  codex=6150(mem=True) ref=6477(mem=True)
+  ⚠️ hosp/admissions.csv: raw 比 reference 多 -2 行，但 log 里只有 0 条 insert/duplicate —— 索引空间异常，按 zero 处理
+  索引空间: zero（raw=6475 reference=6477 多出 -2 行 / log insert+dup 0 条）
+  cell: clean=9455 dirty=0 wrong=2845 missing=650  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  0s
+
+--- hosp/diagnoses_icd.csv ---
+  codex=108107(mem=True) ref=115746(mem=True)
+  ⚠️ hosp/diagnoses_icd.csv: raw 比 reference 多 -63 行，但 log 里只有 0 条 insert/duplicate —— 索引空间异常，按 zero 处理
+  索引空间: zero（raw=115683 reference=115746 多出 -63 行 / log insert+dup 0 条）
+  cell: clean=108107 dirty=0 wrong=0 missing=7576  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  1s
+
+--- icu/icustays.csv ---
+  codex=7180(mem=True) ref=7180(mem=True)
+  索引空间: zero（raw=7180 reference=7180 多出 0 行 / log insert+dup 0 条）
+  cell: clean=7180 dirty=0 wrong=0 missing=0  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  0s
+
+--- icu/chartevents.csv ---
+  codex=32314585(mem=False) ref=32315301(mem=False)
+  索引空间: bisect（raw=34056091 reference=32315301 多出 1740790 行 / log insert+dup 1740790 条）
+    raw row 3000000  53s
+    raw row 6000000  97s
+    raw row 9000000  142s
+    raw row 12000000  188s
+    raw row 15000000  234s
+    raw row 18000000  280s
+    raw row 21000000  327s
+    raw row 24000000  374s
+    raw row 27000000  420s
+    raw row 30000000  466s
+    raw row 33000000  512s
+  cell: clean=4079139 dirty=47816 wrong=651791 missing=6271  raw_mismatch=0
+  dup: removed=1313433 kept=267 gone=985 short=32  591s
+
+--- icu/inputevents.csv ---
+  codex=837909(mem=True) ref=837909(mem=True)
+  索引空间: zero（raw=837909 reference=837909 多出 0 行 / log insert+dup 0 条）
+  cell: clean=2333327 dirty=0 wrong=599077 missing=22  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  12s
+
+--- icu/outputevents.csv ---
+  codex=407694(mem=True) ref=407694(mem=True)
+  索引空间: zero（raw=407694 reference=407694 多出 0 行 / log insert+dup 0 条）
+  cell: clean=233129 dirty=0 wrong=174565 missing=0  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  4s
+
+==================================================================
+icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror  --  v29 (index-shift corrected)
+==================================================================
+injected   : cell_update=8270908 duplicate=1336035 insert=404755
+evaluated  : cell=8270908  dup=1609976
+  excluded (行不在 gold 里，agent 删对): rows=0 cells=0
+  clean=6774771  dirty=47816  wrong=1433444  row_missing=14877
+  dup_removed=1313433  dup_kept=267  dup_row_gone=985  dup_row_short=32
+  leak_removed=295259  leak_kept=0
+  FP_det=523  natural_noise(excluded)=9973197  raw_dirty_mismatch=0
+DETECTION  TP=9816907 FN=63977 FP=523
+           P=0.999947 R=0.993525 F1=0.996726
+REPAIR     TP=8383463 FN=63977 FP=1434728
+           P=0.853937 R=0.848342 F1=0.851130
+total 644s
+saved: /Users/mac/PycharmProjects/v2_clean/runs/icu5000_mimicraw_16_agent_error_metrics_str_run20261118_021004.json
