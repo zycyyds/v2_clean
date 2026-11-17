@@ -32,6 +32,10 @@ def main():
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--split", default="test")
     ap.add_argument("--top", type=int, default=80)
+    ap.add_argument("--min-rows", type=int, default=0,
+                    help="只看行数 >= 这个值的 itemid（0 = 不限）")
+    ap.add_argument("--max-rows", type=int, default=0,
+                    help="只看行数 <= 这个值的 itemid（0 = 不限）")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -44,8 +48,15 @@ def main():
             cnt[r["itemid"]] += 1
     print("itemid 种类: %d" % len(cnt), flush=True)
 
-    watch = {k for k, _ in cnt.most_common(args.top)}
-    print("重点盯 %d 个 itemid（行数 top）" % len(watch), flush=True)
+    if args.min_rows or args.max_rows:
+        lo = args.min_rows
+        hi = args.max_rows or float("inf")
+        watch = {k for k, n in cnt.items() if lo <= n <= hi}
+        desc = "%d ≤ 行数 ≤ %s" % (lo, args.max_rows or "∞")
+    else:
+        watch = {k for k, _ in cnt.most_common(args.top)}
+        desc = "行数 top %d" % args.top
+    print("重点盯 %d 个 itemid（%s）" % (len(watch), desc), flush=True)
 
     grp = defaultdict(set)
     with ref.open(newline="", encoding="utf-8") as f:
