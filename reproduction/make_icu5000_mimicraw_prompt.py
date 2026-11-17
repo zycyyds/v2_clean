@@ -475,7 +475,12 @@ def main():
     val = val_example_stats(ds, train_items)
 
     ex_items = sorted({d["itemid"] for d in examples})
-    train_hard = set(stats.get("train_hard_items", {}))
+    # ⚠️ stats JSON 里 train_hard_items 的键是**字符串**（从 CSV 读的），
+    #    而 itemid 集合一律是 int ⇒ 不转 int 的话：
+    #      ① train_hard - ex_items 恒等于全部（字符串 ∩ 整数 = ∅）
+    #      ② `i not in train_hard` 恒为真 ⇒ missing 变成全部 20 个
+    #    ⇒ prompt 会同时说「X 有对照例子」和「X 在 train 里一个原生错误都没有」。
+    train_hard = {int(k) for k in stats.get("train_hard_items", {})}
     train_other = sorted(train_hard - set(ex_items))
     missing = [i for i, _, _, _ in HARD_RANGE if i not in train_hard]
 

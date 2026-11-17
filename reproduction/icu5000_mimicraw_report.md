@@ -160,10 +160,22 @@ log 侧：原 log 10,009,412 条；chartevents 插入行 1,740,790 行；被注�
 ⇒ **跨档比原生错误修复率时，分母用 2,059**（而不是 2,450 / 2,174）。
 （自洽性：391 + 115 = 506 = 2,450 + 2,174 − 2×2,059 ✓）
 
-### 3.3 ⚠️ 构造过程中抓到的两个 bug（都已修）
+### 3.3 ⚠️ 构造过程中抓到的三个 bug（都已修）
 
 1. **`fixes` 没剔除「itemid 也被改过」的 141 格** ⇒ reference 改了、log 却没登记 ⇒ agent 修对了反而被判错。构建器的自检（`改了 N 格但登记 M 条`）把它抓了出来。已修：排除的格同时从 `fixes` 里剔掉，`rewrite_reference` / `drop_valuenum_rows` 都用剔过的集合。
 2. **`NATIVE_REPR` 一开始按 raw 的 itemid 分组** ⇒ 把注入器改出来的 `9923xxxx` 当成了测量项（清单里出现 57 项，其中一半是假 itemid）。已修：改按 **reference 的 itemid** 分组 ⇒ 57 项全部是真 itemid。
+3. ⭐ **prompt 生成器里 int / str 的类型 bug**（四个 prompt 交叉 diff 时才发现）——
+   `stats JSON` 的 `train_hard_items` 键是**字符串**（从 CSV 读的），而 itemid 集合一律是 int ⇒
+   ① `train_hard - ex_items` 恒等于**全部**（字符串 ∩ 整数 = ∅）；
+   ② `i not in train_hard` 恒为真 ⇒ `missing` 变成**全部 20 个** HARD itemid。
+   ⇒ 生成的 prompt 里同一个 itemid **既被列为「有对照例子」、又被列为「train 里一个原生错误都没有」**
+   （自相矛盾，会误导 agent）。
+   已修：把 `train_hard` 转成 int 集合。修正后：「train raw 里还出现过但没有可对照例子的测量项」= **（无）**，
+   「其余 **4** 个 itemid（224167、224643、227242、227243）在 train 里一个原生错误都没有」= **正确**。
+   ⚠️ **K29 的 prompt 有同一个 bug 的另一个变体**：「train 里这一类错误一共 5 格，涉及这些 itemid」那句
+   填的是「train raw 里出现过的 HARD itemid」（6 个，含 227466）而不是「native log 里的 itemid」（5 个）
+   ⇒ 「5 格涉及 6 个 itemid」逻辑上不成立。已修 K29 生成器并重新生成（**两个文件各只改 1 行**，
+   历史跑分用的旧 sha256 已在台账里标注）。
 
 ### 3.4 枚举型 itemid：icu5000 里和 K29 一致（两个都在）
 

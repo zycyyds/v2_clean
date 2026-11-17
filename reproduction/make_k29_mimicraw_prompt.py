@@ -199,7 +199,12 @@ def main():
     ctx = {
         "TBL": tbl,
         "EXAMPLES": "\n".join(ex_lines) if ex_lines else "（本数据集 train 里没有这类示例）",
-        "TRAIN_ITEMS": "、".join(str(i) for i in appear) if appear else "（无）",
+        # ⚠️ 「train 里这一类错误一共 N 格，涉及这些 itemid」这句的语义是
+        #    **有对照例子的 itemid**（= native log 里的），
+        #    不是「train raw 里出现过的 HARD itemid」。
+        #    填错的话会出现「5 格涉及 6 个 itemid」这种自相矛盾（227466
+        #    既被列为"涉及"、又被列为"没有可对照例子"）。
+        "TRAIN_ITEMS": "、".join(str(i) for i in ex_items) if ex_items else "（无）",
         "TRAIN_EX_ITEMS": "、".join(str(i) for i in ex_items) if ex_items else "（无）",
         "N_TRAIN_EX": str(len(ex_items)),
         "TRAIN_OTHER_ITEMS": ("、".join(str(i) for i in appear if i not in set(ex_items))
