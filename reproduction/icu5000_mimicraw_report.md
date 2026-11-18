@@ -332,6 +332,35 @@ Det 0.9991 说明**几乎全检测到了**；b_wrong 451,758 是「知道错了�
 ⇒ **K29 的 Rep 更高（0.979 / 0.990）不是因为它更会修，而是它的注入层里这类
 「真值不可推断」错误的占比小得多。**
 
+### 4.5 ⚠️ 一个**数据集家族共有**的不可判定项：`demographics.anchor_age`
+
+实测（train 的 7 行）：raw 的 `gender` **全部**是 `UNKNOWN_GENDER_CODE`、
+`anchor_age` **全部**是 `999`，而 `anchor_year` / `anchor_year_group` / `dod`
+**完全一致** ⇒ 被注入的只有那两列，且 raw 里**没有第二份记录可对照**。
+
+| 档位 | patients.csv 行数 | gender 全部→ | anchor_age 全部→ | 注入条目 |
+|---|---:|---|---|---:|
+| ICU5000 1.6pct | 4,979 | `UNKNOWN_GENDER_CODE` | `999` | 9,958（每行 2 格） |
+| ICU5000 4.7pct | 4,979 | `UNKNOWN_GENDER_CODE` | `999` | 9,958 |
+| **K29 4.7pct** | 6,162 | `UNKNOWN_GENDER_CODE` | `999` | 12,324 |
+
+- `gender` **可以**恢复：`note/discharge.csv` 的文本里有 `Sex: M/F` 字段。
+- `anchor_age` **不可以**恢复：MIMIC 的年龄数字在 note 文本里已被抹成 `___`，
+  ⇒ **每行的 anchor_age 都必然失分** ⇒ `demographics` 文件有 **50% 的格是结构性失分**。
+
+**三个档对同一个不可判定项有两种失分形态**（影响跨档比较的解读）：
+
+| 档位 | demographics b_clean | b_wrong | b_dirty | agent 的应对 |
+|---|---:|---:|---:|---|
+| K29 1.6pct | 4,674 | 48 | **6,694** | **保守不动**（察觉不可推断 ⇒ 留着脏值） |
+| K29 4.7pct | 5,595 | **6,729** | 0 | **猜一个值** |
+| ICU5000 1.6pct | 4,434 | **5,166** | 0 | **猜一个值** |
+
+⇒ 两种都丢分，但 **b_wrong 进 FP、b_dirty 进 FN**，对 F1 的代价不完全相同
+⇒ 跨档比 Rep/Det 时要把这一点算进去。
+⇒ **这一项与 prompt 无关**（三档 prompt 的这一段一字不差）⇒ 是数据本身的可判定性问题，
+不是 agent 能力差异。
+
 ---
 
 ## 5. 校验
