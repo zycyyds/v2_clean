@@ -231,6 +231,44 @@ PROFILES = {
                      / "v2_rawerror_icu5000_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/icu_5000_v1.json",
     },
+    # ---- I48「MIMIC 原生错误」增强版（mimicraw2，对齐 icu5000 标准）----
+    # 与母数据集 I48_atrial_fibrillation_v2_rawerror_test{1.6,4.7}pct_411M 的区别：
+    #   **各 split 的 reference 里，MIMIC 自身的原生错误已按「该患者该 itemid 的
+    #   可用读数中位数」修好**，并在 modification_log 里登记（error_subtype=
+    #   mimic_native_*）⇒ agent 在 train 对照里第一次能看见这类错误模式。
+    #   规则 = T1 哨兵占位码（对所有 itemid 生效）+ T2 生理不可能区间
+    #   （区间按 PhysioNet d_items 的权威 label 匹配 ⇒ i48 自己的区间，不照抄 K29）。
+    # ⚠️ 与旧版 mimicrawerror（Nov 2026-07 建的）的四处差别：
+    #   ① 旧版只有 T2（没有哨兵码类）；这版补上 T1
+    #   ② 旧版把「itemid 也被注入器改过」的格留在 native 层（两层错误叠加、
+    #      形态同构、不可判定）；这版排除 ⇒ 交给注入层评测
+    #   ③ 旧版没把 raw 恢复成 MIMIC 原生错值；这版恢复 ⇒ 一格只剩一个错误
+    #   ④ 旧版的 prompt 没有「哨兵码清单不是封闭的」和 itemid 别名一节；
+    #      这版（v5）都补上了（ICU5000 实测：封闭清单 ⇒ 4.7pct 漏修 281 万格）
+    # ⚠️ i48 特有的结构：**reference 是处理后的输出表**（cohort 筛选后），
+    #    不是注入前的干净表 ⇒ log 的 raw_row_index 与 reference 行号**不同空间**；
+    #    评分器的索引空间判定已改成「数据探测」（见 compute_error_metrics.py）。
+    "i48_mimicraw2_16": {
+        "ds": PROJ / "datasets/val_views/i48_mimicraw2_16",
+        "prompt": WT / "eval_handoff/prompts/i48_1.6pct_mimicraw_val_prompt_v5.md",
+        "exp_prefix": "i48_mimicraw2_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/i48"
+                     / "I48_atrial_fibrillation_v2_rawerror_mimicraw2_test1.6pct_411M"
+                     / "v2_rawerror_i48_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
+    },
+    # I48 4.7pct 版 —— 与 1.6pct 版规则一字未改，只有注入层预设不同。
+    # ⚠️ 密度剖面是**反转**的：train 2.33% / validation 0.89% / test 4.72%
+    #    ⇒ validation 比 test 稀疏 5.3 倍。
+    "i48_mimicraw2_47": {
+        "ds": PROJ / "datasets/val_views/i48_mimicraw2_47",
+        "prompt": WT / "eval_handoff/prompts/i48_4.7pct_mimicraw_val_prompt_v5.md",
+        "exp_prefix": "i48_mimicraw2_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/i48"
+                     / "I48_atrial_fibrillation_v2_rawerror_mimicraw2_test4.7pct_411M"
+                     / "v2_rawerror_i48_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
