@@ -36,3 +36,40 @@ Loading mod_log ...
     raw row 9000000  417s
     raw row 12000000  577s
     raw row 15000000  732s
+    raw row 18000000  867s
+    raw row 21000000  1017s
+    raw row 24000000  1209s
+    raw row 27000000  1360s
+    raw row 30000000  1495s
+    raw row 33000000  1634s
+  cell: clean=4461957 dirty=41 wrong=12264 missing=310755  raw_mismatch=0
+  dup: removed=1313433 kept=267 gone=985 short=32  1727s
+
+--- icu/inputevents.csv ---
+  codex=837909(mem=True) ref=837909(mem=True)
+  索引空间: zero（raw=837909 reference=837909 多出 0 行 / log insert+dup 0 条）
+  cell: clean=404250 dirty=0 wrong=15001 missing=2513175  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  11s
+
+--- icu/outputevents.csv ---
+  codex=407694(mem=True) ref=407694(mem=True)
+  索引空间: zero（raw=407694 reference=407694 多出 0 行 / log insert+dup 0 条）
+  cell: clean=233129 dirty=0 wrong=174565 missing=0  raw_mismatch=0
+  dup: removed=0 kept=0 gone=0 short=0  4s
+
+==================================================================
+icu_5000_v2_rawerror_test1.6pct_614M_mimicrawerror  --  v29 (index-shift corrected)
+==================================================================
+injected   : cell_update=8270908 duplicate=1336035 insert=404755
+evaluated  : cell=8270908  dup=1609976
+  excluded (行不在 gold 里，agent 删对): rows=0 cells=0
+  clean=5228512  dirty=41  wrong=209841  row_missing=2832514
+  dup_removed=1313433  dup_kept=267  dup_row_gone=985  dup_row_short=32
+  leak_removed=295259  leak_kept=0
+  FP_det=1459  natural_noise(excluded)=111  raw_dirty_mismatch=0
+DETECTION  TP=7047045 FN=2833839 FP=1459
+           P=0.999793 R=0.713200 F1=0.832522
+REPAIR     TP=6837204 FN=2833839 FP=211125
+           P=0.970022 R=0.691873 F1=0.807671
+total 1783s
+saved: /Users/mac/PycharmProjects/v2_clean/runs/icu5000_mimicraw_16_agent_error_metrics_oldsw_run20261118_021004.json
