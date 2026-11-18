@@ -130,6 +130,80 @@ def cache_path(raw_file, kind):
     return CACHE_DIR / ("%s__%s__%s.db" % (DS_KEY, raw_file.replace("/", "_"), kind))
 
 
+def probe_offset_mode(raw_path, cells_by_ri, posl, k=200):
+    """**用数据**判定该文件的索引空间：zero 还是 bisect。
+
+    原理：log 登记了「这一格的脏值」，raw 里那一行的该列应当正好等于这个脏值。
+          把 log 行号 L 分别按两种映射投到 raw 行号：
+              zero  : r = L
+              bisect: r = L + bisect_left(posl, L)
+          哪个映射命中率高，就是这个文件的真实索引空间。
+
+    ⚠️ **为什么不能用行数猜**（旧判据 `raw 行数 − reference 行数 == insert/dup 条数`
+       只在「reference = 注入前的干净表」时成立）：
+          · icu5000 4.7pct 恰好相等 ⇒ 碰对了；
+          · **i48 的 reference 是「处理后的输出表」（cohort 筛选后）**
+            ⇒ 行数对不上 ⇒ 被误判成 zero ⇒ 索引平移修正被关掉 ⇒ **分数是垃圾**。
+       ⇒ 改成数据探测后，K29 / icu5000 / i48 **共用这一条逻辑**，不靠任何巧合。
+
+    返回：{'mode': 'zero'|'bisect'|None, 'decided': bool,
+           'hit_zero': n, 'n_zero': n, 'hit_bisect': n, 'n_bisect': n}
+    """
+    out = {'mode': None, 'decided': False, 'hit_zero': 0, 'n_zero': 0,
+           'hit_bisect': 0, 'n_bisect': 0, 'n_sample': 0}
+    if not cells_by_ri:
+        return out
+    ris = sorted(cells_by_ri)
+    if not ris:
+        return out
+    step = max(1, len(ris) // k)
+    sample = ris[::step][:k]
+    need = {}
+    for ri in sample:
+        for col, dv in cells_by_ri[ri].items():
+            if not dv or dv[0] in (None, ''):
+                continue
+            need.setdefault(ri, []).append((col, dv[0], 'zero'))
+            need.setdefault(ri + bisect_left(posl, ri), []).append((col, dv[0], 'bisect'))
+    if not need:
+        return out
+    maxidx = max(need)
+    out['n_sample'] = len(need)
+    try:
+        # 二进制逐行计数（快），只把需要的行做 csv 解析（少）
+        with raw_path.open('rb') as f:
+            header = next(csv.reader([f.readline().decode('utf-8', 'replace')]))
+            idx = {c: i for i, c in enumerate(header)}
+            i = -1
+            for bline in f:
+                i += 1
+                if i > maxidx:
+                    break
+                specs = need.get(i)
+                if not specs:
+                    continue
+                row = next(csv.reader([bline.decode('utf-8', 'replace')]))
+                for col, dirty, tag in specs:
+                    j = idx.get(col)
+                    if j is None or j >= len(row):
+                        continue
+                    out['n_' + tag] += 1
+                    if same_value(row[j], dirty):
+                        out['hit_' + tag] += 1
+    except (OSError, StopIteration, csv.Error):
+        return out
+    hz, hb = out['hit_zero'], out['hit_bisect']
+    nz, nb = out['n_zero'], out['n_bisect']
+    if nz and nb and (hz + hb) >= 20:
+        if hz / nz >= 0.9 and hz > hb * 2:
+            out['mode'] = 'zero'
+            out['decided'] = True
+        elif hb / nb >= 0.9 and hb > hz * 2:
+            out['mode'] = 'bisect'
+            out['decided'] = True
+    return out
+
+
 class DB:
     def __init__(self, path, keys, all_cols):
         self.keys = keys
@@ -284,6 +358,7 @@ def main():
     raw2log = {}
     ins_kind_by_raw = {}
     offset_mode = {}
+    offset_probe = {}
 
     def build_raw2log(rf, n, posl, kindlist, use_zero):
         """raw 行号 ↔ log（原始表）行号的映射。
@@ -340,15 +415,34 @@ def main():
                  ref.n_rows, ref._mem is not None), flush=True)
 
         pos = ins_pos.get(raw_file, [])
-        # ── 索引空间自动判定：raw 比 reference 多出的行数 vs log 里 insert/dup 条数 ──
+        # ── 索引空间自动判定：**数据探测**（zero 还是 bisect）────────────────
+        # ⚠️ 旧的行数判据（`raw 行数 − reference 行数 == insert/dup 条数`）只在
+        #    「reference = 注入前的干净表」时成立：
+        #      · icu5000 4.7pct 恰好相等 ⇒ 碰对了；
+        #      · **i48 的 reference 是「处理后的输出表」（cohort 筛选后）**
+        #        ⇒ 行数对不上 ⇒ 被误判成 zero ⇒ 索引平移修正被关掉 ⇒ 分数是垃圾。
+        #    ⇒ 改成 probe_offset_mode()：抽 log 条目按两种映射投到 raw 行号，
+        #       看哪个映射能让 raw 那一行的值真的等于 dirty_value。
+        #       K29 / icu5000 / i48 共用这一条逻辑，不靠任何巧合。
         n_raw_this = n_raw_of[raw_file]
-        extra = n_raw_this - ref.n_rows
         n_ins_log = len(pos)
-        use_zero = (extra == 0)
-        if not use_zero and extra != n_ins_log:
-            print("  ⚠️ %s: raw 比 reference 多 %d 行，但 log 里只有 %d 条 insert/duplicate"
-                  " —— 索引空间异常，按 zero 处理" % (raw_file, extra, n_ins_log), flush=True)
-            use_zero = True
+        extra = n_raw_this - ref.n_rows
+        probe = probe_offset_mode(raw_path, cell_by_ri.get(raw_file, {}), pos)
+        offset_probe[raw_file] = probe
+        if probe['decided']:
+            use_zero = (probe['mode'] == 'zero')
+            print("  索引空间探测: %s ⇒ %s（zero 命中 %d/%d、bisect 命中 %d/%d）"
+                  % (raw_file, probe['mode'], probe['hit_zero'], probe['n_zero'],
+                     probe['hit_bisect'], probe['n_bisect']), flush=True)
+        else:
+            use_zero = (extra == 0)
+            if not use_zero and extra != n_ins_log:
+                print("  ⚠️ %s: 探测无法判定（zero 命中 %d/%d、bisect 命中 %d/%d），"
+                      "退回行数判据：raw 比 reference 多 %d 行 vs log %d 条 insert/dup"
+                      % (raw_file, probe['hit_zero'], probe['n_zero'],
+                         probe['hit_bisect'], probe['n_bisect'],
+                         extra, n_ins_log), flush=True)
+                use_zero = True
         offset_mode[raw_file] = "zero" if use_zero else "bisect"
         if use_zero and n_ins_log:
             # log 声称有这些 duplicate/insert 行，但 raw 里一行没多 ⇒ 它们没有实体，
@@ -619,6 +713,7 @@ def main():
         'numeric_compare': NUMERIC_COMPARE,
         'clean_from_gold': CLEAN_FROM_GOLD,
         'offset_mode': dict(offset_mode),
+        'offset_probe': dict(offset_probe),
         'injected_rows_not_materialized': T['injected_rows_not_materialized'],
         'injected': {'cell_update': n_cell, 'duplicate': n_dup, 'insert': n_ins,
                      'total': n_cell + n_dup + n_ins},
