@@ -250,7 +250,8 @@ prompt 里点名这两个就够了（不需要再加第三个）。
 
 | | 值 |
 |---|---|
-| val composite | **0.914914**（7 轮，patience 收尾；`status=SUCCESS_REPRODUCIBLE`，独立重放一致） |
+| val composite | **0.914914**（**7 轮**，patience 收尾；`status=SUCCESS_REPRODUCIBLE`，独立重放一致） |
+| val 逐轮 | 0 → 0.903684 → 0.911372 → **0.914914**(最优) → 0.914914 → 0.914914 → 0.914914（连续 3 轮不涨 ⇒ 收尾） |
 | test composite | **0.899143**（`status=SUCCESS`，`test_execution_count=1`，`scorer_version=equal_file_row_aligned_v1`） |
 | val → test 落差 | 0.0158（K29 是 0.0055 / 0.0065 —— icu5000 的 test 是 K29 的 5.6 倍行数，泛化更难） |
 

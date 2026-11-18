@@ -1,1 +1,12 @@
 [Test Harness] Test replay started
+[Test Harness] status=REPLAY_FAILED phase=test_replay score=null
+{
+  "status": "REPLAY_FAILED",
+  "phase": "test_replay",
+  "scored": false,
+  "score": null,
+  "test_execution_count": 1,
+  "replay_status": "EXECUTION_FAILED",
+  "frozen_snapshot_sha256": "8db11d68f4f892c37f9ddfd78a5a3e94b3f51ced99c6e8b4087e5be71e8e6c67",
+  "result_package": ""
+}
