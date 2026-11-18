@@ -51,6 +51,90 @@ def same(a, b, numeric=True):
     return str(a) == str(b)
 
 
+def collect_native(ds: Path, sp: str):
+    """log 里的原生错误条目：{reference 行号 L: {clean, dirty, subtype}}"""
+    nat = {}
+    with (ds / sp / "modification_log.csv").open(newline="", encoding="utf-8") as f:
+        for e in csv.DictReader(f):
+            if (e.get("raw_file") == CE and e.get("column") == "valuenum"
+                    and e.get("operation") == "cell_update"
+                    and e.get("error_subtype", "").startswith("mimic_native")):
+                nat[int(e["raw_row_index"])] = {
+                    "clean": e.get("clean_value"),
+                    "dirty": e.get("dirty_value"),
+                    "subtype": e.get("error_subtype"),
+                }
+    if not nat:
+        sys.exit("log 里没有 mimic_native_* 条目")
+    return nat
+
+
+def judge_cells(ds: Path, res: Path, sp: str, numeric=True, verbose=True):
+    """逐格判定原生错误格，返回 (status, gold, nat)。
+
+    status: {reference 行号 L: 'b_clean'|'b_wrong'|'b_dirty'|'b_missing'}
+    gold:   {L: {'key':..., 'itemid':..., 'value':...}}
+    nat:    {L: {'clean':..., 'dirty':..., 'subtype':...}}
+    """
+    nat = collect_native(ds, sp)
+    if verbose:
+        print("原生错误条目（log）: %d" % len(nat))
+
+    # ---- gold：reference 里对应行的 key + 值 ----
+    gold = {}
+    with (ds / sp / "reference" / CE).open(newline="", encoding="utf-8") as f:
+        for L, r in enumerate(csv.DictReader(f)):
+            if L in nat:
+                gold[L] = {
+                    "key": tuple(r.get(k, "") for k in KEY),
+                    "itemid": r.get("itemid"),
+                    "value": r.get("valuenum"),
+                }
+    missing_gold = [L for L in nat if L not in gold]
+    if verbose:
+        print("gold 行定位: %d / %d（缺失 %d）" % (len(gold), len(nat), len(missing_gold)))
+
+    # ---- agent 输出：按 key 匹配 ----
+    want = {}
+    for L, g in gold.items():
+        want.setdefault(g["key"], []).append(L)
+    agent_val = {}
+    n_rows = 0
+    res_ce = res / OUT_CE
+    if not res_ce.is_file():
+        cands = list(res.rglob("chartevents.csv"))
+        if not cands:
+            sys.exit("结果包里找不到 chartevents.csv")
+        res_ce = cands[0]
+        if verbose:
+            print("（按 glob 找到）", res_ce)
+    with res_ce.open(newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            n_rows += 1
+            k = tuple(r.get(c, "") for c in KEY)
+            for L in want.get(k, ()):
+                if L not in agent_val:
+                    agent_val[L] = r.get("valuenum")
+    if verbose:
+        print("agent 输出行数 %d，命中 %d / %d 格" % (n_rows, len(agent_val), len(gold)))
+
+    # ---- 逐格判定 ----
+    status = {}
+    for L, g in gold.items():
+        e = nat.get(L)
+        if e is None:
+            continue
+        if L not in agent_val:
+            status[L] = "b_missing"
+        elif same(agent_val[L], e["clean"], numeric):
+            status[L] = "b_clean"
+        elif same(agent_val[L], e["dirty"], numeric):
+            status[L] = "b_dirty"
+        else:
+            status[L] = "b_wrong"
+    return status, gold, nat
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True)
@@ -65,76 +149,15 @@ def main():
     res = Path(args.result)
     sp = args.split
 
-    # ---- 1. log 里的原生错误条目 ----
-    nat = {}
-    with (ds / sp / "modification_log.csv").open(newline="", encoding="utf-8") as f:
-        for e in csv.DictReader(f):
-            if (e.get("raw_file") == CE and e.get("column") == "valuenum"
-                    and e.get("operation") == "cell_update"
-                    and e.get("error_subtype", "").startswith("mimic_native")):
-                nat[int(e["raw_row_index"])] = {
-                    "clean": e.get("clean_value"),
-                    "dirty": e.get("dirty_value"),
-                    "subtype": e.get("error_subtype"),
-                }
-    if not nat:
-        sys.exit("log 里没有 mimic_native_* 条目")
-    print("原生错误条目（log）: %d" % len(nat))
+    status, gold, nat = judge_cells(ds, res, sp, numeric, verbose=True)
 
-    # ---- 2. gold：reference 里对应行的 key + 值 ----
-    gold = {}
-    with (ds / sp / "reference" / CE).open(newline="", encoding="utf-8") as f:
-        for L, r in enumerate(csv.DictReader(f)):
-            if L in nat:
-                gold[L] = {
-                    "key": tuple(r.get(k, "") for k in KEY),
-                    "itemid": r.get("itemid"),
-                    "value": r.get("valuenum"),
-                }
-    missing_gold = [L for L in nat if L not in gold]
-    print("gold 行定位: %d / %d（缺失 %d）" % (len(gold), len(nat), len(missing_gold)))
-
-    # ---- 3. agent 输出：按 key 匹配 ----
-    want = {}
-    for L, g in gold.items():
-        want.setdefault(g["key"], []).append(L)
-    agent_val = {}
-    n_rows = 0
-    res_ce = res / OUT_CE
-    if not res_ce.is_file():
-        cands = list(res.rglob("chartevents.csv"))
-        if not cands:
-            sys.exit("结果包里找不到 chartevents.csv")
-        res_ce = cands[0]
-        print("（按 glob 找到）", res_ce)
-    with res_ce.open(newline="", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            n_rows += 1
-            k = tuple(r.get(c, "") for c in KEY)
-            for L in want.get(k, ()):
-                if L not in agent_val:
-                    agent_val[L] = r.get("valuenum")
-    print("agent 输出行数 %d，命中 %d / %d 格" % (n_rows, len(agent_val), len(gold)))
-
-    # ---- 4. 逐格判定 ----
     buckets = Counter()
     per_item = defaultdict(Counter)
     per_sub = defaultdict(Counter)
-    for L, g in gold.items():
-        e = nat.get(L)
-        if e is None:
-            continue
-        if L not in agent_val:
-            b = "b_missing"
-        elif same(agent_val[L], e["clean"], numeric):
-            b = "b_clean"
-        elif same(agent_val[L], e["dirty"], numeric):
-            b = "b_dirty"
-        else:
-            b = "b_wrong"
+    for L, b in status.items():
         buckets[b] += 1
-        per_item[g["itemid"]][b] += 1
-        per_sub[e["subtype"]][b] += 1
+        per_item[gold[L]["itemid"]][b] += 1
+        per_sub[nat[L]["subtype"]][b] += 1
 
     n = sum(buckets.values())
     fixed = buckets["b_clean"]
