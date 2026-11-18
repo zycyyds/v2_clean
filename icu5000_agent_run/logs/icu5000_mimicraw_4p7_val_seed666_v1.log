@@ -1809,3 +1809,555 @@ Let me check the reference `labs.csv`, `medications.csv`, `diagnoses.csv`, `proc
 
 Let me do that now — count rows per subject in each reference file.</think>
 
+[Tool Call] Write
+{"file_path":"/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/icu5000_agent_run/experiments/icu5000_mimicraw_4p7_val_seed666_v1/agent_workdir/scripts/scan_refsubj.py","content":"import pandas as pd\nRAW = \"/Users/mac/PycharmProjects/v2_clean/datasets/val_views/icu5000_mimicraw_47/train/raw\"\nREF = \"/Users/mac/PycharmProjects/v2_clean/datasets/val_views/icu5000_mimicraw_47/train/reference\"\npd.set_option(\"display.width\", 250); pd.set_option(\"display.max_columns\", 60); pd.set_option(\"display.max_rows\", 300)\n\nfiles = [\"labs.csv\", \"medications.csv\", \"diagnoses.csv\", \"procedures.csv\"]\nfor f in files:\n    r = pd.read_csv(f\"{REF}/{f}\", dtype=str, keep_default_na=False)\n    print(\"### REF\", f, r.shape, list(r.columns))\n    print(r.groupby([\"subject_id\"]).size().to_string())\n    print()\n\nprint(\"### REF ecg_manifest\")\ne = pd.read_csv(f\"{REF}/multimodal/ecg_manifest.csv\", dtype=str, keep_default_na=False)\nprint(e.to_string())\nprint(\"### REF ecg_measurements\")\nem = pd.read_csv(f\"{REF}/multimodal/ecg_measurements.csv\", dtype=str, keep_default_na=False)\nprint(em.shape, list(em.columns))\nprint(em[[\"subject_id\",\"study_id\",\"cart_id\",\"ecg_time\",\"hadm_id\",\"stay_id\"]].to_string())\n\nprint(\"### RAW ecg record_list\")\nel = pd.read_csv(f\"{RAW}/ecg/record_list.csv\", dtype=str, keep_default_na=False)\nprint(el.shape)\nprint(el.groupby(\"subject_id\").size().to_string())\nprint(\"### RAW ecg machine_measurements\")\nmm = pd.read_csv(f\"{RAW}/ecg/machine_measurements.csv\", dtype=str, keep_default_na=False)\nprint(mm.shape)\nprint(mm.groupby(\"subject_id\").size().to_string())\n"}
+[Model Usage] input=53087 output=3358 reason=completed
+[Tool Result] Write
+The file /Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/icu5000_agent_run/experiments/icu5000_mimicraw_4p7_val_seed666_v1/agent_workdir/scripts/scan_refsubj.py has been written successfully (29 lines).
+[Tool Result End] success
+[Model] MiniMax-M3
+[Tool Call] Bash
+{"command":"python3 scripts/scan_refsubj.py 2>&1 | head -140","description":"Scan reference per-subject row counts"}
+[Model Usage] input=56527 output=59 reason=completed
+[Tool Result] Bash
+### REF labs.csv (5428, 6) ['subject_id', 'hadm_id', 'itemid', 'charttime', 'valuenum', 'valueuom']
+subject_id
+11776373     224
+12029321     147
+14073377     362
+14276064    1231
+15872027    2504
+18268331     385
+18948626     575
+
+### REF medications.csv (954, 8) ['subject_id', 'hadm_id', 'starttime', 'stoptime', 'drug', 'dose_val_rx', 'dose_unit_rx', 'route']
+subject_id
+11776373     67
+12029321     34
+14073377     80
+14276064    221
+15872027    409
+18268331     46
+18948626     97
+
+### REF diagnoses.csv (172, 5) ['subject_id', 'hadm_id', 'seq_num', 'icd_code', 'icd_version']
+subject_id
+11776373    18
+12029321    18
+14073377    34
+14276064    30
+15872027    28
+18268331    25
+18948626    19
+
+### REF procedures.csv (36, 5) ['subject_id', 'hadm_id', 'seq_num', 'icd_code', 'icd_version']
+subject_id
+11776373     2
+12029321     4
+14073377    10
+14276064     9
+15872027     7
+18268331     2
+18948626     2
+
+### REF ecg_manifest
+  subject_id  study_id file_name             ecg_time                                      path   hadm_id   stay_id               intime              outtime                                                                                                                           waveform_path hea_exists dat_exists
+0   11776373  41486502  41486502  2149-06-16 12:02:00  files/p1177/p11776373/s41486502/41486502  22319701  32428468  2149-06-16 08:55:17  2149-06-17 16:05:02  /mnt/GPU_10T/data/yjk/MedWM/data/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/files/p1177/p11776373/s41486502/41486502      False      False
+1   13802162  44031863  44031863  2155-09-22 18:50:00  files/p1380/p13802162/s44031863/44031863  24882005  38931144  2155-09-22 01:06:14  2155-09-25 21:30:12  /mnt/GPU_10T/data/yjk/MedWM/data/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/files/p1380/p13802162/s44031863/44031863      False      False
+2   13802162  45440945  45440945  2155-09-22 01:09:00  files/p1380/p13802162/s45440945/45440945  24882005  38931144  2155-09-22 01:06:14  2155-09-25 21:30:12  /mnt/GPU_10T/data/yjk/MedWM/data/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/files/p1380/p13802162/s45440945/45440945      False      False
+3   13802162  49372913  49372913  2155-09-23 20:12:00  files/p1380/p13802162/s49372913/49372913  24882005  38931144  2155-09-22 01:06:14  2155-09-25 21:30:12  /mnt/GPU_10T/data/yjk/MedWM/data/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/files/p1380/p13802162/s49372913/49372913      False      False
+4   18268331  45170929  45170929  2181-08-03 12:40:00  files/p1826/p18268331/s45170929/45170929  22219888  38598004  2181-08-01 20:30:58  2181-08-03 20:18:49  /mnt/GPU_10T/data/yjk/MedWM/data/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/files/p1826/p18268331/s45170929/45170929      False      False
+### REF ecg_measurements
+(5, 35) ['subject_id', 'study_id', 'cart_id', 'ecg_time', 'report_0', 'report_1', 'report_2', 'report_3', 'report_4', 'report_5', 'report_6', 'report_7', 'report_8', 'report_9', 'report_10', 'report_11', 'report_12', 'report_13', 'report_14', 'report_15', 'report_16', 'report_17', 'bandwidth', 'filtering', 'rr_interval', 'p_onset', 'p_end', 'qrs_onset', 'qrs_end', 't_end', 'p_axis', 'qrs_axis', 't_axis', 'hadm_id', 'stay_id']
+  subject_id  study_id  cart_id             ecg_time   hadm_id   stay_id
+0   11776373  41486502  6211065  2149-06-16 12:02:00  22319701  32428468
+1   13802162  45440945  6072223  2155-09-22 01:09:00  24882005  38931144
+2   13802162  44031863  6701510  2155-09-22 18:50:00  24882005  38931144
+3   13802162  49372913  6701510  2155-09-23 20:12:00  24882005  38931144
+4   18268331  45170929  6701510  2181-08-03 12:40:00  22219888  38598004
+### RAW ecg record_list
+(55, 5)
+subject_id
+11776373    36
+17025507     5
+18268331    14
+### RAW ecg machine_measurements
+(55, 33)
+subject_id
+11776373    36
+17025507     5
+18268331    14
+
+[Tool Result End] success
+[Model] MiniMax-M3
+<think>Very interesting! The ECG reference has subjects 11776373, 13802162, 18268331 — but the raw ecg has 11776373, 17025507, 18268331!
+
+So raw ecg/record_list.csv has rows for subject 17025507 where the reference has rows for subject 13802162!! So the subject_id in ecg was corrupted: 13802162 → 17025507?? Hmm, that seems like a weird corruption. Let's look at the raw ecg rows in detail.
+
+Wait — actually, hold on. The raw ecg has 55 rows for 3 subjects: 11776373 (36), 17025507 (5), 18268331 (14). The reference has 5 rows: 11776373 (1), 13802162 (3), 18268331 (1).
+
+So the reference ECG manifest has only 5 of the 55 raw rows. Which 5? Let's check: 11776373/study 41486502 (ecg_time 2149-06-16 12:02), 13802162/44031863 (2155-09-22 18:50), 13802162/45440945 (2155-09-22 01:09), 13802162/49372913 (2155-09-23 20:12), 18268331/45170929 (2181-08-03 12:40).
+
+Hmm, so the ECG selection = ECGs whose ecg_time falls within an ICU stay window! And matched to stays. Let's check the raw ecg rows for 11776373: 36 rows. Which ones fall within the ICU stay 2149-06-16 08:55:17 → 2149-06-17 16:05:02? Let me check.
+
+Hmm, but the raw record_list has 11776373 with 36 studies; reference includes only 1 (41486502 at 2149-06-16 12:02). And the raw ecg rows for "17025507" (5 rows) correspond to reference's 13802162 rows (3 of them)? Hmm, the reference has 3 rows for 13802162 with study_ids 44031863, 45440945, 49372913. Raw has 5 rows for 17025507. Let me look at the raw ecg rows.
+
+So there IS a subject_id corruption in the ecg tables (17025507 ↔ 13802162)! Hmm, that's the "跨表 ID 错位" error. But the task says ecg/ and note/ are clean ("ecg/ 和 note/ 多模态原始文件是干净原样数据（因为没有这些子目录的注入规则）"). Hmm! But this looks like a corruption...
+
+Hmm wait. Maybe not. Maybe the raw ecg record_list genuinely contains subject 17025507's ECGs, and the reference's 13802162 rows come from... hmm, but then the reference's study_ids (44031863, 45440945, 49372913) should appear in raw with subject_id 17025507.
+
+Let me check the raw ecg rows in detail. If raw row (17025507, 44031863, ...) exists and reference says (13802162, 44031863), then it IS a subject_id corruption. But then how would we know 13802162 from the raw? We'd need to match the ECG to an ICU stay by ecg_time! 2155-09-22 18:50 falls within stay 38931144 (2155-09-22 01:06:14 → 2155-09-25 21:30:12) for subject 13802162! So the pipeline assigns the stay by time matching → subject_id and hadm_id derived from the stay.
+
+That would explain everything: the ECG manifest/measurements are built by matching ECGs to ICU stays via time window, and then subject_id/hadm_id/stay_id come from the matched stay. Then a corrupted subject_id in raw ecg doesn't matter — it's overwritten.
+
+So the pipeline:
+1. Load ecg/record_list + ecg/machine_measurements.
+2. For each ECG (subject_id, study_id, ecg_time), find the ICU stay whose [intime, outtime] contains ecg_time (for the same subject? or any subject?).
+3. Output manifest with study_id, file_name, ecg_time, path, hadm_id, stay_id, intime, outtime, waveform_path, hea_exists, dat_exists.
+
+Now, why only 5 ECGs in the reference? Because only 5 ECGs fall within an ICU stay window. Let's verify: 11776373's 36 ECGs — the reference kept 1 (41486502 at 2149-06-16 12:02) which is inside stay 32428468 (2149-06-16 08:55 → 2149-06-17 16:05). The other 35 ECGs are probably outside all ICU windows.
+
+And 18268331 has 14 ECGs, 1 kept (45170929 at 2181-08-03 12:40, inside stay 38598004 2181-08-01 20:30 → 2181-08-03 20:18) ✓.
+
+And "17025507" (5 rows) → 3 kept (13802162's stays). Let's check 17025507's ICU stay 31262104 (2199-12-08 18:30 → 2199-12-09 10:44). If raw ecg_time for those rows is 2155-09-xx, they don't fall in 17025507's window but do in 13802162's. Hmm! But then matching by (subject_id, time) wouldn't work; matching by time alone would.
+
+Hmm, wait. But maybe the raw ecg rows for "17025507" have ecg_time in 2155 (i.e., the study_ids are 44031863, 45440945, 49372913 which the reference attributes to 13802162). Let me look at the raw rows.
+
+Let me print the raw ecg tables fully.
+
+Also: I need to figure out the cohort criterion. Let me look at the ECG windows: the manifest includes stay 38931144 (13802162) which is NOT in cohort. So the ECG part is not cohort-filtered — it's all icustays.
+
+Hmm OK. So what's the cohort criterion?! Let me think about 17025507 vs others once more...
+
+WAIT A SECOND. Maybe I should reconsider: maybe the cohort criterion is based on `hosp/admissions.csv` after ALL — i.e., cohort = admissions that have an ICU stay, and there's an additional criterion on the admission like... Let me look at the difference between 17025507 and the others once more:
+
+raw admissions row 17025507:
+- admittime 2199-11-19 13:16:00, dischtime 2199-12-18 15:15:00, deathtime empty
+- admission_type EW EMER.
+- admission_location TRANSFER FROM HOSPITAL, discharge_location SKILLED NURSING FACILITY
+- insurance empty, language English, marital WIDOWED, race BLACK/AFRICAN AMERICAN
+- edregtime 2199-11-19 04:27:00, edouttime 2199-11-19 15:06:00
+- hospital_expire_flag 1
+
+Compare with 18948626 (in cohort):
+- admittime 2184-07-03 12:37, dischtime 2184-07-17 19:58, deathtime empty
+- OBSERVATION ADMIT, TRANSFER FROM HOSPITAL → SKILLED NURSING FACILITY
+- edregtime 2184-07-03 11:06:00, edouttime 2184-07-03 18:45:00
+- hospital_expire_flag 1
+
+Very similar! So the difference isn't in the admission row structure.
+
+Hmm, so maybe the cohort criterion is on the ICU stay level. 31262104 (17025507): intime 2199-12-08 18:30:56, outtime 2199-12-09 10:44:50, los 0.676. And the reference icustays has it.
+
+Hmm hold on!!! Let me reconsider: is the reference cohort perhaps built from the CLEAN raw icustays where the clean icustays table doesn't have the 31262104 row? No — reference icustays.csv HAS 31262104.
+
+OK so cohort ≠ all icustays. Cohort = 7.
+
+Hmm, what if cohort = icustays WHERE the patient's `hospital_expire_flag` (recomputed) ... no.
+
+What if cohort = icustays joined with admissions, and then filtered by "the ICU stay must have at least one inputevents OR outputevents record"? 
+- 31262104: outputevents 5 rows, inputevents 0 → has records. Hmm.
+
+What if filtered by "at least one inputevents record"?
+- 31262104: 0 inputevents! Others in cohort: 32428468 (18), 34294044 (1906), 34606693 (266), 34613592 (68), 36035432 (39), 38598004 (24), 39797246 (218) — all > 0!
+- Excluded: 36149314 has 100 inputevents, 38931144 has 29. Hmm, so those have inputevents but are excluded. But they're excluded because they lack admissions rows!
+
+So combined rule: cohort = ICU stays that (a) have a matching hospital admission in hosp/admissions.csv, AND (b) have at least one inputevents record? Hmm, that's contrived but let's test on validation: in validation, do all cohort-able stays have inputevents? I don't know the gold for validation.
+
+Hmm, alternatively (b) could be "the stay has ≥ N chartevents" — 31262104 has 680 raw / 627 ref. Others have ≥ 1272. Hmm, a threshold like 1000 would work but is arbitrary.
+
+Hmm, let me reconsider. What if the criterion is a LOS threshold after all? Let me reconsider: what if cohort = stays with los >= 1 (i.e., at least 1 day in ICU)? 31262104 los=0.676 < 1 → excluded ✓. And 13802162/14701347 excluded due to missing admissions.
+
+Hmm, both hypotheses (inputevents>0, los>=1) exclude 31262104.
+
+Let me look for other distinguishing features of 31262104:
+- raw outputevents has 5 rows for 31262104 (reference too).
+- chartevents 680/627.
+
+Hmm, let me check the raw inputevents: does it have rows with a corrupted stay_id (9-prefixed) for 31262104? Earlier: raw inputevents stay_ids: 32428468, 34294044, 34606693, 34613592, 36035432, 36149314, 38598004, 38931144, 39797246 — exactly the 9 non-31262104 stays. And reference inputevents = same 9 stays, same counts (2668 rows both). So inputevents has NO duplicated/corrupted rows and no removals! Interesting: raw inputevents 2668 = ref inputevents 2668. But the raw has 99226364-style itemid aliases and -888 amounts and wrong hadm_ids.
+
+Hmm wait, ref inputevents has 2668 rows and raw has 2668 rows. So no rows dropped or added in inputevents. But then where are the "duplicate_row" injections? In chartevents presumably (and maybe others).
+
+Hmm, and the "9"-prefixed stay_ids in raw chartevents (2274 rows) are NOT in reference → they're either duplicate rows of existing rows or rows to be removed. Let me check if the 9-prefixed rows are duplicates of the non-prefixed rows. 931262104 has 25 rows; 31262104 has 680 rows. If the 9-prefixed are duplicates of some rows, then removing them + other dupes gives the ref count.
+
+Let me now carefully do the chartevents analysis: 
+- raw rows with valid stay_id (10 stays): 66230
+- ref: 60681
+- diff: 5549 rows removed.
+
+Duplicate rows in raw: for each (subject,hadm,stay,charttime,itemid,...) group, exact duplicates. Let me count exact duplicate rows in raw chartevents (including the 9-prefixed ones mapped back).
+
+Hmm. Let me think about "9" prefix: is it a "cross-table ID misalignment" where stay_id got a spurious '9' prefix? To fix: strip leading '9' if the remaining is a valid stay_id. But careful: real MIMIC stay_ids can be 8 digits; some start with 9? MIMIC-IV stay_ids range roughly 20000000-40000000 for v2. Actually the stay_id in MIMIC-IV v2 is a 8-digit number starting with 2,3,4. Hmm, but in the 5,000-stay sample, could be anything. The safest: if stay_id not in icustays.stay_id, check if stripping a leading digit yields a valid stay_id.
+
+But hmm — is the "9" prefix really an injected error, or does the raw contain genuinely different stays? The rule "9" + stay_id is suspiciously systematic — it's clearly an injection: "跨表 ID 错位" (cross-table ID misalignment).
+
+But hold on: does the reference include those rows (mapped to the correct stay) or drop them? Let's check: for the 9-prefixed stay 931262104 (25 rows), do those rows (after mapping to 31262104) duplicate existing rows in the reference? If the 9-prefixed rows are exact duplicates of non-prefixed rows (except stay_id), then after fixing the key they'd become duplicates and be removed by dedup → consistent with "去重放在修复之后". 
+
+Let me check that now. That would confirm the whole story: fix key (stay_id) → dedup.
+
+Let's examine.
+
+Also note: the task mentions itemid alias injection (99220045 etc.) on chartevents. Let me count those in raw: itemids matching ^99[23]\d{6}$.
+
+Let me write a comprehensive chartevents analysis script.
+
+Actually, first let me nail the cohort question, since it drives everything. Let me look at the raw inputevents more: the -888 amounts, the 99226364 itemids, the wrong hadm_id (22219888 for stay 32428468 whose true hadm is 22319701).
+
+Hmm OK here's another thought on cohort: What if the cohort is defined as ICU stays where the patient's ICU stay is "linked" to the admission, i.e., cohort = icustays JOIN admissions ON (subject_id, hadm_id) — and the reference's admissions.csv is derived from hosp/admissions filtered to cohort hadm_ids. If the JOIN is on (subject_id, hadm_id) then 17025507/26786848 matches → still included.
+
+Hmm, what if the join is on hadm_id only and there's a check that the icustays' hadm_id is consistent... 
+
+OK, let me try yet another angle: let me look at what other MIMIC-derived cohort pipelines do. "ICU5000" — 5000 ICU stays. A common construction: take MIMIC-IV ICU stays, filter to those with LOS >= 1 day? Or filter to patients with both ICU and non-ICU data?
+
+Hmm, honestly — maybe I should look at the VALIDATION raw to find the pattern: if validation has 20 stays and I can see which ones have admissions rows, inputevents, etc., I can at least test hypotheses on "which stays would be included" but I have no gold.
+
+Hmm, hmm. But here's a thought: the number of validation stays is 20 and the task says "cohort.csv 的行数会少于 keys.csv 的行数" (cohort rows < keys rows). For train: 10 stays → 7 cohort rows. For validation: 20 stays → ? rows.
+
+Hmm, wait. Let me reconsider. Actually, maybe the answer is simpler than I think! Let me reconsider: maybe the cohort is defined as ICU stays of patients present in `hosp/patients.csv`... no wait.
+
+Hmm, let me re-examine: raw patients.csv subjects = {11776373, 12029321, 14073377, 14276064, 15872027, 17025507, 18268331} (7). Reference cohort subjects = {11776373, 12029321, 14073377, 14276064, 15872027, 18268331, 18948626} (7).
+
+Interesting: the sets differ by exactly one element: raw has 17025507 extra, ref has 18948626 extra. And remember raw patients.csv is MISSING 18948626.
+
+Hmm!!! What if the cohort = subjects present in BOTH icustays AND patients.csv... no: that gives 7 including 17025507 and excluding 18948626. Exactly the RAW patients set. Hmm, but ref cohort = ref patients set.
+
+WAIT!!! What if the reference's demographics.csv comes from raw patients.csv AFTER fixing the subject_id corruption! I.e., raw patients.csv row 6 IS 18948626's row but with subject_id corrupted to 17025507?? But then anchor_year 2192 vs ref 2177, group "2014-2016" vs "2008 - 2010", dod '' vs '2184-07-26'... 4 cells differ. Hmm, that's a lot but let's check: is there a *consistent* explanation?
+
+Actually hold on! What if the injector REPLACED the entire row? Let's test a hypothesis: the raw row (17025507, UNKNOWN_GENDER_CODE, 999, 2192, "2014 - 2016", '') is the TRUE row for 17025507 (with gender/age corrupted), and the row for 18948626 was DELETED from raw patients.csv.
+
+And separately, the cohort exclusion of 17025507 has a different cause.
+
+Hmm, but the coincidence of the 7-vs-7 with a one-element swap is suspicious.
+
+Hmm, hold on, let me reconsider AGAIN. What if the cohort is selected from `hosp/admissions.csv` ∩ `icu/icustays.csv` and the raw admissions row for 17025507 is a **label-leakage inserted row**? Recall: "label_leakage 插入行" = inserted rows that leak the label. In the raw, 17025507's row has hospital_expire_flag=1 while the true flag should be 0 (no deathtime, discharge to SNF). Hmm, but the whole row looks legit (matches transfers/services times).
+
+Hmm, but WAIT: what if the injector inserted a row for a patient that shouldn't be in the cohort — e.g., it took the row of subject X and rewrote subject_id/hadm_id? Let's check: does the raw row for 17025507 correspond to a real MIMIC admission? The transfers table has 17025507/26786848 with ED 2199-11-19 04:27:00-15:06:00 — matching edregtime/edouttime exactly. So it's a genuine row.
+
+OK. So, what if the cohort criterion is: **the ICU stay must overlap the hospital admission in a way that...** hmm.
+
+Let me try: does the ICU stay of 17025507 fall within the admission? 2199-12-08 18:30 → 2199-12-09 10:44, admission 2199-11-19 → 2199-12-18. Yes.
+
+Hmm, what about "the ICU stay must start within 24h of admission"? 
+- 17025507: 19 days after admission ✗
+- 11776373: 22.4h ✓
+- 12029321: 1.3h ✓
+- 14073377: 1 min ✓
+- 14276064: 2.5h ✓
+- 15872027: 30s ✓
+- 18268331: 2.85h ✓
+- 18948626: 29.8h ✓ (29.8h > 24h!) hmm ✗
+
+Hmm, 18948626: admittime 2184-07-03 12:37, intime 2184-07-04 18:24:51 → 29.8 hours. So > 24h. Doesn't work.
+
+What about "ICU stay must start within 7 days of admission"? 17025507: 19 days ✗. 18948626: 1.24 days ✓. Others ≤ 1 day ✓. Hmm! That works for train. But is it plausible as a rule? "ICU stay within 7 days of admission" — hmm, arbitrary.
+
+What about "ICU stay must start within the first N days"? Hmm.
+
+Alternatively: maybe the criterion is about `hosp/transfers.csv`: the ICU stay's transfer_id must appear in transfers with eventtype in {admit, transfer} and matching intime. Let's check: for 31262104, transfers row: "17025507,26786848,31262104,transfer,Medical Intensive Care Unit (MICU),2199-12-08 18:30:56,2199-12-09 10:44:50" ✓ exists. So no.
+
+Hmm.
+
+Let me try: maybe the cohort criterion involves `hospital_expire_flag` recomputation and **label_leakage**: The injector inserts rows that leak the label. Maybe it inserted a *duplicate* admissions row for 17025507 with flipped flag? But raw has only one row for 17025507.
+
+Hmm, hold on. Let me reconsider the whole "cohort" definition. What if cohort.csv is NOT about ICU stays at all in the pipeline, but rather: cohort = distinct (subject_id, hadm_id) from `hosp/admissions.csv` restricted to those hadm_ids that appear in `icu/icustays.csv` — and the reference admissions.csv is `hosp/admissions.csv` filtered to cohort.
+
+For that to exclude 17025507, the cohort filter must exclude it. 
+
+Hmm, what if there's a **`hosp/admissions` ↔ `hosp/patients` consistency check**: cohort requires the subject to appear in hosp/patients.csv. 
+- 17025507 IS in raw patients.csv → included. ✗ (we need it excluded)
+
+What if it requires the subject to appear in `hosp/patients.csv` AND have a `dod`?? 
+- 11776373 dod 2152-01-11 ✓ (in cohort)
+- 12029321 dod empty ✗ but in cohort. ✗
+
+Hmm.
+
+OK, let me try an entirely different tack: examine the VALIDATION raw. If in validation there are stays that (a) have admission rows, (b) have inputevents, (c) have LOS>=1 etc., I might find which combination gives a "nice" number. E.g., if validation has 20 stays and exactly 17 have admission rows and 17 have inputevents>0, that supports the hypothesis. Also, maybe the cohort count in validation is discoverable from... hmm, we don't have the gold.
+
+Hmm, but actually! Here's a MUCH better idea: the scoring host gives per-file scores. If I produce a cohort with the wrong number of rows, I'll see it in the feedback. So I can iterate. But the first submission should be as good as possible.
+
+Let me look at the validation raw structure to gather more evidence.
+
+Actually — hold on. Let me reconsider ONE more time. Let me re-read the task statement: "cohort.csv 列出本次入选的 ICU 住院... 入选依据是 icu/icustays.csv 里的 ICU 住院记录本身" (the selection basis is the ICU stay records themselves in icu/icustays.csv). "hospital_expire_flag 作为 in-hospital mortality 标签".
+
+Hmm, so cohort comes from icustays. Then cohort = all 10? But reference has 7.
+
+Unless... the reference's cohort.csv was produced with additional filters like "the ICU stay must have ≥1 chartevent" etc. Hmm.
+
+WAIT WAIT WAIT. What about **`keys.csv`**?! The task says: "train raw、validation raw 都是按 stay_id 切片的...`keys.csv` 的列是 `stay_id`；同一个 stay 对应一个 hadm_id，同一个 subject 可能有多个 stay，所以 cohort.csv 的行数会少于 keys.csv 的行数。"
+
+"同一个 subject 可能有多个 stay，所以 cohort.csv 的行数会少于 keys.csv 的行数" — because a subject may have multiple stays, cohort.csv (one row per subject/hadm) has FEWER rows than keys.csv (one row per stay)!!!
+
+So cohort.csv = one row per (subject_id, hadm_id) — deduplicated by admission! And keys.csv has one row per stay_id.
+
+So: 10 stays → but cohort has 7 rows. If the 10 stays had 7 distinct (subject, hadm)... but no, each stay here has a distinct subject and hadm! Hmm: 10 stays → 10 distinct subjects, 10 distinct hadm_ids. So dedup by hadm gives 10, not 7.
+
+Hmm, unless... the 3 excluded stays (13802162, 14701347, 17025507)... no.
+
+Hmm, but the statement "所以 cohort.csv 的行数会少于 keys.csv 的行数" is a general statement about the dataset (in the full 5000-stay dataset, some subjects have multiple stays). For train: keys=10, cohort=7. Hmm, that's a big difference — 3 fewer. With "same subject may have multiple stays" you'd expect at most a small reduction. Hmm.
+
+Unless the keys.csv for train has 10 stay_ids and the cohort has 7 because of a *different* reason.
+
+Hmm, hold on! Wait. What if the raw tables are NOT sliced consistently — i.e., the raw slice for `icu/chartevents.csv` contains rows for stays that are in the key set, but the icustays.csv table has 10 rows because... hmm.
+
+OK, let me just look at validation raw and see the analogous structure. Let me check:
+- validation icustays rows
+- validation admissions rows  
+- validation inputevents per stay
+- LOS values
+
+If in validation there are exactly the same "3 missing" pattern (stays without admission rows), that tells me the rule involves admissions.
+
+Let me look.</think>
+
+[Tool Call] Write
+{"file_path":"/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/icu5000_agent_run/experiments/icu5000_mimicraw_4p7_val_seed666_v1/agent_workdir/scripts/scan_val.py","content":"import pandas as pd\nV = \"/Users/mac/PycharmProjects/v2_clean/datasets/val_views/icu5000_mimicraw_47/validation/raw\"\npd.set_option(\"display.width\", 250); pd.set_option(\"display.max_columns\", 60); pd.set_option(\"display.max_rows\", 400)\n\nic = pd.read_csv(f\"{V}/icu/icustays.csv\", dtype=str, keep_default_na=False)\nad = pd.read_csv(f\"{V}/hosp/admissions.csv\", dtype=str, keep_default_na=False)\npa = pd.read_csv(f\"{V}/hosp/patients.csv\", dtype=str, keep_default_na=False)\nprint(\"### val icustays\", ic.shape)\nprint(ic.to_string())\nprint(\"### val admissions\", ad.shape)\nprint(ad[[\"subject_id\",\"hadm_id\",\"admittime\",\"dischtime\",\"deathtime\",\"discharge_location\",\"hospital_expire_flag\"]].to_string())\nprint(\"### val patients\", pa.shape)\nprint(pa.to_string())\n\nfor f in [\"icu/chartevents.csv\", \"icu/inputevents.csv\", \"icu/outputevents.csv\"]:\n    r = pd.read_csv(f\"{V}/{f}\", dtype=str, keep_default_na=False)\n    print(\"### VAL\", f, r.shape)\n    print(r.groupby(\"stay_id\").size().to_string())\n\nfor f in [\"hosp/labevents.csv\", \"hosp/prescriptions.csv\", \"hosp/diagnoses_icd.csv\", \"hosp/procedures_icd.csv\", \"ecg/record_list.csv\"]:\n    r = pd.read_csv(f\"{V}/{f}\", dtype=str, keep_default_na=False)\n    print(\"### VAL\", f, r.shape, r.groupby(\"subject_id\").size().to_dict())\n"}
+[Model Usage] input=58188 output=6271 reason=completed
+[Tool Result] Write
+The file /Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/icu5000_agent_run/experiments/icu5000_mimicraw_4p7_val_seed666_v1/agent_workdir/scripts/scan_val.py has been written successfully (23 lines).
+[Tool Result End] success
+[Model] MiniMax-M3
+[Tool Call] Bash
+{"command":"python3 scripts/scan_val.py 2>&1 | head -160","description":"Scan validation raw structure"}
+[Model Usage] input=64539 output=54 reason=completed
+[Tool Result] Bash
+### val icustays (20, 8)
+   subject_id   hadm_id   stay_id                                    first_careunit                                     last_careunit               intime              outtime                 los
+0    10040025  27996267  36107367               Surgical Intensive Care Unit (SICU)               Surgical Intensive Care Unit (SICU)  2148-01-24 04:50:17  2148-01-24 03:50:17   6.538101851851852
+1    10381911  21137937  38711345               Surgical Intensive Care Unit (SICU)               Surgical Intensive Care Unit (SICU)  2154-05-26 20:20:27  2154-05-26 19:20:27  1.7528935185185186
+2    10448050  25685823  34610537                Medical Intensive Care Unit (MICU)                Medical Intensive Care Unit (MICU)  2132-06-05 21:54:08  2132-06-05 20:54:08   9.315150462962963
+3    10820164  28010525  36146741               Surgical Intensive Care Unit (SICU)               Surgical Intensive Care Unit (SICU)  2152-01-22 00:12:10  2152-01-21 23:12:10  0.8709027777777778
+4    11036070  20558511  38625056                               Trauma SICU (TSICU)                               Trauma SICU (TSICU)  2122-04-07 05:46:00  2122-04-07 04:46:00           1.4446875
+5    11378305  26592621  37878703  Medical/Surgical Intensive Care Unit (MICU/SICU)  Medical/Surgical Intensive Care Unit (MICU/SICU)  2157-11-16 19:57:18  2157-11-16 18:57:18  1.1463078703703704
+6    12114593  26852696  32051826  Medical/Surgical Intensive Care Unit (MICU/SICU)  Medical/Surgical Intensive Care Unit (MICU/SICU)  2157-11-18 10:02:22  2157-11-18 09:02:22  0.5326736111111111
+7    12568324  23863704  38648332  Medical/Surgical Intensive Care Unit (MICU/SICU)  Medical/Surgical Intensive Care Unit (MICU/SICU)  2189-11-08 01:21:34  2189-11-08 00:21:34  0.5529166666666666
+8    13958446  22389362  38988813                Medical Intensive Care Unit (MICU)                Medical Intensive Care Unit (MICU)  2165-03-19 00:01:00  2165-03-18 23:01:00   0.643425925925926
+9    14399914  20718486  35018488                               Trauma SICU (TSICU)                               Trauma SICU (TSICU)  2183-01-22 21:34:00  2183-01-22 20:34:00  0.7187152777777778
+10   14461781  20389047  37722313                Medical Intensive Care Unit (MICU)                Medical Intensive Care Unit (MICU)  2123-02-03 06:52:27  2123-02-03 05:52:27   2.118449074074074
+11   14640197  24300234  33966594                          Coronary Care Unit (CCU)                          Coronary Care Unit (CCU)  2139-11-11 14:13:03  2139-11-11 13:13:03   8.042291666666667
+12   14650082  26458213  30531897                               Trauma SICU (TSICU)                               Trauma SICU (TSICU)  2175-11-24 20:10:39  2175-11-24 19:10:39   3.942650462962963
+13   16965015  28130748  32122320                          Coronary Care Unit (CCU)                          Coronary Care Unit (CCU)  2186-10-21 16:23:36  2186-10-21 15:23:36  3.9737037037037037
+14   16968104  29998702  37074618                Medical Intensive Care Unit (MICU)                Medical Intensive Care Unit (MICU)  2190-11-13 22:42:00  2190-11-13 21:42:00           1.4021875
+15   17719421  26710903  33246358                                Neuro Intermediate                                Neuro Intermediate  2120-01-23 18:22:54  2120-01-23 17:22:54   7.968321759259259
+16   17795077  23625436  34780488                Medical Intensive Care Unit (MICU)                Medical Intensive Care Unit (MICU)  2171-09-13 05:13:00  2171-09-13 04:13:00  0.5667824074074074
+17   18091976  28328840  39870988                Medical Intensive Care Unit (MICU)                Medical Intensive Care Unit (MICU)  2168-12-11 00:09:00  2168-12-10 23:09:00  0.6206597222222222
+18   18835942  23938518  36574076               Surgical Intensive Care Unit (SICU)               Surgical Intensive Care Unit (SICU)  2127-05-09 21:08:26  2127-05-09 20:08:26   5.723703703703704
+19   19673450  26742984  31465221                          Coronary Care Unit (CCU)                          Coronary Care Unit (CCU)  2145-04-10 19:49:08  2145-04-10 18:49:08   5.415648148148148
+### val admissions (17, 16)
+   subject_id   hadm_id            admittime            dischtime            deathtime            discharge_location hospital_expire_flag
+0    10040025  27996267  2148-01-23 12:18:00  2148-02-04 20:51:00                                            HOSPICE                    1
+1    10381911  21137937  2154-05-26 20:19:00  2154-05-28 14:24:00                                               HOME                    1
+2    10448050  25685823  2132-05-31 12:13:00  2132-06-14 21:30:00  2132-06-14 21:30:00                          DIED                    0
+3    10820164  28010525  2152-01-21 14:36:00  2152-01-26 14:30:00                                   HOME HEALTH CARE                    1
+4    11036070  20558511  2122-04-07 01:35:00  2122-04-19 14:18:00                           SKILLED NURSING FACILITY                    1
+5    11378305  26592621  2157-11-16 19:56:00  2157-11-19 15:45:00                                   HOME HEALTH CARE                    1
+6    12114593  26852696  2157-11-17 21:26:00  2157-11-18 22:49:00                                            HOSPICE                    1
+7    12568324  23863704  2189-11-08 01:19:00  2189-11-17 17:00:00                           SKILLED NURSING FACILITY                    1
+8    13958446  22389362  2165-03-18 22:46:00  2165-03-25 17:45:00                                               HOME                    1
+9    14399914  20718486  2183-01-22 20:51:00  2183-01-25 13:47:00                                   HOME HEALTH CARE                    1
+10   14461781  20389047  2123-02-02 20:38:00  2123-02-05 09:42:00  2123-02-05 09:42:00                          DIED                    0
+11   14640197  24300234  2139-11-08 21:05:00  2139-11-19 14:00:00                           SKILLED NURSING FACILITY                    1
+12   14650082  26458213  2175-11-23 23:09:00  2175-12-04 17:24:00                       CHRONIC/LONG TERM ACUTE CARE                    1
+13   16965015  28130748  2186-10-20 23:20:00  2187-01-03 14:48:00                       CHRONIC/LONG TERM ACUTE CARE                    1
+14   16968104  29998702  2190-11-13 21:26:00  2190-11-18 10:17:00                                               HOME                    1
+15   17719421  26710903  2120-01-23 07:15:00  2120-01-31 17:00:00                                               HOME                    1
+16   17795077  23625436  2171-09-13 04:09:00  2171-09-15 17:30:00                                               HOME                    1
+### val patients (14, 6)
+   subject_id               gender anchor_age anchor_year anchor_year_group         dod
+0    10040025  UNKNOWN_GENDER_CODE        999        2143       2011 - 2013  2148-02-07
+1    10381911  UNKNOWN_GENDER_CODE        999        2154       2008 - 2010            
+2    10448050  UNKNOWN_GENDER_CODE        999        2131       2020 - 2022  2132-06-14
+3    10820164  UNKNOWN_GENDER_CODE        999        2152       2011 - 2013            
+4    11036070  UNKNOWN_GENDER_CODE        999        2122       2017 - 2019            
+5    12114593  UNKNOWN_GENDER_CODE        999        2157       2011 - 2013            
+6    12568324  UNKNOWN_GENDER_CODE        999        2189       2008 - 2010  2190-10-13
+7    13958446  UNKNOWN_GENDER_CODE        999        2163       2008 - 2010  2169-04-28
+8    14399914  UNKNOWN_GENDER_CODE        999        2183       2008 - 2010            
+9    14461781  UNKNOWN_GENDER_CODE        999        2116       2014 - 2016  2123-02-05
+10   14640197  UNKNOWN_GENDER_CODE        999        2139       2008 - 2010  2139-12-01
+11   14650082  UNKNOWN_GENDER_CODE        999        2175       2011 - 2013            
+12   16968104  UNKNOWN_GENDER_CODE        999        2190       2014 - 2016  2191-01-07
+13   17719421  UNKNOWN_GENDER_CODE        999        2120       2020 - 2022            
+### VAL icu/chartevents.csv (73908, 11)
+stay_id
+30531897     5784
+31465221     7676
+32051826      427
+32122320     5375
+33246358     7868
+33966594     7109
+34610537     8975
+34780488      553
+35018488      717
+36107367     8913
+36146741     1240
+36574076     7307
+37074618     1085
+37722313     3471
+37878703      722
+38625056     2410
+38648332      528
+38711345     1629
+38988813      610
+39870988      608
+930531897      72
+931465221      86
+932051826       5
+932122320      68
+933246358      94
+933966594      82
+934610537     112
+934780488       7
+935018488      10
+936107367     128
+936146741      21
+936574076      77
+937074618      15
+937722313      51
+937878703       6
+938625056      31
+938648332       7
+938711345      21
+938988813       5
+939870988       3
+### VAL icu/inputevents.csv (1720, 26)
+stay_id
+30531897    141
+31465221    437
+32051826     12
+32122320    144
+33246358    109
+33966594    212
+34780488     12
+35018488     12
+36107367    193
+36146741     55
+36574076    269
+37074618     28
+37878703     10
+38625056     34
+38648332      6
+38711345     37
+38988813      3
+39870988      6
+### VAL icu/outputevents.csv (1053, 9)
+stay_id
+30531897     80
+31465221     95
+32051826      7
+32122320     88
+33246358    280
+33966594     51
+34610537     75
+34780488      9
+35018488      2
+36107367    113
+36146741     31
+36574076    117
+37074618      4
+37722313      4
+37878703     13
+38625056     38
+38648332      7
+38711345     27
+38988813     10
+39870988      2
+### VAL hosp/labevents.csv (11851, 16) {'10040025': 696, '10381911': 92, '10448050': 846, '10820164': 445, '11036070': 553, '11378305': 95, '12114593': 154, '12568324': 254, '13958446': 174, '14399914': 32, '14461781': 453, '14640197': 626, '14650082': 293, '16965015': 6086, '16968104': 237, '17719421': 713, '17795077': 102}
+### VAL hosp/prescriptions.csv (2142, 21) {'10040025': 187, '10381911': 17, '10448050': 151, '10820164': 120, '11036070': 71, '11378305': 29, '12114593': 42, '12568324': 33, '13958446': 45, '14399914': 23, '14461781': 137, '14640197': 107, '14650082': 104, '16965015': 893, '16968104': 81, '17719421': 83, '17795077': 19}
+### VAL hosp/diagnoses_icd.csv (396, 5) {'10040025': 39, '10381911': 8, '10448050': 32, '10820164': 7, '11036070': 26, '11378305': 24, '12114593': 18, '12568324': 22, '13958446': 18, '14399914': 6, '14461781': 39, '14640197': 31, '14650082': 22, '16965015': 39, '16968104': 21, '17719421': 20, '17795077': 24}
+### VAL hosp/procedures_icd.csv (79, 6) {'10040025': 6, '10381911': 4, '10448050': 5, '10820164': 3, '11036070': 5, '12114593': 1, '12568324': 1, '14461781': 11, '14640197': 7, '14650082': 9, '16965015': 23, '17719421': 4}
+### VAL ecg/record_list.csv (87, 5) {'10040025': 17, '10820164': 9, '11036070': 1, '12114593': 1, '12568324': 3, '13958446': 36, '14461781': 4, '14640197': 14, '14650082': 1, '16968104': 1}
+
+[Tool Result End] success
+[Model] MiniMax-M3
+<think>EXCELLENT! Now the validation data gives a much clearer picture:
+
+**Validation icustays**: 20 stays, 20 distinct subjects.
+**Validation admissions**: 17 rows, 17 subjects → 3 stays have no admission row: 
+- 14640197/24300234/33966594? no wait, 14640197 IS in admissions. Let me list: admissions subjects = 10040025, 10381911, 10448050, 10820164, 11036070, 11378305, 12114593, 12568324, 13958446, 14399914, 14461781, 14640197, 14650082, 16965015, 16968104, 17719421, 17795077. That's 17.
+icustays subjects = 10040025, 10381911, 10448050, 10820164, 11036070, 11378305, 12114593, 12568324, 13958446, 14399914, 14461781, 14640197, 14650082, 16965015, 16968104, 17719421, 17795077, 18091976, 18835942, 19673450.
+
+Missing from admissions: 18091976 (28328840, stay 39870988), 18835942 (23938518, stay 36574076), 19673450 (26742984, stay 31465221). → 3 stays excluded!
+
+**Validation patients.csv**: 14 rows. Subjects: 10040025, 10381911, 10448050, 10820164, 11036070, 12114593, 12568324, 13958446, 14399914, 14461781, 14640197, 14650082, 16968104, 17719421. That's 14. Missing from the 17 admission subjects: 11378305, 16965015, 17795077. 
+
+**Validation inputevents**: 18 stays have rows; missing: 34610537 (10448050) and 37722313 (14461781). So 2 stays have NO inputevents.
+
+**Validation outputevents**: 20 stays except 39870988 (18091976)? Let's see: 30531897, 31465221, 32051826, 32122320, 33246358, 33966594, 34610537, 34780488, 35018488, 36107367, 36146741, 36574076, 37074618, 37722313, 37878703, 38625056, 38648332, 38711345, 38988813, 39870988 → all 20 have outputevents.
+
+Now: in TRAIN, the excluded stays were 38931144 (13802162), 36149314 (14701347), 31262104 (17025507).
+- 13802162: no admission row ✓ (like 18091976, 18835942, 19673450 in val)
+- 14701347: no admission row ✓
+- 17025507: HAS an admission row but is excluded ✗ — hmm!
+
+Hmm, and in validation, the 3 excluded are exactly those without admission rows. So the rule "cohort requires an admission row" explains validation perfectly (17 stays → 17 cohort rows).
+
+For train, "requires an admission row" gives 8 (including 17025507), but reference has 7. So there's an additional criterion in train for 17025507.
+
+Hmm, so what if the additional criterion is "requires a patients.csv row"? In train: 17025507 IS in patients.csv → would be included. ✗.
+
+Hmm, what if the additional criterion is about `hospital_expire_flag`? Let's compute the *correct* flag for each: flag=1 iff deathtime non-null.
+Train: 17025507's deathtime is empty → flag should be 0. Raw says 1. Hmm.
+
+In validation, all admissions have raw hospital_expire_flag: let's check: the ones with deathtime non-null (10448050, 14461781) have flag=0; others have flag=1. So again inverted! (Same pattern as train.) So in validation, the true flags: 10448050 → 1 (DIED), 14461781 → 1 (DIED), all others → 0.
+
+Hmm, so in validation, hospital_expire_flag in raw = inverted. That's a consistent "label leakage" injection: flip the flag.
+
+Now, for train: 17025507's raw flag=1 → true flag=0. Reference excludes the row.
+
+In validation: all 17 admissions have raw flag=1 except the 2 deathtime ones (0). If the rule were "drop rows where raw flag ≠ recomputed", we'd drop all 17! No.
+
+Hmm. OK so what distinguishes 17025507 in train?
+
+Let me look at 17025507's raw row again... vs. validation rows.
+
+OK WAIT. Let me reconsider the problem completely. What if the *raw* `hosp/admissions.csv` in train has an EXTRA row (17025507) that was INSERTED by the label-leakage injection?! The counts say "2,881 label_leakage 插入行" for train. Inserted rows! If the injector inserted a duplicate admissions row for a patient with the label flipped...
+
+But the row for 17025507 has distinct hadm_id 26786848 which appears in transfers/services. Hmm, so it's not a fabricated row.
+
+Hmm, hold on. Let me reconsider: what if the injector INSERTED rows into admissions by copying an existing row and changing the label... then the row would be an exact duplicate except for the label. Let's check for duplicates in raw admissions: all 8 rows have distinct (subject, hadm).
+
+OK, let me look at this from yet another angle: maybe the reference pipeline's cohort rule involves **the ICU stay having a matching `hosp/admissions` row AND the ICU stay being "valid"**, e.g., the ICU stay's `los` ≥ 1 day? Let's check validation: which validation stays have los < 1?
+- 36146741 (10820164) los 0.871 — has admission row → would be excluded under los≥1 rule.
+- 32051826 (12114593) los 0.533 → excluded
+- 38648332 (12568324) los 0.553 → excluded
+- 38988813 (13958446) los 0.643 → excluded
+- 35018488 (14399914) los 0.719 → excluded
+- 34780488 (17795077) los 0.567 → excluded
+- 39870988 (18091976) los 0.621 → excluded (also no admission)
+- 38625056 (11036070) los 1.445 ✓
+So under los≥1, validation cohort = 17 - 6 = 11 rows. Under "has admission row" = 17.
+
+Hmm. Which is right? I need evidence. 
+
+AH WAIT!!! I've got it — maybe! Let me reconsider the phrase in the task: "本数据集的 cohort 按 ICU 住院记录选取" and "cohort.csv 里没有 icd_root 列，cohort_type 是 icu，cohort_label 是 ICU，入选依据是 icu/icustays.csv 里的 ICU 住院记录本身".
+
+Hmm. And: "同一个 stay 对应一个 hadm_id，同一个 subject 可能有多个 stay，所以 cohort.csv 的行数会少于 keys.csv 的行数."
+
+AH, maybe THIS is the key: cohort.csv is keyed by (subject_id, hadm_id) and the raw slice's icustays.csv may contain MULTIPLE stays for the same subject — and the reference cohort dedups. But here each subject has 1 stay. Hmm.
+
+Hmm, but wait: what about the 9-prefixed stay_ids?! "跨表 ID 错位" — in chartevents, stay_ids got a "9" prefix. But what if in the ORIGINAL (clean) icustays.csv, there were more stays? No, raw icustays has 10 rows for train and the reference icustays.csv has exactly those 10.
+
+OK so let me focus: I need to determine why 17025507 is excluded from train's cohort.
+
+Let me compare 17025507's raw admission row with the cohort rows... 
+
+AH WAIT!!! Maybe it's the **`deathtime`/`discharge_location`/`hospital_expire_flag` consistency**: the reference pipeline might compute hospital_expire_flag as 1 iff deathtime is not null, and the *cohort* requires... no.
+
+Hmm, hmm. What about **duplicate (subject_id) in icustays**? No.
+
+Let me look at whether the reference admissions.csv might not be "hosp/admissions filtered by cohort" but something else. 7 rows: 11776373, 12029321, 14073377, 14276064, 15872027, 18268331, 18948626.
+
+And the raw admissions has 8 rows. The excluded one is 17025507.
+
+Hmm, what if the exclusion is because 17025507's row has `hospital_expire_flag=1` in raw (label leakage) and the pipeline DROPS rows where the flag is inconsistent with deathtime?? I.e., it treats an inconsistent flag as an uncorrectable error and drops the row? But then in validation, all 15 non-died rows would be dropped (they have flag=1 but no deathtime)... and the reference cohort for validation would be tiny. Hmm, that seems unlikely but possible!
+
+Hmm, actually, wait. What if the rule is: "the label (hospital_expire_flag) must be recomputed from deathtime; rows where raw flag disagrees are... " no.
+
+Hmm, let me think about "label_leakage 插入行" (inserted rows) more carefully. Maybe the injection types are:
+1. cell_update: modify a cell.
+2. duplicate_row: duplicate a row (exact duplicate).
+3. label_leakage: INSERT a row that reveals the label — e.g., duplicate a row from another table (like chartevents of a *different* patient), or insert rows that directly encode the target label.
+
+For the cohort file, the "label" is hospital_expire_flag. Maybe the injector inserts rows into various tables containing the label. And the pipeline must remove those inserted rows (they're detectable because they're duplicates of existing rows, or they have a distinctive pattern).
+
