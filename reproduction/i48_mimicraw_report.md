@@ -176,13 +176,42 @@ native_value=307.0 ⇒ raw 里这个 key 的所有行：
 
 ---
 
-## 6. 产物清单
+## 6. 独立校验（**从产物重算，不信构建器的自检**）
+
+`reproduction/verify_i48_mimic_raw_error.py`，8 大项 × 三 split × 两档
+⇒ **两档各 38 项检查，38 项全部通过、0 失败**
+（报告落在各数据集的 `verify_native_report.json`）。
+
+| # | 检查项 | 1.6pct | 4.7pct |
+|---|---|---|---|
+| ① | raw 与源 raw 的差异**只**出现在叠脏格上 | 203 行 == 203 格 ✅ | 957 == 957 ✅ |
+| ② | reference 里**残留**的原生错误格（真值不可判定那批） | 0 ✅ | 0 ✅ |
+| ③ | log 里 `mimic_native_*` 条目数 == 溯源表行数 | 1,264 == 1,264 ✅ | 1,238 == 1,238 ✅ |
+| ④ | 每个原生格在 log 里**恰好 1 条** valuenum 条目 | ✅ | ✅ |
+| ①b | 每个原生格的 raw `value` 文本列 **== `valuenum`**（原生错误形态） | **1,264 / 1,264** ✅ | **1,238 / 1,238** ✅ |
+| ⑤ | reference[该格] == 修复值 | **1,264 / 1,264** ✅ | **1,238 / 1,238** ✅ |
+| ⑤b | 用**源数据集** reference **独立重算** R2 中位数 | **1,264 / 1,264**，不一致 0 ✅ | **1,238 / 1,238**，不一致 0 ✅ |
+| ⑥ | 溯源表 19 列齐全 + T1/T2 分类 | T1 23 + T2 1,241 ✅ | T1 22 + T2 1,216 ✅ |
+| ⑦ | manifest / prompt / 各 split 产物齐备 | ✅ | ✅ |
+
+⚠️ **这三轮调试查出的都是校验器自身的 bug，数据本身一直是对的**：
+①b 按 key 定位撞上「孪生行」（注入器在同一 key 上造重复行）；
+①b 按 clean key 找不到行（有一批格的 key 列本身被注入器改过）；
+改 ①b 时误删了 ⑤ 用的 `want_keys`（NameError）。
+⇒ **校验器与构建器/评分器统一成同一套定位：raw 行号 = log 行号 L + 插入偏移。**
+
+⚠️ 另外做过一次**重建逐字节对比**（重建到临时目录）：
+12/12 个文件 md5 完全一致 ⇒ 构建器那处修改对产物**零影响** ⇒ 两档都不需要重建。
+
+---
+
+## 7. 产物清单
 
 | | 1.6pct | 4.7pct |
 |---|---|---|
 | 完整数据集 | `datasets/注入错误数据集/i48/I48_atrial_fibrillation_v2_rawerror_mimicraw2_test1.6pct_411M` | `…_mimicraw2_test4.7pct_411M` |
 | agent 视图 | `datasets/val_views/i48_mimicraw2_16` | `datasets/val_views/i48_mimicraw2_47` |
-| prompt | `eval_handoff/prompts/i48_1.6pct_mimicraw_val_prompt_v5.md` | `…_4.7pct_…_v5.md` |
+| prompt | `eval_handoff/prompts/i48_1.6pct_mimicraw_val_prompt_v5.md`<br>sha256 `beeed442c825f18d…` | `…_4.7pct_…_v5.md`<br>sha256 `36a90bb561faf311…` |
 | manifest | `<数据集>/v2_rawerror_i48_final_report.json` | 同左 |
 | harness profile | `i48_mimicraw2_16` | `i48_mimicraw2_47` |
 
@@ -202,7 +231,7 @@ native_value=307.0 ⇒ raw 里这个 key 的所有行：
 
 ---
 
-## 7. 待办
+## 8. 待办
 
 - [ ] **跑 agent**（用户明确要求「先不跑」）⇒ val / test / 七口径 / 原生格
 - [ ] 两档原生层的**交集口径**跨档对比（两档 native 层已逐格同源 ⇒ 直接比即可，
