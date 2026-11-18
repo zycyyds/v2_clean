@@ -204,6 +204,75 @@ def probe_offset_mode(raw_path, cells_by_ri, posl, k=200):
     return out
 
 
+def probe_gold_mode(ref, cells_by_ri, k=200):
+    """**用数据**判定 reference 的行空间与 log 的行空间是否一致。
+
+    CLEAN_FROM_GOLD 口径要拿「gold 那一行」的列值当正确答案。历史上按 rowid 取
+    （log 的 `raw_row_index` = reference 行号，ref.db 的 rowid = 行号+1），
+    这只在「reference 与 log 同源同序」时成立：
+      · icu5000 / K29：reference = 注入前的干净表 ⇒ log 行号 == reference 行号 ✓
+      · **i48：reference = cohort 筛选后的「处理后输出表」** ⇒ 行号对不上
+        （实测 1264 个原生格里只有 **8** 格碰巧对上，行号差最大 **324 万**）
+        ⇒ 照旧取 rowid 就会把**随机行**的值当「正确答案」⇒ gold 口径的分数是垃圾。
+
+    ⇒ 判据：抽 log 条目（带 clean_value），看 reference 第 L 行的该列值是否真的
+      等于 clean_value。命中率高 ⇒ rowid 模式；命中率极低 ⇒ 按 key 查。
+
+    ⚠️ **取样必须跨全日志均匀铺开**，不能只取最前面的若干条：
+      i48 的 reference 保留了源 raw 开头的行 ⇒ 只取前 200 条会有 **23% 的假命中**
+      （实测）⇒ 判定不了「未定」⇒ 退回 rowid ⇒ 依然取到错的行。
+      ⇒ 这里按 `n_all/(4k)` 的步长铺开取样（dict 的插入序 = log 序 = 行号递增）。
+    """
+    out = {'mode': None, 'decided': False, 'hit': 0, 'n': 0}
+    n = 0
+    hit = 0
+    n_all = len(cells_by_ri)
+    step = max(1, n_all // max(1, k * 4))
+    for i, (L, cols) in enumerate(cells_by_ri.items()):
+        if i % step:
+            continue
+        for col, (dirty, clean) in cols.items():
+            if clean is None or clean == '':
+                continue
+            gi = ref.cidx.get(col)
+            if gi is None:
+                continue
+            row = ref.get_by_rowid(L + 1)
+            if row is None:
+                continue
+            n += 1
+            if same_value(row[gi], clean):
+                hit += 1
+            break            # 每个行号只测一列
+        if n >= k:
+            break
+    out['n'] = n
+    out['hit'] = hit
+    if n >= 20:
+        if hit / n >= 0.9:
+            out['mode'] = 'rowid'
+            out['decided'] = True
+        elif hit / n <= 0.1:
+            out['mode'] = 'key'
+            out['decided'] = True
+    return out
+
+
+def clean_key_of(kt, cinj, ki):
+    """还原「干净 key」：key 列被注入破坏时，用 log 里的 clean_value 换回去。"""
+    if not cinj:
+        return kt
+    out = list(kt)
+    for c, e in cinj.items():
+        i = ki.get(c)
+        if i is None:
+            continue
+        cv = e[1]
+        if cv is not None and out[i] != cv:
+            out[i] = cv
+    return tuple(out)
+
+
 class DB:
     def __init__(self, path, keys, all_cols):
         self.keys = keys
@@ -271,6 +340,10 @@ class DB:
         return self.conn.execute(
             "SELECT %s FROM data WHERE rowid=?" % ",".join('"%s"' % c for c in self.db_cols),
             (n,)).fetchone()
+
+    def rows_with_key(self, kt):
+        """同 key 的**所有**行（key 模式下用来在重复 key 里挑「值对的那一行」）。"""
+        return self.conn.execute(self._sql_full, kt).fetchall()
 
     def get_nonkey(self, kt):
         if self._mem is not None:
@@ -359,6 +432,7 @@ def main():
     ins_kind_by_raw = {}
     offset_mode = {}
     offset_probe = {}
+    gold_probe = {}
 
     def build_raw2log(rf, n, posl, kindlist, use_zero):
         """raw 行号 ↔ log（原始表）行号的映射。
@@ -444,6 +518,19 @@ def main():
                          extra, n_ins_log), flush=True)
                 use_zero = True
         offset_mode[raw_file] = "zero" if use_zero else "bisect"
+        # ── gold 取值空间探测（只在 CLEAN_FROM_GOLD 口径下有意义）──────────
+        # 「正确答案」改从 reference 取时，reference 那一行怎么找？
+        # · icu5000 / K29：reference 与 log 同源同序 ⇒ 按 rowid（L+1）就是那一行
+        # · **i48**：reference 是 cohort 筛选后的输出表 ⇒ 行号对不上 ⇒ 必须按 key
+        # ⇒ 同样用**数据探测**决定，判定结果写进输出 JSON（可审计）。
+        gold_mode = 'rowid'
+        if CLEAN_FROM_GOLD:
+            gp = probe_gold_mode(ref, cell_by_ri.get(raw_file, {}))
+            gold_probe[raw_file] = gp
+            if gp['decided']:
+                gold_mode = gp['mode']
+            print("  gold 取值空间探测: %s（reference 第 L 行命中 %d/%d）⇒ %s 模式"
+                  % (gp['mode'] or '未定', gp['hit'], gp['n'], gold_mode), flush=True)
         if use_zero and n_ins_log:
             # log 声称有这些 duplicate/insert 行，但 raw 里一行没多 ⇒ 它们没有实体，
             # agent 无从删除 ⇒ 不参与计分（否则会诱导 agent 误删基线行）
@@ -562,18 +649,37 @@ def main():
                         continue
 
                 gold_row = None
+                gold_cands = None
+                kt_gold = clean_key_of(kt, cinj, ki)
                 for col, e in cinj.items():
                     clean_v = e[1]
                     dirty_v = e[0]
                     if CLEAN_FROM_GOLD:
                         # 判据改用 gold(reference) 那一列的值 —— 与 log 怎么渲染无关。
-                        # ⚠️ 必须**按行号**取，不能按 key：4.7pct 的 inputevents 的 gold
-                        #    里有 2,496 个重复 key ⇒ 按 key 只会拿到第一行（可能是别的行）。
-                        #    log 的 raw_row_index 就是 reference 行号，ref.db 的 rowid = 行号+1。
-                        if gold_row is None:
-                            gold_row = ref.get_by_rowid(log_ri + 1)
+                        # ⚠️ 取 gold 那一行的方式**按探测结果**（probe_gold_mode）：
+                        #    · rowid 模式（icu5000 / K29：reference 与 log 同源同序）：
+                        #      必须**按行号**取，不能按 key —— 4.7pct 的 inputevents 的 gold
+                        #      里有 2,496 个重复 key ⇒ 按 key 只会拿到第一行（可能是别的行）。
+                        #      log 的 raw_row_index 就是 reference 行号，ref.db 的 rowid = 行号+1。
+                        #    · key 模式（i48：reference 是 cohort 筛选后的输出表 ⇒ 行号对不上）：
+                        #      按**干净 key** 查；同 key 有多行时，取「该列值 == clean_value」
+                        #      的那一行。
+                        if gold_mode == 'rowid':
                             if gold_row is None:
-                                gold_row = ref.get_full(used_key)   # 兜底
+                                gold_row = ref.get_by_rowid(log_ri + 1)
+                                if gold_row is None:
+                                    gold_row = ref.get_full(used_key)   # 兜底
+                        else:
+                            if gold_cands is None:
+                                gold_cands = ref.rows_with_key(kt_gold) or ()
+                            gold_row = None
+                            gi = ref.cidx.get(col)
+                            for gr in gold_cands:
+                                if gi is not None and same_value(gr[gi], clean_v):
+                                    gold_row = gr
+                                    break
+                            if gold_row is None and gold_cands:
+                                gold_row = gold_cands[0]
                         if gold_row is not None and col in ref.cidx:
                             gv = gold_row[ref.cidx[col]]
                             if gv is not None:
@@ -714,6 +820,7 @@ def main():
         'clean_from_gold': CLEAN_FROM_GOLD,
         'offset_mode': dict(offset_mode),
         'offset_probe': dict(offset_probe),
+        'gold_probe': dict(gold_probe),
         'injected_rows_not_materialized': T['injected_rows_not_materialized'],
         'injected': {'cell_update': n_cell, 'duplicate': n_dup, 'insert': n_ins,
                      'total': n_cell + n_dup + n_ins},

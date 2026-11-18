@@ -109,7 +109,10 @@ echo "--- 原生格重判 ---"
 for m in numeric string; do
   flag=""; [ "$m" = "string" ] && flag="--string-compare"
   out="$RUNS/${DSKEY}_native_cells${SFX}_${m}.json"
-  python3 "$WT/reproduction/eval_native_cells.py" --dataset "$DS" --result "$RESULT" \
+  # ⚠️ **必须用 i48 专用版**：icu5000 版靠「log 行号 == reference 行号」对齐 gold，
+  #    而 i48 的 reference 是 cohort 筛选后的输出表（12,768,419 行），
+  #    log 的 raw_row_index 空间是源 raw（16,014,304 行）⇒ 行号对不上。
+  python3 "$WT/reproduction/eval_i48_native_cells.py" --dataset "$DS" --result "$RESULT" \
       --split test --out "$out" $flag 2>&1 | sed 's/^/    /'
 done
 echo "=== 七口径完成 ==="
