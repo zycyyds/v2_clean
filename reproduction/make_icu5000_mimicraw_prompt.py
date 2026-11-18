@@ -270,6 +270,7 @@ def build_section(ctx):
         VAL_NEW_ITEMS=("、".join(str(i) for i in ctx["val"]["new_items"]) or "（无）"),
         ENUM="\n".join(enum_lines),
         SENTINELS="、".join(str(s) for s in SENTINELS),
+        SENTINEL_NOTE=ctx.get("sentinel_note", ""),
         DEV=dev_txt,
         CVP=cvp_txt,
         VEC=vec_txt,
@@ -323,6 +324,8 @@ MIMIC/CareVue 在"这个读数没取到 / 取错了"时会写入一个占位码�
 **这一类对所有 itemid 生效** —— 不限上面那张表的 20 个。检验类项目（Albumin / Platelet / PT / INR / Hemoglobin / Hematocrit / WBC / BUN 等）没有"生理不可能区间"可用，但它们的哨兵码一样是垃圾值。
 
 ⚠️ `220000` 和 `220045` 这两个码长得像 itemid，但它们出现在 **`valuenum` 列**里时是错误码，不是 itemid。
+
+{SENTINEL_NOTE}
 
 ### 怎么修：用**该患者自己**该测量项的中位数
 
@@ -465,6 +468,9 @@ def main():
                     help="icu5000_value_reliability.py 的输出 JSON（value 文本列的"
                          "可靠性分类；不给就退回 stats 里的粗比例）")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--version", default="v1", choices=["v1", "v2"],
+                    help="v2 = 在「类 2 哨兵码」那节加上「清单不是封闭的、自己统计取值分布」"
+                         "的提醒（v1 的封闭清单会让 agent 漏掉注入层用的 -1/-888）")
     args = ap.parse_args()
     ds = Path(args.dataset)
     stats = json.loads(Path(args.stats).read_text(encoding="utf-8"))
@@ -497,6 +503,23 @@ def main():
             json.loads(Path(args.value_stats).read_text(encoding="utf-8"))
             if args.value_stats else None),
         "enum": stats.get("enum") or {"rows": {}, "multi_groups": {}},
+        # v2：哨兵码清单**不是封闭的**。
+        # 实测（2026-11-18）：注入层在 icu/chartevents 上用的哨兵码是
+        #   -1 / -888 / 9999 / -999（各约 200 万格 @4.7pct），
+        #   其中 -1 与 -888 **不在**原生哨兵码清单里
+        #   ⇒ v1 prompt 把清单写死成封闭集合时，agent 会一格不修这两类
+        #   （实测 4.7pct 残留 281 万格 ≈ 全部 b_dirty）。
+        "sentinel_note": (
+            "⚠️⚠️ **上面这份清单不是封闭的 —— 请务必自己统计一遍 `valuenum` 的取值分布。**\n\n"
+            "除上面这组 MIMIC 占位码之外，**注入器还会用别的「不是测量值」的码**"
+            "（常见形态是 `-1` / `-888` / `-1000` 这类负数或固定的整数）。"
+            "它们在 raw 里会**成千上万次重复出现**，而且**通常不在上面这份清单里**。\n\n"
+            "⇒ 请对 `icu/chartevents.csv` 的 `valuenum` 做一次频次统计（例如 `value_counts()`），"
+            "把「出现次数极大 + 明显不是测量值」的值**全部**列出来，"
+            "按同样的原则（占位码 ⇒ 不是测量值 ⇒ 不可用于中位数池）处理。\n\n"
+            "⇒ **只认上面那份清单 = 这类注入错误一格都修不掉**，"
+            "而它们在 test 上是百万量级的。"
+        ) if args.version == "v2" else "",
     }
 
     base = Path(args.base_prompt).read_text(encoding="utf-8")
