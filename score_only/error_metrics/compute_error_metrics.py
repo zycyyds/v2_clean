@@ -204,8 +204,8 @@ def probe_offset_mode(raw_path, cells_by_ri, posl, k=200):
     return out
 
 
-def probe_gold_mode(ref, cells_by_ri, k=200):
-    """**用数据**判定 reference 的行空间与 log 的行空间是否一致。
+def probe_gold_mode(ref, cells_by_ri, raw_path, keys, posl, use_zero, k=200):
+    """**用数据**判定 reference 的行空间与 log 的行空间是否一致（**比 key**）。
 
     CLEAN_FROM_GOLD 口径要拿「gold 那一行」的列值当正确答案。历史上按 rowid 取
     （log 的 `raw_row_index` = reference 行号，ref.db 的 rowid = 行号+1），
@@ -215,44 +215,79 @@ def probe_gold_mode(ref, cells_by_ri, k=200):
         （实测 1264 个原生格里只有 **8** 格碰巧对上，行号差最大 **324 万**）
         ⇒ 照旧取 rowid 就会把**随机行**的值当「正确答案」⇒ gold 口径的分数是垃圾。
 
-    ⇒ 判据：抽 log 条目（带 clean_value），看 reference 第 L 行的该列值是否真的
-      等于 clean_value。命中率高 ⇒ rowid 模式；命中率极低 ⇒ 按 key 查。
+    ⇒ 判据：reference 第 L 行的 **key** 应当等于 raw 里那一行（log 行号 L 对应的
+      那一行）的**干净 key**（被注入改过的 key 列用 log 的 clean_value 还原）。
+      命中率高 ⇒ rowid 模式；命中率极低 ⇒ 按 key 查。
+
+    ⚠️ **不能只看「列值 == clean_value」**：注入的列常是**低基数**的
+      （insurance / language / expire_flag）⇒ 拿随机行的值也会撞上 ⇒ 命中率虚高
+      （实测 i48 的 admissions：rowid 取到的行 **key 全不同（400/400）**，
+        但列值命中 59.5% ⇒ 判成「未定」⇒ 退回 rowid ⇒ 依然取错行）。
 
     ⚠️ **取样必须跨全日志均匀铺开**，不能只取最前面的若干条：
       i48 的 reference 保留了源 raw 开头的行 ⇒ 只取前 200 条会有 **23% 的假命中**
       （实测）⇒ 判定不了「未定」⇒ 退回 rowid ⇒ 依然取到错的行。
-      ⇒ 这里按 `n_all/(4k)` 的步长铺开取样（dict 的插入序 = log 序 = 行号递增）。
     """
     out = {'mode': None, 'decided': False, 'hit': 0, 'n': 0}
-    n = 0
-    hit = 0
+    if not cells_by_ri:
+        return out
+    # 跨全日志均匀取样（dict 的插入序 = log 序 = 行号递增）
     n_all = len(cells_by_ri)
     step = max(1, n_all // max(1, k * 4))
+    need = {}
     for i, (L, cols) in enumerate(cells_by_ri.items()):
         if i % step:
             continue
-        for col, (dirty, clean) in cols.items():
-            if clean is None or clean == '':
-                continue
-            gi = ref.cidx.get(col)
-            if gi is None:
-                continue
-            row = ref.get_by_rowid(L + 1)
-            if row is None:
-                continue
-            n += 1
-            if same_value(row[gi], clean):
-                hit += 1
-            break            # 每个行号只测一列
-        if n >= k:
+        r = L if use_zero else L + bisect_left(posl, L)
+        need[r] = L
+        if len(need) >= k:
             break
-    out['n'] = n
-    out['hit'] = hit
-    if n >= 20:
-        if hit / n >= 0.9:
+    if not need:
+        return out
+    maxidx = max(need)
+    try:
+        with raw_path.open('rb') as f:
+            header = next(csv.reader([f.readline().decode('utf-8', 'replace')]))
+            idx = {c: i for i, c in enumerate(header)}
+            kidx = [idx.get(c) for c in keys]
+            if any(j is None for j in kidx):
+                return out
+            i = -1
+            for bline in f:
+                i += 1
+                if i > maxidx:
+                    break
+                L = need.get(i)
+                if L is None:
+                    continue
+                row = next(csv.reader([bline.decode('utf-8', 'replace')]))
+                if len(row) <= max(kidx):
+                    continue
+                cinj = cells_by_ri.get(L, {})
+                kt = []
+                for j, c in zip(kidx, keys):
+                    v = row[j]
+                    e = cinj.get(c)
+                    if e is not None and e[1] is not None and v != e[1]:
+                        v = e[1]          # 还原成干净 key
+                    kt.append(v)
+                rrow = ref.get_by_rowid(L + 1)
+                if rrow is None:
+                    continue
+                out['n'] += 1
+                try:
+                    rk = tuple(rrow[ref.cidx[c]] for c in keys)
+                except KeyError:
+                    continue
+                if rk == tuple(kt):
+                    out['hit'] += 1
+    except (OSError, StopIteration, csv.Error):
+        return out
+    if out['n'] >= 20:
+        if out['hit'] / out['n'] >= 0.9:
             out['mode'] = 'rowid'
             out['decided'] = True
-        elif hit / n <= 0.1:
+        elif out['hit'] / out['n'] <= 0.1:
             out['mode'] = 'key'
             out['decided'] = True
     return out
@@ -525,11 +560,12 @@ def main():
         # ⇒ 同样用**数据探测**决定，判定结果写进输出 JSON（可审计）。
         gold_mode = 'rowid'
         if CLEAN_FROM_GOLD:
-            gp = probe_gold_mode(ref, cell_by_ri.get(raw_file, {}))
+            gp = probe_gold_mode(ref, cell_by_ri.get(raw_file, {}), raw_path,
+                                 keys, pos, use_zero)
             gold_probe[raw_file] = gp
             if gp['decided']:
                 gold_mode = gp['mode']
-            print("  gold 取值空间探测: %s（reference 第 L 行命中 %d/%d）⇒ %s 模式"
+            print("  gold 取值空间探测: %s（reference 第 L 行的 key 命中 %d/%d）⇒ %s 模式"
                   % (gp['mode'] or '未定', gp['hit'], gp['n'], gold_mode), flush=True)
         if use_zero and n_ins_log:
             # log 声称有这些 duplicate/insert 行，但 raw 里一行没多 ⇒ 它们没有实体，
