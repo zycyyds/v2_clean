@@ -245,6 +245,7 @@ def main():
 
         # ---------- ⑤ log 行号 ↔ raw 行号 ↔ reference 行 对齐 ----------
         # 用 key 在 reference 里定位，核对 reference 的值 == 修复值
+        want_keys = {key_of_log_row(r) for r in nat}
         ref_vals = {}
         with (sp / "reference" / CE).open(newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f):
