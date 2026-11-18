@@ -29,6 +29,7 @@ import argparse
 import csv
 import json
 import sys
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -83,6 +84,23 @@ def key_of_log_row(r):
     """溯源表里带 subject/hadm/stay/charttime/itemid 五列。"""
     return (r.get("subject_id", ""), r.get("hadm_id", ""), r.get("stay_id", ""),
             r.get("charttime", ""), r.get("itemid", ""))
+
+
+def ins_positions(log_path, raw_file):
+    """log 里 insert/duplicate 条目的 raw_row_index（log 空间）—— 决定 raw 的行号偏移。
+
+    与构建器 build_raw2log() / 评分器 build_raw2log() 同一套：
+        raw 行号 = log 行号 L + bisect_left(ins_pos, L)
+    """
+    pos = []
+    with log_path.open(newline="", encoding="utf-8") as f:
+        for e in csv.DictReader(f):
+            if e.get("raw_file") != raw_file:
+                continue
+            if e.get("operation") in ("insert", "duplicate"):
+                pos.append(int(e["raw_row_index"]))
+    pos.sort()
+    return pos
 
 
 def main():
@@ -191,27 +209,25 @@ def main():
         srep["log_native_entries"] = n_nat
 
         # ---------- ①b `value` 文本列 == `valuenum` ----------
-        # ⚠️ **必须按 (key, valuenum == 原生错值) 定位那一行**，不能只按 key：
-        #    注入器在这 11 个格上**造了孪生行**（duplicate_row + 把 valuenum 改成
-        #    -999 / ×100）⇒ 同一个 key 在 raw 里有两行；按 key 取「最后一行」
-        #    会撞上孪生行 ⇒ 误报「形态错」。
-        want_keys = {}
+        # ⚠️ **必须按 log 行号定位那一行**，不能只按 key：
+        #    ① 注入器在这批格上**造了孪生行**（duplicate_row + 把 valuenum 改成
+        #       -999 / ×100）⇒ 同一个 key 在 raw 里有两行，按 key 取「最后一行」
+        #       会撞上孪生行 ⇒ 误报「形态错」；
+        #    ② 有一部分格的 **key 列本身被注入器改过**（itemid 别名 / hadm 错位）
+        #       ⇒ 按 clean key 在 raw 里根本找不到这一行。
+        #    ⇒ 与构建器/评分器同一套定位：log 行号 L ⇒ raw 行号 = L + 插入偏移。
+        ins_pos = ins_positions(sp / "modification_log.csv", CE)
+        want_idx = {}
         for r in nat:
-            want_keys.setdefault(key_of_log_row(r), r.get("mimic_native_value", ""))
+            L = int(r["raw_row_index"])
+            want_idx[L + bisect_left(ins_pos, L)] = r.get("mimic_native_value", "")
         c = Counter()
         seen = set()
         with (sp / "raw" / CE).open(newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                k = key_of(r)
-                nv = want_keys.get(k)
+            for ri, r in enumerate(csv.DictReader(f)):
+                nv = want_idx.get(ri)
                 if nv is None:
                     continue
-                # 原生格那一行：key 相同 且 valuenum == 原生错值
-                if not same_value(r.get("valuenum", ""), nv):
-                    continue
-                if k in seen:
-                    continue
-                seen.add(k)
                 v = fnum(r.get("valuenum")); val = fnum(r.get("value"))
                 if val is None:
                     c["value 非数值"] += 1
@@ -219,6 +235,7 @@ def main():
                     c["value == valuenum（原生错误形态，正确）"] += 1
                 else:
                     c["value != valuenum（形态错！）"] += 1
+                seen.add(ri)
         print("     分布: %s" % dict(c))
         check(c["value != valuenum（形态错！）"] == 0 and c["value 非数值"] == 0
               and len(seen) == len(nat),
