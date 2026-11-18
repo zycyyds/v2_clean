@@ -500,7 +500,8 @@ def main():
         print("  raw 行数 %d" % n_raw, flush=True)
 
         want = set(fixes)
-        found = {}
+        val_upd_set = set(val_upd)   # 提到循环外（原来每次迭代重建 1200 万元素）
+        cands_raw = defaultdict(list)
         with raw_path.open(newline='', encoding='utf-8') as f:
             for i, row in enumerate(csv.DictReader(f)):
                 L = raw2log[i]
@@ -516,9 +517,31 @@ def main():
                 else:
                     ck = (row['subject_id'], row['hadm_id'], row['stay_id'],
                           row['charttime'], row['itemid'])
-                if ck in want and ck not in found:
-                    found[ck] = (i, L, row['valuenum'], row.get('itemid', ''))
-        print("  定位到 raw 行：%d / %d" % (len(found), len(want)), flush=True)
+                if ck in want:
+                    cands_raw[ck].append((i, L, row['valuenum'],
+                                           row.get('itemid', '')))
+        # ⚠️ **同一个 key 在 raw 里可能有多行**（注入器造了孪生行：
+        #    duplicate_row + 把那一行的 valuenum 改成 -999 / ×100）。
+        #    早期版本只取「第一行」⇒ 可能匹配到孪生行 ⇒ 把注入形态误当成原生形态。
+        #    ⇒ 这里优先选 **valuenum == 原生错值** 的那一行（那才是原生格本身）。
+        found = {}
+        n_twin = 0
+        for ck, lst in cands_raw.items():
+            if len(lst) > 1:
+                n_twin += 1
+            v_ref = details[ck][1]
+            pick = None
+            for hit in lst:
+                try:
+                    if abs(float(hit[2]) - float(v_ref)) < 1e-9:
+                        pick = hit
+                        break
+                except (TypeError, ValueError):
+                    continue
+            found[ck] = pick if pick is not None else lst[0]
+        print("  定位到 raw 行：%d / %d（其中 %d 个 key 在 raw 里有孪生行，"
+              "已按 valuenum==原生错值 选中正确的那一行）"
+              % (len(found), len(want), n_twin), flush=True)
 
         # ---------- 4. 逐格判定：叠脏格 / itemid 叠脏格 ----------
         entries, nat_rows = [], []
@@ -548,7 +571,7 @@ def main():
                 pass
             seq += 1
             # 该格是否也被注入器改过 valuenum？
-            had_inj = L in set(val_upd)
+            had_inj = L in val_upd_set
             dirty = raw_val
             if had_inj:
                 # 该格既是 MIMIC 原生错误格，又被注入器叠了一层脏值。

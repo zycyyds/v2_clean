@@ -191,14 +191,27 @@ def main():
         srep["log_native_entries"] = n_nat
 
         # ---------- ①b `value` 文本列 == `valuenum` ----------
-        # 按 key 定位 raw 行（i48 的 log 行号不是 reference 行号）
-        want_keys = {key_of_log_row(r): int(r["raw_row_index"]) for r in nat}
+        # ⚠️ **必须按 (key, valuenum == 原生错值) 定位那一行**，不能只按 key：
+        #    注入器在这 11 个格上**造了孪生行**（duplicate_row + 把 valuenum 改成
+        #    -999 / ×100）⇒ 同一个 key 在 raw 里有两行；按 key 取「最后一行」
+        #    会撞上孪生行 ⇒ 误报「形态错」。
+        want_keys = {}
+        for r in nat:
+            want_keys.setdefault(key_of_log_row(r), r.get("mimic_native_value", ""))
         c = Counter()
+        seen = set()
         with (sp / "raw" / CE).open(newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f):
                 k = key_of(r)
-                if k not in want_keys:
+                nv = want_keys.get(k)
+                if nv is None:
                     continue
+                # 原生格那一行：key 相同 且 valuenum == 原生错值
+                if not same_value(r.get("valuenum", ""), nv):
+                    continue
+                if k in seen:
+                    continue
+                seen.add(k)
                 v = fnum(r.get("valuenum")); val = fnum(r.get("value"))
                 if val is None:
                     c["value 非数值"] += 1
@@ -207,9 +220,11 @@ def main():
                 else:
                     c["value != valuenum（形态错！）"] += 1
         print("     分布: %s" % dict(c))
-        check(c["value != valuenum（形态错！）"] == 0,
+        check(c["value != valuenum（形态错！）"] == 0 and c["value 非数值"] == 0
+              and len(seen) == len(nat),
               "①b 每个原生格，raw 的 value 文本列都 == valuenum（与真实 MIMIC 原生错误同构）")
         srep["value_form"] = dict(c)
+        srep["value_form_located"] = len(seen)
 
         # ---------- ⑤ log 行号 ↔ raw 行号 ↔ reference 行 对齐 ----------
         # 用 key 在 reference 里定位，核对 reference 的值 == 修复值
