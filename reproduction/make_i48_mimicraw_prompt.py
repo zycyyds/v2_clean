@@ -36,21 +36,19 @@ A_JUDGE = "### 怎么判：查「生理不可能区间」"
 A_JUDGE_NEW = "### 类 1：查「生理不可能区间」（只对这 20 个 itemid 生效）"
 A_REPAIR = "### 怎么修：用**该患者自己**该测量项的中位数"
 A_NATIVE_HEAD = "## 新增错误类：MIMIC 自身的原生错误（不是注入器造成的）"
-A_MAGNITUDE = "- train: 约 "
+A_MAGNITUDE = ("- train: 约 ", "- validation: 约 ", "- 最终测试集: 约 ")
 A_TAIL = "### 推导与修正流程"
 
 ALIAS_SECTION = """## ⚠️ 另外：`itemid` 列上还有一批 **CareVue 别名注入**（**key 列**，不改就大面积键对不上）
 
-{ALIAS_N}
-
 raw 的 `itemid` 被改成了 `992{{2|3}}XXXX` 形式 —— 例如 `220045` → `99220045` / `99230045`。
-**实测 {ALIAS_N} 条（{ALIAS_PCT}）全部符合**「`992` + (2 或 3) + 原 itemid 末 4 位」这条规则
+**test 分片上实测有 {ALIAS_N} 条（占注入错误 {ALIAS_PCT}）**{ALIAS_VERIFY}
 ⇒ 还原方式：`原 itemid = "2" + alias[3] + alias[-4:]`
 （`alias[3]` 是原 itemid 的**第三位**，`alias[-4:]` 是**末四位**；把前两位 `99` 换成 `2`）。
 
 ⚠️ **这是 key 列上的错误 ⇒ 必须在「去重」之前修**（去重跑在修 key 之前的话，
 修好的行会和别的行撞成重复，或者反过来把该留的行删掉）。
-⚠️ `220045` / `220045` 这类**长得像 itemid 的码**在 `valuenum` 列里是哨兵错误码（见下一节），
+⚠️ `220045` / `227466` 这类**长得像 itemid 的码**在 `valuenum` 列里是哨兵错误码（见下一节），
 在 `itemid` 列里才是 itemid —— 别搞混。
 
 """
@@ -90,10 +88,12 @@ def fmt(n):
 def find_magnitude_block(text: str):
     """定位量级三行（train / validation / 最终测试集）。"""
     lines = text.split("\n")
-    idx = [i for i, l in enumerate(lines) if l.startswith(A_MAGNITUDE)]
-    if len(idx) < 3:
-        raise SystemExit("FATAL: 找不到量级三行（找到 %d 行）" % len(idx))
-    # 三行连续
+    idx = []
+    for pref in A_MAGNITUDE:
+        hit = [i for i, l in enumerate(lines) if l.startswith(pref)]
+        if len(hit) != 1:
+            raise SystemExit("FATAL: 量级行 %r 命中 %d 次" % (pref, len(hit)))
+        idx.append(hit[0])
     if idx[1] != idx[0] + 1 or idx[2] != idx[1] + 1:
         raise SystemExit("FATAL: 量级三行不连续：%s" % idx)
     return idx[0], idx[2]
@@ -174,8 +174,17 @@ def main():
     alias_n = sub.get("chart_itemid_alias_split", 0)
     alias_total = manifest["splits"]["test"].get("actual_errors", 0) or 1
     alias_pct = 100.0 * alias_n / alias_total
+    # 规则符合率由 i48_alias_verify.py 实测（不写死「100%」这种没验证的话）
+    verify = ""
+    vf = Path(args.dataset) / "i48_alias_verify.json"
+    if vf.is_file():
+        v = json.loads(vf.read_text(encoding="utf-8"))
+        if v.get("n"):
+            verify = ("；实测其中 **%s 条（%.1f%%）**能被「`2` + alias[3] + alias[-4:]」"
+                      "还原成一个真实存在的 itemid"
+                      % (fmt(v["rule_ok"]), 100.0 * v["rule_ok"] / v["n"]))
     alias = ALIAS_SECTION.format(
-        ALIAS_N=fmt(alias_n), ALIAS_PCT="%.1f%%" % alias_pct)
+        ALIAS_N=fmt(alias_n), ALIAS_PCT="%.1f%%" % alias_pct, ALIAS_VERIFY=verify)
     text = text.replace(A_NATIVE_HEAD, alias + A_NATIVE_HEAD, 1)
 
     Path(args.out).write_text(text, encoding="utf-8")
