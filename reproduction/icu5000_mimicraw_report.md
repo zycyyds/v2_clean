@@ -239,7 +239,7 @@ prompt 里点名这两个就够了（不需要再加第三个）。
 
 ---
 
-## 4. 跑分结果（1.6pct 档）
+## 4. 跑分结果（1.6pct 档为主，4.7pct 档见 §4.6）
 
 > 跑批时间：2026-11-17 21:5x → 2026-11-18 02:xx（val 7 轮约 50 分钟 + test 重放与打分约 35 分钟）
 > 一句话：**2,450 格 MIMIC 原生错误，agent 修对 2,431 格（99.2%）、改错 0 格**；
@@ -361,6 +361,88 @@ Det 0.9991 说明**几乎全检测到了**；b_wrong 451,758 是「知道错了�
 ⇒ **这一项与 prompt 无关**（三档 prompt 的这一段一字不差）⇒ 是数据本身的可判定性问题，
 不是 agent 能力差异。
 
+### 4.6 4.7pct 档的跑分结果
+
+跑批时间：2026-11-18 10:13 → 12:40（val 8 轮约 62 分钟 + test 重放与打分约 30 分钟）。
+
+| | 1.6pct | **4.7pct** |
+|---|---|---|
+| val composite | **0.914914**（7 轮） | **0.894277**（**8 轮**，patience 收尾） |
+| val 逐轮 | 0 → 0.903684 → 0.911372 → **0.914914**(最优) → ×3 不涨 | 0 → 0.869399 → 0.878315 → 0.879787 → **0.894277**(最优) → ×3 不涨 |
+| val 状态 | `SUCCESS_REPRODUCIBLE` | `SUCCESS_REPRODUCIBLE`（独立重放一致 0.894277） |
+| test composite | **0.899143** | **0.827158** |
+| test 状态 | `SUCCESS` / `test_execution_count=1` | `SUCCESS` / `test_execution_count=1` / `replay_status=SUCCESS` |
+| val → test 落差 | 0.0158 | **0.0671** |
+
+⚠️ **两档的 round 1 都是 0.000000，且原因是同一个**：
+`submission_error: "ValueError: submission result_root must be a dedicated subdirectory"`
+—— agent 把 `result_root` 写成 `"."`，harness 要求必须是**独立子目录**，
+于是 13 个文件全被判 `missing_file` ⇒ 0 分。
+⇒ **这不是回归，是 harness 提交格式的固定坑**（两档同构，K29 档也需另查）。
+
+⇒ **4.7pct 的 val→test 落差（0.0671）是 1.6pct（0.0158）的 4.2 倍**：
+4.7pct 的 test 切片比 1.6pct 多 410 万行 / 4,500 万 cell，且注入层里
+「真值不可推断」型错误（inputevents 的 amount/endtime、outputevents 的 charttime）占比更高
+⇒ 泛化到更大更脏的 test 切片时更吃力。
+
+**agent 独立推导出的 15 条错误规则**（`train_analysis.json`）里，
+**E15 = 我们的原生错误规则**（哨兵码 / 越界 + 偏离该患者该项可用读数中位数 >20%
+⇒ 用中位数修复），与我们的 R2 一致；
+E1 别名规则 `"2"+alias[3]+alias[-4:]` 与实测 100% 吻合。
+
+### 4.7 🎯 4.7pct 的 MIMIC 原生错误格（2,174 格）
+
+| 判定 | numeric 口径 | string 口径 |
+|---|---:|---:|
+| **b_clean（修对）** | **2,120（97.5%）** | **2,120（97.5%）** |
+| b_wrong（改错） | **12** | 12 |
+| b_dirty（没动） | **0** | 0 |
+| b_missing（缺行） | 42（1.9%） | 42（1.9%） |
+
+⇒ **两口径逐项相同** ⇒ 原生层**没有写法税**（与注入层不同）。
+⇒ **b_dirty = 0**：4.7pct 的 agent 没有「放着脏值不管」的格子 —— 要么改、要么改错、要么整行丢。
+⇒ 按 itemid：CVP 220074 764/782、动脉平均压 220052 664/682、220180 160/166、
+220050 98/102、220051 93/97、223762 58/59；
+**哨兵码类 227465 (15) + 227467 (15) = 30 格全部修对**。
+
+### 4.8 ⭐ 两档的**交集口径**跨档对比（2,059 格 —— 唯一严格可比的原生修复率）
+
+> **为什么必须用交集**：两档的原生错误**候选层**完全相同（reference 是同一份干净 MIMIC，
+> 注入器只改 raw），但**登记层格数不同**（2,450 vs 2,174）—— 差别来自
+> 「itemid 也被注入器改过」的格被划归注入层（141 vs 417）。
+> ⇒ 直接比「原生修复率」是**分母不同**的比法；严格可比只看两档都登记的交集格。
+> 对齐键：reference 行号（两档 reference 相同 ⇒ 行号可比）；
+> 交集上两档的修复值**逐格完全一致**（`intersect_repaired_mismatch = 0`）。
+
+| 判定（交集 2,059 格） | 1.6pct | 4.7pct |
+|---|---:|---:|
+| **b_clean（修对）** | **2,043（99.2%）** | **2,008（97.5%）** |
+| b_wrong（改错） | **0** | 12 |
+| b_dirty（没动） | 4 | **0** |
+| b_missing（缺行） | 12 | 39 |
+
+**逐格一致性矩阵**：
+
+| | 4.7pct 修对 | 4.7pct 没修对 |
+|---|---:|---:|
+| **1.6pct 修对** | **1,992（96.7%）** | 51 |
+| **1.6pct 没修对** | 16 | **0** |
+
+⇒ **没有一格是两档都没修对的**（0 格）⇒ 两档的失败模式是**互补**的：
+1.6pct 输在「**放着不动**（b_dirty 4）+ 缺行 12」，
+4.7pct 输在「**改错 12 + 缺行 39**」。
+⇒ 两档的**总分差 1.7pp 全部来自缺行（12 vs 39）**，修对率本身几乎一样。
+⇒ 分歧格的 itemid 集中在 CVP（220074, 20 格）、动脉平均压（220052, 21 格）、
+220180（6）、220051（4）、220050（4）、224828（3）。
+
+**复现**：
+```bash
+bash scripts/score_icu5000_mimicraw_cross_tier.sh <suffix>
+# 底层：reproduction/icu5000_native_cross_tier.py
+```
+
+
+
 ---
 
 ## 5. 校验
@@ -442,14 +524,20 @@ icu5000 的基础 prompt（`eval_handoff/prompts/icu5000_{1.6pct,4.7pct}_val_pro
 - [x] **枚举型 itemid 全量扫描**（2,112 种 itemid 分三段覆盖）⇒ 真正的枚举型只有
       230033 / 229864 两个，与 K29 一致 ⇒ prompt 不用改
 - [x] **两档交集格分析** ⇒ 2,059 格完全同源，跨档比修复率的分母用它
+- [x] **两档 harness 跑分**（val + test 纯重放 + 错误级指标 + 原生格重判 + 交集跨档对比）
+      1.6pct：val 0.914914 / test 0.899143；4.7pct：val 0.894277 / test 0.827158
 - [x] 报告与台账
 
 **未做**
-- [ ] harness 跑分（本次 scope 只到「可直接跑」的产物，跑分留待后续）
+- [ ] 4.7pct 的 `goldold` 口径（用户只要 `old`＝B 完全老口径；该档已跑 2h20m 未出，主动终止）
+- [ ] `chartevents` 的 **b_dirty 按注入 subtype 归因**（诊断用，解释 4.7pct 的 263 万格 b_dirty；
+      已跑 2 小时受磁盘 IO 限制，见 §4.6 的机理推断）
 
-**下一步该跑什么**
+**复现**
 ```bash
-# 跑 harness（scope 之外）
 bash scripts/prepare_icu5000_mimicraw_run.sh 16      # 或 47
-# → 之后接 eval_handoff 的 val harness（需要新加一个 icu5000_mimicraw profile）
+TIER=16 bash scripts/run_val_harness_icu5000_mimicraw.sh v1
+TIER=16 bash scripts/run_test_harness_icu5000_mimicraw.sh
+bash scripts/score_icu5000_mimicraw_four_calibers.sh 16
+bash scripts/score_icu5000_mimicraw_cross_tier.sh
 ```
