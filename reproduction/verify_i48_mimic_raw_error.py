@@ -34,6 +34,11 @@ from pathlib import Path
 
 csv.field_size_limit(2 ** 31)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_i48_mimic_raw_error as BUILDER  # noqa: E402
+
+DI = BUILDER.load_di(BUILDER.D_ITEMS)
+
 CE = "icu/chartevents.csv"
 CE_KEY = ["subject_id", "hadm_id", "stay_id", "charttime", "itemid"]
 
@@ -140,6 +145,11 @@ def main():
 
         # ---------- ② reference 里残留的原生错误格 ----------
         # 残留 = 没被修掉的原生错误格（应当只有「真值不可判定」的）
+        # ⚠️ 必须先建集合再查：test 的 reference 有 1277 万行，
+        #    逐行去遍历 1264 条溯源记录 = 160 亿次比较 ⇒ 跑不出来。
+        nat_pairs = {}
+        for r in nat:
+            nat_pairs.setdefault(key_of_log_row(r), r.get("mimic_native_value", ""))
         rem = 0
         rem_keys = set()
         with (sp / "reference" / CE).open(newline="", encoding="utf-8") as f:
@@ -147,15 +157,11 @@ def main():
                 v = fnum(r.get("valuenum"))
                 if v is None or v == 0:
                     continue
-                # 溯源表里登记过的 (key, 原生错值) ⇒ 若 reference 里还是那个值 ⇒ 残留
                 k = key_of(r)
-                for nr in nat:
-                    if key_of_log_row(nr) == k and \
-                            same_value(nr.get("mimic_native_value", ""),
-                                       r.get("valuenum", "")):
-                        rem += 1
-                        rem_keys.add(k)
-                        break
+                nv = nat_pairs.get(k)
+                if nv is not None and same_value(nv, r.get("valuenum", "")):
+                    rem += 1
+                    rem_keys.add(k)
         print("     reference 残留未修的原生错误格: %d" % rem)
         print("       （应当 == 该患者该项**无可用读数**、真值不可判定而保持原样的那批）")
         check(True, "② 残留原生错误格计数已采集（%d）" % rem)
@@ -229,6 +235,8 @@ def main():
         srep["repaired_value_matches"] = ok
 
         # ---------- ⑤b 用源数据集 reference 独立重算 R2 中位数 ----------
+        # ⚠️ 池子口径必须与构建器**完全一致**：可用读数 = 不是哨兵码、不是越界值、
+        #    且 ≠ 0。直接拿构建器的 classify() 来判，避免两边口径漂移。
         need_groups = {(r.get("subject_id", ""), r.get("itemid", "")) for r in nat}
         pools = defaultdict(list)
         src_rows = {}
@@ -240,6 +248,13 @@ def main():
                     v = fnum(r.get("valuenum"))
                     if v is None or v == 0:
                         continue
+                    try:
+                        iti = int(it)
+                    except (TypeError, ValueError):
+                        continue
+                    cat, _ = BUILDER.classify(DI, iti, v)
+                    if cat is not None:
+                        continue          # 哨兵码 / 越界 ⇒ 不是「可用读数」
                     pools[g].append(v)
                     src_rows[key_of(r)] = r.get("valuenum", "")
         recomputed = 0
