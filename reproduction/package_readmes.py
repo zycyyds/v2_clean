@@ -39,7 +39,7 @@ def entries():
         for sub in sorted(d.iterdir()):
             if not sub.is_dir():
                 continue
-            s = load(sub / "summary.json")
+            s = load(sub / "评分" / "summary.json") or load(sub / "summary.json")
             if s:
                 out.append((dz, sub.name, s))
     return out
@@ -59,6 +59,17 @@ def write_entry_readme(d, s):
     if s.get("test_composite") is not None:
         L += ["| **test composite** | %s |" % s["test_composite"]]
     L.append("")
+    # 结果包清单
+    pkg = d / "结果包"
+    if pkg.is_dir():
+        fs = sorted(f for f in pkg.rglob("*") if f.is_file())
+        total = sum(f.stat().st_size for f in fs)
+        L += ["## 结果包（agent 实际产出的清洗结果）", "",
+              "共 **%d 个文件 / %.1f MB**，目录结构原样保留（可原样重放）。" % (len(fs), total / 1e6),
+              "", "| 文件 | 大小 |", "|---|---:|"]
+        for f in fs[:40]:
+            L.append("| `%s` | %.1f MB |" % (f.relative_to(pkg), f.stat().st_size / 1e6))
+        L.append("")
     if s.get("calibers"):
         L += ["## 七口径错误级指标（test）", "",
               "| 口径 | 开关组合 | Det F1 | Rep F1 | b_clean | b_wrong | b_dirty | b_missing |",
@@ -88,11 +99,16 @@ def write_entry_readme(d, s):
         for k, v in s["files"].items():
             L.append("- **%s**：%s" % (k, json.dumps(v, ensure_ascii=False)))
         L.append("")
-    L += ["## 文件说明", "",
-          "- `error_metrics_<口径>.json` —— 错误级指标（逐文件明细 + 全局汇总）",
-          "- `native_cells_*.json` —— MIMIC 原生错误格专项判定",
-          "- `score_report.json` / `run_report.json` / `val_run_report.json` —— harness 的评分与运行报告",
-          "- `summary.json` —— 本目录关键数字的汇总（机器可读，含每个口径的源文件路径）", ""]
+    sc = d / "评分"
+    if sc.is_dir():
+        L += ["## `评分/` 里有什么", ""]
+        for f in sorted(sc.iterdir()):
+            if f.is_file():
+                L.append("- `%s`" % f.name)
+        L.append("")
+    L += ["## 说明", "",
+          "- `结果包/` —— **agent 产出的清洗结果**（csv + submission.json），目录结构原样保留；",
+          "- `评分/` —— 评分与统计产物（错误级七口径、原生格判定、harness 报告），不参与重放。", ""]
     (d / "README.md").write_text("\n".join(L), encoding="utf-8")
 
 
