@@ -315,8 +315,106 @@ diff raw↔gold 得到的）⇒ 它的 old 口径没有这一项。
 
 ---
 
-## 8. 待办
+## 8. 跑分结果（1.6pct）
 
-- [ ] **跑 agent**（用户明确要求「先不跑」）⇒ val / test / 七口径 / 原生格
-- [ ] 两档原生层的**交集口径**跨档对比（两档 native 层已逐格同源 ⇒ 直接比即可，
-      但跑完才能有分子）
+### 8.1 主结果
+
+| 项 | 值 |
+|---|---|
+| **val composite** | **0.895719**（最佳轮 = 第 3 轮；第 1/2/3 轮 = 0.894668 / 0.895131 / 0.895719） |
+| **val 独立重放** | **0.895719**（完全复现 ⇒ `SUCCESS_REPRODUCIBLE`） |
+| **test composite** | **0.896069**（`status=SUCCESS`、`replay_status=SUCCESS`、`test_execution_count=1`） |
+| test 结果包 | `i48_agent_run/experiments/i48_mimicraw2_1p6_test_seed666_v1/host/test_result_package`（chartevents 12,768,205 行，比 reference 少 **214 行 / 0.0017%**） |
+| **原生错误格（1,264）** | b_clean **1,240（98.1%）** / b_wrong **0** / b_dirty 22 / b_missing 2 |
+
+> ⚠️ **val 跑到第 6 轮时撞上 provider 侧的流式分块错误**（MiniMax 报
+> `ValueError: Separator is found, but chunk is longer than limit`，连接零字节 10.5 小时），
+> 后续轮次无法完成 ⇒ 用**驱动自带的兜底收尾** `finalize()`（= harness 自己的
+> `except BaseException` 分支）跑完独立重放并冻结快照。
+> ⇒ **val 的 status 仍是 `SUCCESS_REPRODUCIBLE`**（独立重放真跑了一遍、分数逐位复现），
+> 但只覆盖了前 5 轮记录的最好结果，不是 20 轮跑满。
+
+### 8.2 七口径错误级指标（test）
+
+| 口径 | 值比对 | key 还原 | 排除 gold 外行 | 判据 | Det F1 | Rep F1 | b_clean | b_wrong | b_dirty | b_missing |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| **v29** | 数值 | ✅ | ✅ | log | **0.998638** | **0.907893** | 3,855,349 | 491,244 | 5,266 | 2,458 |
+| str | 纯字符串 | ✅ | ✅ | log | 0.996127 | 0.763085 | 3,055,882 | 1,257,052 | 38,925 | 2,458 |
+| oldsw | 数值 | ❌ | ❌ | log | 0.733084 | 0.716098 | 2,645,012 | 87,809 | 5,083 | **2,750,319** |
+| **old（完全老口径）** | 纯字符串 | ❌ | ❌ | log | **0.729628** | **0.594346** | 2,003,505 | 697,365 | 37,034 | **2,750,319** |
+| goldv29 | 数值 | ✅ | ✅ | gold | 0.998638 | 0.907893 | 3,855,349 | 491,244 | 5,266 | 2,458 |
+| goldstr | 纯字符串 | ✅ | ✅ | gold | 0.999251 | **0.908271** | 3,854,401 | 492,213 | 5,245 | 2,458 |
+| goldold | 纯字符串 | ❌ | ❌ | gold | 0.733555 | 0.716555 | 2,645,012 | 87,830 | 5,062 | **2,750,319** |
+
+三个可验证的一致性：
+
+1. **v29 与 goldv29 逐位相同**（Det/Rep/b_clean 全一致）⇒ gold 判据没有改变数值口径的语义；
+2. **goldstr 的 Rep（0.908271）比 str（0.763085）高 0.145** ⇒ 差额全是「写法税」
+   （`natural_noise` **3,742,039** 格：log 写 `'116'`、gold 写 `'116.0'`）；
+3. **old / oldsw 的 b_missing 正好 2,750,319** ⇒ 与 §4.4 独立量化的结构性惩罚
+   （cohort 筛掉的行 + key 被注入的行）**完全对上** ⇒ old 口径在 i48 上的 Det/Rep
+   被系统性压低是**口径问题，不是 agent 问题**。
+
+### 8.3 ⭐ 原生错误层：**越界类几乎全修好，哨兵码类几乎全漏**
+
+| 类 | 格数 | 修对 | 率 |
+|---|---:|---:|---:|
+| **T2_impossible（生理不可能区间）** | 1,241 | **1,239** | **99.8%** |
+| **T1_sentinel（哨兵占位码）** | 23 | **1** | **4.3%** |
+
+⇒ 22 格没修的，**错值清一色 `999999.0`**（`prothrombin time` 7、`inr` 7、
+`creatinine`/`glucose`/`bun`/`ph`/`base excess`/`o2 pressure`/`co2 pressure`/`specific gravity` 各 1）。
+
+**归因（两条独立证据链）**：
+
+| split | 原生层构成 | 注入层哨兵码取值 |
+|---|---|---|
+| **train** | T2 **9** 格、T1 **0** 格 | `-1` / `9999` / `-888` / `-999`（**不含 999999**） |
+| **validation** | T2 **11** 格、T1 **0** 格 | 同上 |
+| **test** | T2 1,241 + T1 23（**全是 999999**） | — |
+
+① **train/validation 里一个原生哨兵码样本都没有**（i48 的 train 是 15.7 万行的小分片，
+test 是 1,702 万行 ⇒ 原生层密度相同但样本量差 100 倍）⇒ agent 没有任何
+「MIMIC 自己录错的哨兵码」可学；
+② **注入层在 train 里用的哨兵码只有 -1/-888/-999/9999** ⇒ agent 学到的是
+「这几个具体值脏」，不是「哨兵码这一类」⇒ 到 test 见到 999999 就不认了。
+
+⇒ 而 T2 越界类**不需要 train 样本**（物理常识 + label 文本即可推出区间）⇒ 修得极好。
+
+⚠️ **这指向数据集设计的两个可改点**（不是 agent 的锅）：
+- **train/validation 分片应放大**（对齐 icu5000：train 分片大 46 倍），
+  让原生错误类在 train 里就有足够样本；
+- 或者在 prompt 里把哨兵码**按类**讲清（含 999999），并强调「不是一个固定清单」。
+
+---
+
+## 9. 待办
+
+- [x] **跑 agent（1.6pct）** ⇒ val 0.895719 / test 0.896069 / 七口径 / 原生格 1,240（98.1%）✅
+- [ ] **4.7pct 档跑 agent**（第 1 次尝试撞上 provider 流式分块错误、第 1 轮未完成 ⇒ 无快照可用；
+      已归档为 `…_attempt1_provider_hang`，第 2 次尝试重跑中）
+- [ ] 两档原生层的**交集口径**跨档对比（1,231 格；脚本 `reproduction/i48_native_cross_tier.py` 已就绪，
+      4.7pct 跑完后即可出）
+- [ ] 数据集设计改进（见 §8.3）：train/validation 分片放大 + prompt 的哨兵码按类讲清
+- [ ] icu5000 4.7pct 的 gold 探针在**严格版**（全量 cell 字典）下的判定复核
+      —— 先前测到的「未定」是我测试脚本按条目采样导致某些行缺 key 列还原信息，
+      正式评分器用全量字典不受影响；直连诊断也确认 icu5000 的 reference 行数
+      （32,315,301）== log 行空间上限+1 ⇒ rowid 路径本来就是对的。
+
+---
+
+## 10. 本轮改动清单（评分器 / 工具）
+
+| 文件 | 改了什么 |
+|---|---|
+| `score_only/error_metrics/compute_error_metrics.py` | ① `probe_gold_mode()`：新增「gold 取值空间」数据探测（rowid / key 两种模式，判定结果写进输出 JSON 的 `gold_probe`）<br>② `clean_key_of()` + `DB.rows_with_key()`：key 模式下的 gold 行定位<br>③ 探针判据改为**比 key**（低基数列上「列值相等」会假命中） |
+| `reproduction/eval_i48_native_cells.py`（新增） | i48 专用原生格判定器（按干净 key 查；带 any 口径 + 歧义统计） |
+| `reproduction/i48_native_cross_tier.py`（重写） | 跨档交集口径对比（1,231 格） |
+| `scripts/score_i48_mimicraw_four_calibers.sh` | 原生格重判改调 i48 专用版（icu5000 版对 i48 不成立） |
+
+**回归验证**：
+
+- icu5000 1.6pct / 4.7pct ⇒ gold 探针判 **rowid** ⇒ 与改动前**逐字节一致** ✅
+- i48 mimicraw2 1.6pct ⇒ 七张表判 **key**（patients 除外 ⇒ rowid，正确）✅
+- i48 冒烟（agent 输出 = reference）：v29 与 goldv29 **完全一致**（Det 1.000000 / Rep 0.998710，
+  b_clean 4,347,329 / b_dirty 0 / b_missing 0）⇒ 修复前的 rowid 路径会多出 10 个假 b_dirty ✅
