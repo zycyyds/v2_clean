@@ -197,8 +197,11 @@ Usage: sandbox-exec [options] command [args]
 
 | 位置 | 内容 |
 |---|---|
-| `ceshi1/I48/4.7pct_我们的agent_pi+val_mimicraw2/结果包/` | 13 个 csv（agent 实际产出，与 1.6pct 目录结构一致） |
-| `ceshi1/00_三维度横向对比.md` | i48 4.7pct 的 composite / str·oldsw·goldv29 / 原生格全部填入 |
+| `i48_agent_run/experiments/i48_mimicraw2_4p7_test_seed666_v1/host/test_result_package` | 13 个 csv（agent 实际产出，与 1.6pct 目录结构一致）<br>⚠️ **按要求先不放进 `ceshi1` 做对比** ⇒ 三维度表里不含这一档 |
 | `runs/i48_mimicraw2_47_agent_error_metrics_*_run20261119_4p7.json` | 七个口径 |
 | `runs/i48_mimicraw2_47_agent_native_cells_run20261119_4p7_{numeric,string}.json` | 原生格 |
 | `runs/i48_mimicraw2_native_cross_tier_16_vs_47.json` | 两档交集对比 |
+
+> 要把 4.7pct 加回 `ceshi1` 对比时：`reproduction/build_final_table.py` 的 `SPEC` 里
+> 取消注释 `I48/4.7pct_我们的agent_pi+val_mimicraw2` 那一段 + 把结果包拷进
+> `ceshi1/I48/4.7pct_我们的agent_pi+val_mimicraw2/结果包/` 即可（数据都在，一分钟能恢复）。

@@ -42,9 +42,12 @@ SPEC = [
     ("I48/1.6pct_我们的agent_pi+val_mimicraw2", "我们", "1.6pct", "mimicraw",
      "i48_mimicraw2_16_agent", WT / "i48_agent_run/experiments/i48_mimicraw2_1p6_test_seed666_v1/host/score_report.json"),
     ("I48/1.6pct_cc基线_ClaudeCode", "cc", "1.6pct", "raw(无原生层)", None, None),
-    # i48 4.7pct（本次新跑）
-    ("I48/4.7pct_我们的agent_pi+val_mimicraw2", "我们", "4.7pct", "mimicraw",
-     "i48_mimicraw2_47_agent", WT / "i48_agent_run/experiments/i48_mimicraw2_4p7_test_seed666_v1/host/score_report.json"),
+    # i48 4.7pct：已跑完，但按要求**先不放进 ceshi1 做对比** ⇒ 不进 SPEC。
+    # 数据仍在：results = i48_agent_run/experiments/i48_mimicraw2_4p7_test_seed666_v1/host/test_result_package
+    #          分数   = runs/i48_mimicraw2_47_agent_{error_metrics_*,native_cells}_run20261119_4p7.json
+    # 要加回对比时，把下面这段取消注释即可：
+    # ("I48/4.7pct_我们的agent_pi+val_mimicraw2", "我们", "4.7pct", "mimicraw",
+    #  "i48_mimicraw2_47_agent", WT / "i48_agent_run/experiments/i48_mimicraw2_4p7_test_seed666_v1/host/score_report.json"),
 ]
 
 BASELINE_COMP = {
