@@ -1,0 +1,277 @@
+{
+ "220045": {
+  "n": 8,
+  "median": 9.0,
+  "label": "heart rate"
+ },
+ "220050": {
+  "n": 43,
+  "median": 31.0,
+  "label": "arterial blood pressure systolic"
+ },
+ "220051": {
+  "n": 50,
+  "median": 16.0,
+  "label": "arterial blood pressure diastolic"
+ },
+ "220052": {
+  "n": 175,
+  "median": 16.0,
+  "label": "arterial blood pressure mean"
+ },
+ "220061": {
+  "n": 8,
+  "median": 246.5,
+  "label": "pulmonary artery pressure mean"
+ },
+ "220074": {
+  "n": 227,
+  "median": 277.0,
+  "label": "central venous pressure"
+ },
+ "220179": {
+  "n": 23,
+  "median": 36.0,
+  "label": "non invasive blood pressure systolic"
+ },
+ "220180": {
+  "n": 128,
+  "median": 17.0,
+  "label": "non invasive blood pressure diastolic"
+ },
+ "220181": {
+  "n": 18,
+  "median": 18.0,
+  "label": "non invasive blood pressure mean"
+ },
+ "220210": {
+  "n": 3,
+  "median": 210.0,
+  "label": "respiratory rate"
+ },
+ "220224": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "arterial o2 pressure"
+ },
+ "220227": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "arterial o2 saturation"
+ },
+ "220228": {
+  "n": 5,
+  "median": 999999.0,
+  "label": "hemoglobin"
+ },
+ "220235": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "arterial co2 pressure"
+ },
+ "220274": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "ph (venous)"
+ },
+ "220545": {
+  "n": 4,
+  "median": 999999.0,
+  "label": "hematocrit (serum)"
+ },
+ "220546": {
+  "n": 4,
+  "median": 999999.0,
+  "label": "wbc"
+ },
+ "220581": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "amylase"
+ },
+ "220587": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "ast"
+ },
+ "220602": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "chloride (serum)"
+ },
+ "220615": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "creatinine (serum)"
+ },
+ "220621": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "glucose (serum)"
+ },
+ "220635": {
+  "n": 1,
+  "median": 999999.0,
+  "label": ""
+ },
+ "220644": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "alt"
+ },
+ "220645": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "sodium (serum)"
+ },
+ "223679": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "tco2 (calc) venous"
+ },
+ "223762": {
+  "n": 15,
+  "median": 98.2,
+  "label": "temperature celsius"
+ },
+ "223830": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "ph (arterial)"
+ },
+ "224688": {
+  "n": 2,
+  "median": 1034.5,
+  "label": "respiratory rate (set)"
+ },
+ "224689": {
+  "n": 1,
+  "median": 160.0,
+  "label": "respiratory rate (spontaneous)"
+ },
+ "224828": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "arterial base excess"
+ },
+ "225612": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "alkaline phosphate"
+ },
+ "225624": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "bun"
+ },
+ "225625": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "calcium non-ionized"
+ },
+ "225667": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "ionized calcium"
+ },
+ "225668": {
+  "n": 3,
+  "median": 999999.0,
+  "label": "lactic acid"
+ },
+ "225672": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "lipase"
+ },
+ "225674": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "mixed venous o2% sat"
+ },
+ "225677": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "phosphorous"
+ },
+ "225690": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "total bilirubin"
+ },
+ "225698": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "tco2 (calc) arterial"
+ },
+ "226534": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "sodium (whole blood)"
+ },
+ "226536": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "chloride (whole blood)"
+ },
+ "226537": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "glucose (whole blood)"
+ },
+ "226540": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "hematocrit (whole blood - calc)"
+ },
+ "227440": {
+  "n": 1,
+  "median": 999999.0,
+  "label": ""
+ },
+ "227442": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "potassium (serum)"
+ },
+ "227443": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "hco3 (serum)"
+ },
+ "227457": {
+  "n": 3,
+  "median": 999999.0,
+  "label": "platelet count"
+ },
+ "227464": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "potassium (whole blood)"
+ },
+ "227465": {
+  "n": 6,
+  "median": 999999.0,
+  "label": "prothrombin time"
+ },
+ "227466": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "ptt"
+ },
+ "227467": {
+  "n": 6,
+  "median": 999999.0,
+  "label": "inr"
+ },
+ "227471": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "specific gravity (urine)"
+ },
+ "227686": {
+  "n": 1,
+  "median": 999999.0,
+  "label": "central venous o2% sat"
+ }
+}
