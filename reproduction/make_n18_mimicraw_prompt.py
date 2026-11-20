@@ -30,6 +30,7 @@ BUILDER_PATH = HERE / "build_n18_mimic_raw_error.py"
 # ── 锚点（必须与基线 prompt 原文完全一致，否则报错）──
 A_MAGNITUDE = ("- train: 约 ", "- validation: 约 ", "- 最终测试集: 约 ")
 A_FLOW = "### 推导与修正流程"
+A_CONSTRAINT = "**重要约束**："
 # ⚠️ result_root 的措辞缺口（1.6pct 第 1 轮实测踩到）：基线只说「相对 result_root」，
 #    agent 就写了 "."（= workdir 本身）⇒ harness 判「不是独立子目录」⇒ 本轮 0 分。
 #    ��轮 1 白跑了一整个回合 ⇒ 措辞必须写死。
@@ -364,6 +365,125 @@ PT / INR / Hemoglobin / Hematocrit / WBC / BUN 等）没有「生理不可能区
 
 """
 
+# ── v4：把「两类原生错误」从散文升级成**可执行骨架** ──────────────
+# 实测（1.6pct 第 2 轮）：agent 的日志里「生理不可能」出现 **0 次** ⇒
+# **越界类（T2）整节被跳过**，16 格一格没修；
+# 而哨兵码类（T1）修了 11/15 —— 漏掉的 4 格是**池子分组键用错**
+# （agent 按 (stay_id, itemid) 分组，真值是 (subject_id, itemid)）。
+# ⇒ 散文 + 表格会被忽略，**代码骨架不会**。
+NATIVE_CODE_SECTION = """### ⚠️ 这两类**都必须**实现 —— 附可直接用的实现骨架
+
+⚠️⚠️ **不要只实现哨兵码那一类** —— 越界类和哨兵码类**都要判**。
+（实测教训：只实现哨兵码的那一版，越界类 **16 格一格没修**。）
+
+```python
+# ── MIMIC 原生错误：两类判定 ───────────────────────────────
+# 类 2：哨兵占位码（对**所有** itemid 生效）
+NATIVE_SENTINELS = {-999.0, -998.0, -997.0, -990.0, 9999.0, 99999.0,
+                     999999.0, 9999999.0, 220000.0, 220045.0}
+# 类 1：生理不可能区间（**只对下面这些 itemid 生效**；
+#        值 != 0 且落在区间外 ⇒ 原生错误）
+IMPLAUSIBLE_RANGE = {
+    220045: (20, 300),  220050: (40, 400),  220051: (20, 250),
+    220052: (20, 250),  220059: (0, 150),   220061: (0, 100),
+    220074: (-20, 80),  220179: (40, 400),  220180: (20, 250),
+    220181: (20, 250),  220210: (0, 100),   220562: (8, 200),
+    223762: (25, 45),   224167: (40, 400),  224643: (20, 250),
+    224688: (0, 100),   224689: (0, 100),   224690: (0, 100),
+    227242: (20, 250),  227243: (40, 400),  227466: (8, 200),
+}
+
+
+def repair_native_errors(ce):
+    \"\"\"在**最终干净表**上跑（pipeline 的最后一步）。
+    ⚠️ 池子按 (subject_id, itemid) 分组 —— **不是 (stay_id, itemid)**。
+    \"\"\"
+    ce = ce.copy()
+
+    def as_int(x):
+        try:
+            return int(float(x))
+        except (TypeError, ValueError):
+            return None
+
+    def usable(it, v):
+        if v is None or v == 0:            # 0 不是错误（MIMIC 里 0 = 未测到）
+            return False
+        if v in NATIVE_SENTINELS:         # 哨兵码
+            return False
+        rg = IMPLAUSIBLE_RANGE.get(it)
+        return rg is None or (rg[0] <= v <= rg[1])
+
+    iters = [as_int(x) for x in ce["itemid"]]
+    vals = []
+    for v in ce["valuenum"]:
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            vals.append(None)
+
+    # ① 标出坏格：哨兵码 或 越界（且 != 0）
+    bad = []
+    for i, (it, v) in enumerate(zip(iters, vals)):
+        if it is None or v is None or v == 0:
+            continue
+        if v in NATIVE_SENTINELS:
+            bad.append(i)
+            continue
+        rg = IMPLAUSIBLE_RANGE.get(it)
+        if rg is not None and not (rg[0] <= v <= rg[1]):
+            bad.append(i)
+
+    # ② 池子：同一 (subject_id, itemid) 的所有**可用**读数
+    #    坏格自己被自动剔掉 —— 它的值越界 / 是哨兵码，本来就不"可用"
+    pools = {}
+    for i, r in ce.iterrows():
+        it, v = iters[i], vals[i]
+        if not usable(it, v):
+            continue
+        pools.setdefault((r["subject_id"], it), []).append(v)
+
+    # ③ 用中位数替换
+    n_fixed = 0
+    for i in bad:
+        key = (ce.at[i, "subject_id"], iters[i])
+        pool = pools.get(key)
+        if not pool:
+            continue        # 一个可用读数都没有 ⇒ 真值不可判定 ⇒ 保持原样不动
+        med = float(pd.Series(pool).median())
+        ce.at[i, "valuenum"] = med
+        n_fixed += 1
+    return ce, n_fixed
+```
+
+⚠️ **池子为什么是 (subject_id, itemid) 而不是 (stay_id, itemid)**：
+同一个病人可能有多次住院、多次 ICU 入住。按 stay_id 分组会把**别的 stay 的读数**
+混进池子（或反过来漏掉本 stay 的），中位数就偏了。
+实测：按 (stay_id, itemid) 分组的那一版，有 4 格的修复值是错的。
+⇒ **按 (subject_id, itemid) 分组**。
+
+⚠️ **不要假设 raw 的 `value` 文本列是干净的**：
+- **注入层**（量纲放大、哨兵码）：`value` 记的是干净数、`valuenum` 被改 ⇒ 可以用 `value` 还原；
+- **原生错误层**：MIMIC 把坏数**同时**写进了 `value` 和 `valuenum`（两列一样）
+  ⇒ 原生错误**必须独立判定**（靠区间 / 哨兵码），
+  **靠「`value` 与 `valuenum` 不一致」是发现不了原生错误的**。
+
+"""
+
+CHECKLIST_SECTION = """### ✅ 提交前的自检清单（**逐条核对**，缺一条就别提交）
+
+- [ ] **两类原生错误都实现了**：哨兵码（对所有 itemid）**和** 越界（对上面那 {N_HARD} 个 itemid）
+- [ ] **train 的 {N_T2} 格越界示例全部修好**：{T2_LIST}
+- [ ] **train 的 {N_T1} 格哨兵码示例全部修好**：{T1_LIST}
+- [ ] **train 自检是逐格比对** `icu/chartevents.csv` 的 `valuenum`（按 5 段 key 对齐，
+      逐格列出 raw ≠ reference 的地方），**不是**只看行数 / 聚合统计
+      —— ⚠️ 只看聚合统计会把**整类**错误漏掉（这正是本数据集最容易踩的坑）
+- [ ] **修复池按 (subject_id, itemid) 分组**（不是 stay_id）
+- [ ] 修复值 = 该 (subject_id, itemid) 可用读数的**中位数**（偶数个取中间两个的平均）
+- [ ] 该患者该项**一个可用读数都没有**的坏格**保持原样不动**（真值不可判定）
+
+"""
+
 ALIAS_SECTION = """## ⚠️ 另外：`itemid` 列上还有一批 **CareVue 别名注入**（**key 列**，不改就大面积键对不上）
 
 raw 的 `itemid` 被改成了 `992{{2|3}}XXXX` 形式 —— 例如 `220045` → `99220045` / `99230045`。
@@ -496,9 +616,35 @@ def main():
         ALIAS_VERIFY=alias_verify,
     )
 
+    # ---- ④ 代码骨架 + ⑤ 自检清单（v4）----
+    def render_examples(rows, prefix):
+        """把 train 原生示例按 (itemid, 脏值) 聚合成清单。"""
+        c = Counter()
+        for r in rows:
+            if not r.get("detection_mode", "").startswith(prefix):
+                continue
+            c[(r.get("itemid", ""), r.get("raw_dirty_value", ""))] += 1
+        parts = []
+        for (it, dv), n in sorted(c.items(), key=lambda kv: (int(kv[0][0]), kv[0][1])):
+            parts.append("itemid %s（脏值 %s）%s"
+                         % (it, dv, ("×%d" % n) if n > 1 else ""))
+        return "、".join(parts), sum(c.values())
+
+    t2_list, n_t2 = render_examples(train_rows, "T2")
+    t1_list, n_t1 = render_examples(train_rows, "T1")
+    NATIVE_CODE = NATIVE_CODE_SECTION
+    checklist = CHECKLIST_SECTION.format(
+        N_HARD=len(hard), N_T2=n_t2, N_T1=n_t1,
+        T2_LIST=t2_list, T1_LIST=t1_list)
+
     if A_FLOW not in text:
         raise SystemExit("FATAL: 找不到锚点 %r" % A_FLOW)
-    text = text.replace(A_FLOW, alias + native + A_FLOW, 1)
+    text = text.replace(A_FLOW, alias + native + NATIVE_CODE + A_FLOW, 1)
+
+    # ---- ⑥ 提交前自检清单（放在「重要约束」之前）----
+    if A_CONSTRAINT not in text:
+        raise SystemExit("FATAL: 找不到锚点 %r" % A_CONSTRAINT)
+    text = text.replace(A_CONSTRAINT, checklist + A_CONSTRAINT, 1)
 
     # ---- ⑤ result_root 措辞加固 ----
     if A_SUBMIT not in text:
