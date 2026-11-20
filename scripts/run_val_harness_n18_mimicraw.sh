@@ -37,7 +37,7 @@ esac
 DS="${DS:-$PROJ/datasets/val_views/$VIEW}"
 FULL="${FULL:-$PROJ/datasets/注入错误数据集/n18/$FULLBASE}"
 EXP="${EXP:-$RUN/experiments/${EXPPREFIX}_$SUFFIX}"
-PROMPTV="${PROMPTV:-v3}"
+PROMPTV="${PROMPTV:-v4}"
 PROMPT="${PROMPT:-$WT/eval_handoff/prompts/n18_${TAG}_mimicraw_val_prompt_${PROMPTV}.md}"
 LOG="${LOG:-$RUN/logs/${EXPPREFIX}_$SUFFIX.log}"
 
@@ -77,8 +77,18 @@ echo "=== driver     : $DRIVER"
 echo
 
 cd /tmp
+# ⚠️ SEED_FROM：续跑模式 —— 把上一轮实验的 best_snapshot 灌进新实验的 workdir，
+#    让 agent 从自己上一轮的状态（analysis/ pipeline/ train_analysis.json）继续，
+#    而不是从头重推一遍。换 prompt 版本做 A/B 时用得上。
+# ⚠️ 未设 SEED_FROM 时必须**完全不出现**这个参数（空串会被 env 当成命令名）。
+SEED_ARG=""
+if [ -n "${SEED_FROM:-}" ]; then
+  SEED_ARG="SEED_FROM=$SEED_FROM"
+  echo "=== 续跑模式：seed = $SEED_FROM"
+fi
 conda run -n py311agent2 --no-capture-output env \
   PYTHONPATH="$PROJ" RUN="$RUN" PROMPT_DIR="$WT/eval_handoff/prompts" WT="$WT" \
+  $SEED_ARG \
   python "$DRIVER" "$PROFILE" "$SUFFIX" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
 echo
