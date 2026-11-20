@@ -292,6 +292,18 @@ PROFILES = {
                      / "v2_rawerror_n18_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
     },
+    # N18 4.7pct 版 —— 与 1.6pct 版规则一字未改，只有注入层预设不同。
+    # ⚠️ 密度剖面与 1.6pct 相同（train 2.33% / validation 0.89% / test 4.72%）
+    #    ⇒ validation 比 test 稀疏 5.3 倍，val 上验证过的组级规则未必在 test 上成立。
+    "n18_mimicraw_47": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_47",
+        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v2.md",
+        "exp_prefix": "n18_mimicraw_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test4.7pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
