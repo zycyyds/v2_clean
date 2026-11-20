@@ -35,5 +35,6 @@ k29_agent_run/logs/
 i48_agent_run/experiments/
 i48_agent_run/logs/
 
-# n18 mimicraw 跑批产物（实验目录不入库；**日志入库**当跑分证据，同 icu5000）
+# n18 mimicraw 跑批产物（同 k29 / i48：实验目录与**原始对话日志**都不入库）
 n18_agent_run/experiments/
+n18_agent_run/logs/

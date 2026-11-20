@@ -30,6 +30,18 @@ BUILDER_PATH = HERE / "build_n18_mimic_raw_error.py"
 # ── 锚点（必须与基线 prompt 原文完全一致，否则报错）──
 A_MAGNITUDE = ("- train: 约 ", "- validation: 约 ", "- 最终测试集: 约 ")
 A_FLOW = "### 推导与修正流程"
+# ⚠️ result_root 的措辞缺口（1.6pct 第 1 轮实测踩到）：基线只说「相对 result_root」，
+#    agent 就写了 "."（= workdir 本身）⇒ harness 判「不是独立子目录」⇒ 本轮 0 分。
+#    ��轮 1 白跑了一整个回合 ⇒ 措辞必须写死。
+A_SUBMIT = ("- `submission.json` 必须包含 `schema_version=1`、相对 `result_root`，"
+            "以及 JSON 参数数组形式的 `replay.argv`")
+A_SUBMIT_NEW = """- `submission.json` 必须包含 `schema_version=1`、相对 `result_root`，以及 JSON 参数数组形式的 `replay.argv`
+  - ⚠️ **`result_root` 必须是一个**「专门的结果子目录」（例如 `result/`）——
+    **不能是 `"."`、不能是 workdir 本身、也不能是 workdir 的父目录**。
+    harness 会把它当成结果包的根去遍历；写成 `"."` 会被判成
+    `submission result_root must be a dedicated subdirectory` ⇒ **本轮直接 0 分**。
+  - 换句话说：**18 个 csv 要写进那个子目录里**（不要直接摊在 workdir 根下），
+    `submission.json` 里写 `result_root` = 那个子目录的**相对路径**。"""
 
 SPLIT_NAMES = {"train": "train", "validation": "validation", "test": "最终测试集"}
 
@@ -487,6 +499,11 @@ def main():
     if A_FLOW not in text:
         raise SystemExit("FATAL: 找不到锚点 %r" % A_FLOW)
     text = text.replace(A_FLOW, alias + native + A_FLOW, 1)
+
+    # ---- ⑤ result_root 措辞加固 ----
+    if A_SUBMIT not in text:
+        raise SystemExit("FATAL: 找不到锚点 %r" % A_SUBMIT)
+    text = text.replace(A_SUBMIT, A_SUBMIT_NEW, 1)
 
     Path(args.out).write_text(text, encoding="utf-8")
     print("已写出:", args.out, "(%d bytes)" % len(text.encode("utf-8")))

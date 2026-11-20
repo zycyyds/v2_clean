@@ -285,7 +285,7 @@ PROFILES = {
     # 视图只含 train/validation，**没有 test**（val 阶段不需要）。
     "n18_mimicraw_16": {
         "ds": PROJ / "datasets/val_views/n18_mimicraw_16",
-        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v2.md",
+        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v3.md",
         "exp_prefix": "n18_mimicraw_1p6_val_seed666",
         "manifest": (PROJ / "datasets/注入错误数据集/n18"
                      / "N18_ckd_ED_v2_rawerror_mimicraw_test1.6pct_490M"
@@ -297,7 +297,7 @@ PROFILES = {
     #    ⇒ validation 比 test 稀疏 5.3 倍，val 上验证过的组级规则未必在 test 上成立。
     "n18_mimicraw_47": {
         "ds": PROJ / "datasets/val_views/n18_mimicraw_47",
-        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v2.md",
+        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v3.md",
         "exp_prefix": "n18_mimicraw_4p7_val_seed666",
         "manifest": (PROJ / "datasets/注入错误数据集/n18"
                      / "N18_ckd_ED_v2_rawerror_mimicraw_test4.7pct_490M"
