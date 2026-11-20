@@ -942,15 +942,26 @@ def main():
 
     if not args.dry_run:
         rp = DST / 'mimic_native_error_build_report.json'
+        # ⚠️ **按 split 合并，不要整体覆盖**：只重建部分 split（如 --splits
+        #    train,validation）时，整体覆盖会把**没重建的 split 的统计抹掉**
+        #    （实测：重建 train/val 后报告里 test 段消失）。
+        prev = {}
+        if rp.is_file():
+            try:
+                prev = json.loads(rp.read_text(encoding='utf-8'))
+            except Exception:
+                prev = {}
+        merged = dict(prev.get('splits') or {})
+        merged.update(summary)
         rp.write_text(json.dumps({
             'dataset': DST.name,
             'src': SRC.name,
             'rule': 'T1_sentinel + T2_impossible -> R2_patient_itemid_median_of_usable_readings',
             'sentinels': sorted(SENTINELS),
             'hard_by_label': {k: list(v) for k, v in HARD_BY_LABEL.items()},
-            'splits': summary,
+            'splits': merged,
         }, ensure_ascii=False, indent=1), encoding='utf-8')
-        print("\n构建报告:", rp)
+        print("\n构建报告:", rp, "（splits: %s）" % ', '.join(sorted(merged)))
 
 
 if __name__ == '__main__':
