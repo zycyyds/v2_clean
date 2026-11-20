@@ -175,8 +175,14 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--string-compare", action="store_true",
                     help="纯字符串比对（老口径）；默认数值感知")
+    ap.add_argument("--label", default="i48",
+                    help="报告里的数据集名（只影响打印；N18 复用同一套实现）")
     args = ap.parse_args()
     numeric = not args.string_compare
+    if numeric:
+        # 2026-11-20 决定：原生错误维度取消 numeric 口径，只保留 string（纯字符串比对）。
+        print("✗ 原生 numeric 口径已取消（只保留 string）。请加 --string-compare。")
+        sys.exit(3)
     ds, res = Path(args.dataset), Path(args.result)
 
     status, status_any, nat, meta = judge(ds, res, args.split, numeric)
@@ -198,7 +204,7 @@ def main():
                        sorted(per_item.items(), key=lambda x: -sum(x[1].values()))},
         "per_detection_mode": {k: dict(v) for k, v in per_mode.items()},
     }
-    print("\n=== MIMIC 原生错误格修复情况（i48）===")
+    print("\n=== MIMIC 原生错误格修复情况（%s）===" % args.label)
     print("  总格数 %d" % n)
     for b in ("b_clean", "b_wrong", "b_dirty", "b_missing"):
         print("  %-10s %5d  (%.1f%%)" % (b, buckets.get(b, 0),

@@ -1,12 +1,13 @@
 [Test Harness] Test replay started
-[Test Harness] status=REPLAY_FAILED phase=test_replay score=null
+[Test Harness] hidden scoring started
+[Test Harness] status=SUCCESS phase=complete score=0.827158
 {
-  "status": "REPLAY_FAILED",
-  "phase": "test_replay",
-  "scored": false,
-  "score": null,
+  "status": "SUCCESS",
+  "phase": "complete",
+  "scored": true,
+  "score": 0.827158,
   "test_execution_count": 1,
-  "replay_status": "EXECUTION_FAILED",
-  "frozen_snapshot_sha256": "8db11d68f4f892c37f9ddfd78a5a3e94b3f51ced99c6e8b4087e5be71e8e6c67",
-  "result_package": ""
+  "replay_status": "SUCCESS",
+  "frozen_snapshot_sha256": "a315f0a00205f59af0271c18b451b80e4f37cfbf6d32fbc4ef14b1dd674ced8f",
+  "result_package": "/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw/icu5000_agent_run/experiments/icu5000_mimicraw_4p7_test_seed666_v1/host/test_result_package"
 }

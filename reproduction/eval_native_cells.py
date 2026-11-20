@@ -145,6 +145,11 @@ def main():
                     help="老口径：纯字符串比对（'0' 与 '0.0' 算不同）")
     args = ap.parse_args()
     numeric = not args.string_compare
+    if numeric:
+        # 2026-11-20 决定：原生错误维度取消 numeric 口径，只保留 string（纯字符串比对）。
+        # 已算好的 numeric 结果保留在 eval_out 里作存档，不再进表；新的 numeric 请求直接拒掉。
+        print("✗ 原生 numeric 口径已取消（只保留 string）。请加 --string-compare。")
+        sys.exit(3)
     ds = Path(args.dataset)
     res = Path(args.result)
     sp = args.split

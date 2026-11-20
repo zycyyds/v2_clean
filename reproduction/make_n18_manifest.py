@@ -16,7 +16,7 @@ cell_level_error_rate 是**别的档位**的值，档位信息就错了。
   cell_level_error_rate_fraction = 分数（0.0158 / 0.0472）
 
 用法:
-  python3 make_i48_manifest.py --preset 16|47
+  python3 make_n18_manifest.py --preset 16|47
 """
 from __future__ import annotations
 
@@ -187,7 +187,7 @@ def main() -> None:
             "driver": str(PROJ / "reproduction/build_n18_mimic_raw_error.py"),
             "verifier": str(PROJ / "reproduction/verify_n18_mimic_raw_error.py"),
             "authoritative_source": str(
-                src_dir / "v2_rawerror_i48_final_report.json"),
+                src_dir / "v2_rawerror_n18_final_report.json"),
             "dataset": str(dst_dir),
         },
     }

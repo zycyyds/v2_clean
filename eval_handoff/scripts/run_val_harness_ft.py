@@ -269,6 +269,29 @@ PROFILES = {
                      / "v2_rawerror_i48_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/i48_atrial_fibrillation_ECG_v1.json",
     },
+    # ---- N18「MIMIC 原生错误」增强版（mimicraw）----
+    # N18 = ICD-10 慢性肾病（chronic kidney disease），18 个输出文件
+    # （7 顶层 + 4 icu + 6 multimodal/ed+notes + 1 edstays 主表）、切分键 subject_id。
+    # 与母数据集 N18_ckd_ED_v2_rawerror_test1.6pct_490M 的区别：
+    #   **各 split 的 reference 里，MIMIC 自身的原生错误已按「该患者该 itemid 的
+    #   可用读数中位数」修好**（T1 哨兵占位码 + T2 生理不可能区间），并在
+    #   modification_log 里登记（error_subtype=mimic_native_*）⇒ agent 在 train 对照里
+    #   第一次能看见这类错误模式，有 train 证据可学（train 注入 15 例同形态示例、
+    #   validation 28 例 + 3 格真实原生错误）。
+    # ⚠️ 与原生错误格重叠的**注入条目已从 log 里删除**（原生层独占），
+    #    「itemid 也被注入器改过」的格划归注入层（两层错误叠加、形态同构、不可判定）。
+    # ⚠️ N18 是 **cohort 型**任务（reference 是筛选后的输出表）⇒ log 的 raw_row_index
+    #    与 reference 行号**不同空间**；评分器的索引空间判定是「数据探测」。
+    # 视图只含 train/validation，**没有 test**（val 阶段不需要）。
+    "n18_mimicraw_16": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_16",
+        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v2.md",
+        "exp_prefix": "n18_mimicraw_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test1.6pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
