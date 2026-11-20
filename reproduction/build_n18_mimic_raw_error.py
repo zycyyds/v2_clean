@@ -415,10 +415,14 @@ def mk_entry(split, seq, L, subtype, dirty, clean):
 
 
 def tier_tag(name):
-    """从数据集名里抽出档位标签（1.6pct / 4.7pct）—— 用于 NATIVE_REPR 文件名。"""
+    """从数据集名里抽出档位标签（16 / 47）—— 用于 NATIVE_REPR 文件名。
+    ⚠️ 与 i48 的命名习惯一致（`n18_native_repr_16.json` / `_47.json`），
+       别和 `--repr-json` 的路径对不上（对不上 ⇒ 注入 0 格，且不报错 ⇒ 很难发现）。"""
     import re
-    m = re.search(r'test(\d+\.\dpct)', name)
-    return m.group(1) if m else 'unknown'
+    m = re.search(r'test(\d)\.\dpct', name)
+    if not m:
+        return 'unknown'
+    return {'1': '16', '4': '47'}.get(m.group(1), m.group(1))
 
 
 # ══════════════════ 阶段 A：处理已有的原生错误 ══════════════════
@@ -735,14 +739,22 @@ def inject_examples(di, dst_sp, split, n_target, native_repr, src_sp):
               % n_unlocatable, flush=True)
 
     # 两种形态各占一半，按 itemid 轮转取
-    n_half = max(1, n_target // 2)
+    # ⚠️ **配额要能顺延**：N18 两档的 T2 可注入组数不同（1.6pct 5 个 / 4.7pct 7 个），
+    #    若「各占一半、取不满就作废」，两档的注入数就会差 2~3 格
+    #    ⇒ 给 agent 的训练信号量不同 ⇒ 跨档对比多一个混淆变量。
+    #    ⇒ 这里改成：某形态取不满时，**余量顺延给另一形态** ⇒ 两档都能取满目标数。
     chosen = []
-    for form, quota in (('T2', n_half), ('T1', n_target - n_half)):
+    remaining = n_target
+    for form in ('T2', 'T1'):
+        if remaining <= 0:
+            break
         by_item = defaultdict(list)
         for g, lst in pools[form].items():
             lst.sort(key=lambda t: -t[4])
             by_item[g[1]].append((g, lst))
         order = sorted(by_item)
+        # 第一轮（T2）只拿一半，第二轮（T1）拿剩下的 ⇒ 形态大致对半
+        quota = remaining if form == 'T1' else max(1, remaining // 2)
         k = 0
         got = 0
         while got < quota and any(by_item[i] for i in order):
@@ -753,6 +765,10 @@ def inject_examples(di, dst_sp, split, n_target, native_repr, src_sp):
                                lst[0][3], lst[0][4], lst[0][5]))
                 got += 1
             k += 1
+        remaining -= got
+        if got < quota:
+            print("  %s 形态只取到 %d / %d 个（可注入的组不够）⇒ 余量顺延给另一形态"
+                  % (form, got, quota), flush=True)
     if not chosen:
         print("  没有可注入的组，跳过", flush=True)
         return {'injected': 0}

@@ -329,7 +329,14 @@ def main():
         srep["r2_recomputed_mismatch"] = mismatch
 
         # ---------- ⑥ 溯源表列齐全 + T1/T2 分类 ----------
-        cols = list(nat[0].keys()) if nat else []
+        # ⚠️ 即使 0 条记录也要读**表头**（train 分片本来就没有原生错误格
+        #    ⇒ 记录数为 0，但表的 19 列必须齐全）
+        nat_p = sp / "mimic_native_error_log.csv"
+        if nat_p.is_file():
+            with nat_p.open(newline="", encoding="utf-8") as f:
+                cols = list(csv.DictReader(f).fieldnames or [])
+        else:
+            cols = list(nat[0].keys()) if nat else []
         need_cols = ["source_error_id", "split", "raw_file", "raw_row_index",
                      "column", "subject_id", "hadm_id", "stay_id", "charttime",
                      "itemid", "item_label", "mimic_native_value",
