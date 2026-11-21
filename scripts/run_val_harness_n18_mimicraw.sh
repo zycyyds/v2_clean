@@ -37,7 +37,7 @@ esac
 DS="${DS:-$PROJ/datasets/val_views/$VIEW}"
 FULL="${FULL:-$PROJ/datasets/注入错误数据集/n18/$FULLBASE}"
 EXP="${EXP:-$RUN/experiments/${EXPPREFIX}_$SUFFIX}"
-PROMPTV="${PROMPTV:-v4}"
+PROMPTV="${PROMPTV:-v5}"
 PROMPT="${PROMPT:-$WT/eval_handoff/prompts/n18_${TAG}_mimicraw_val_prompt_${PROMPTV}.md}"
 LOG="${LOG:-$RUN/logs/${EXPPREFIX}_$SUFFIX.log}"
 

@@ -481,6 +481,13 @@ CHECKLIST_SECTION = """### ✅ 提交前的自检清单（**逐条核对**，缺
 - [ ] **修复池按 (subject_id, itemid) 分组**（不是 stay_id）
 - [ ] 修复值 = 该 (subject_id, itemid) 可用读数的**中位数**（偶数个取中间两个的平均）
 - [ ] 该患者该项**一个可用读数都没有**的坏格**保持原样不动**（真值不可判定）
+- [ ] ⭐ **这两条规则已经写进你的代码和 `train_analysis.json`**：
+      · `train_analysis.json` 的 `error_patterns` 里要有一条记录原生错误
+        （写明 itemid → 区间 的完整对照表、哨兵码清单、修复规则）；
+      · pipeline 里要有对应的**可执行代码**（不是只写在注释里）。
+      ⚠️ **为什么必须写进产物**：后续回合拿到的任务书里可能**没有**这一节
+      （host 只会回灌分数和逐文件反馈）。规则只留在脑子里 / 只留在本回合的上下文里，
+      下一回合就没了 ⇒ **写进文件才留得住**。
 
 """
 
@@ -639,12 +646,15 @@ def main():
 
     if A_FLOW not in text:
         raise SystemExit("FATAL: 找不到锚点 %r" % A_FLOW)
-    text = text.replace(A_FLOW, alias + native + NATIVE_CODE + A_FLOW, 1)
+    text = text.replace(A_FLOW, alias + native + A_FLOW, 1)
 
-    # ---- ⑥ 提交前自检清单（放在「重要约束」之前）----
+    # ---- ⑥ 代码骨架 + 自检清单（放在「重要约束」之前 = prompt 末尾附近）----
+    # ⚠️ 位置很关键：harness 的**第 2 轮起 prompt 只含 feedback**（原始任务书不在
+    #    回合输入里）⇒ agent 必须在**第 1 轮**就把规则抄进代码。
+    #    放在末尾 ⇒ 写代码时内容最新鲜。
     if A_CONSTRAINT not in text:
         raise SystemExit("FATAL: 找不到锚点 %r" % A_CONSTRAINT)
-    text = text.replace(A_CONSTRAINT, checklist + A_CONSTRAINT, 1)
+    text = text.replace(A_CONSTRAINT, NATIVE_CODE + checklist + A_CONSTRAINT, 1)
 
     # ---- ⑤ result_root 措辞加固 ----
     if A_SUBMIT not in text:

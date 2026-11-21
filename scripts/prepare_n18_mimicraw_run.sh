@@ -17,9 +17,9 @@ DSROOT="$PROJ/datasets/注入错误数据集/n18"
 
 case "${1:-16}" in
   16) TAG="1.6pct"; SRC="N18_ckd_ED_v2_rawerror_test1.6pct_490M"
-      BASEV="v1"; PROMPTV="v4" ;;
+      BASEV="v1"; PROMPTV="v5" ;;
   47) TAG="4.7pct"; SRC="N18_ckd_ED_v2_rawerror_test4.7pct_490M"
-      BASEV="v1"; PROMPTV="v4" ;;
+      BASEV="v1"; PROMPTV="v5" ;;
   *) echo "档位只能是 16 或 47" >&2; exit 2 ;;
 esac
 
