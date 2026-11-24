@@ -347,6 +347,29 @@ PROFILES = {
                      / "v2_rawerror_n18_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
     },
+    # N18 的 v8 prompt 版（相对 v7 多两处：原生错误节「注意」清单 +1 条，
+    # 末尾多一节「⏱ 时间锚点」）。
+    # 针对的是**任务窗口泄漏把 chartevents.charttime 往后推 30~48 小时**
+    # ⇒ 原生错误格的行在 raw 里不在 reference 那个时刻上
+    # ⇒ 按精确 5 段 key 定位必然漏检（实测 test：1.6pct 44/715、4.7pct 185/586 对不上）。
+    "n18_mimicraw_16_v8": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_16",
+        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v8.md",
+        "exp_prefix": "n18_mimicraw_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test1.6pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
+    "n18_mimicraw_47_v8": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_47",
+        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v8.md",
+        "exp_prefix": "n18_mimicraw_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test4.7pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
