@@ -46,6 +46,17 @@ from pathlib import Path
 # 插入锚点：prompt 末尾的「限制：」块之前
 A_LIMITS = "\n限制：\n"
 
+# 自检清单的**最后一条**（清单是 agent 提交前逐条核对的那一段 ⇒ 离提交最近）
+A_CHECKLIST_END = "下一回合就没了 ⇒ **写进文件才留得住**。"
+
+CHECKLIST_ITEM = """
+- [ ] ⭐ **`submission.json` 的 `replay.argv` 写对了**（**这一关挂了整轮 0 分**）：
+      · `argv[0]` = **`"python3"`**（不要用启动脚本 / shell 当 argv[0]）
+      · 脚本路径**相对**（`scripts/xxx.py`）或写成 **`"{workdir}/scripts/xxx.py"`**
+      · **不许有静态绝对路径**（不含占位符的项必须是相对路径）
+      · **必须含 `{raw_root}` 和 `{output_dir}`**
+      ⇒ 详见末尾「▶️ `submission.json` 的 `replay.argv` 契约」一节"""
+
 REPLAY_CONTRACT_SECTION = """
 ### ▶️ `submission.json` 的 `replay.argv` 契约（**写错这一关直接 0 分**）
 
@@ -117,11 +128,18 @@ def main():
         raise SystemExit("FATAL: 输入里已经有「replay.argv 契约」一节了，别重复生成")
     if A_LIMITS not in text:
         raise SystemExit("FATAL: 找不到锚点 %r" % A_LIMITS)
+    if A_CHECKLIST_END not in text:
+        raise SystemExit("FATAL: 找不到自检清单的锚点 %r" % A_CHECKLIST_END)
 
+    # ① 自检清单里也加一条（清单是提交前逐条核对的 ⇒ 离提交最近）
+    text = text.replace(A_CHECKLIST_END, A_CHECKLIST_END + "\n" + CHECKLIST_ITEM, 1)
+    # ② prompt 末尾补完整的契约一节
     text = text.replace(A_LIMITS, "\n" + REPLAY_CONTRACT_SECTION + A_LIMITS, 1)
+
     Path(args.dst).write_text(text, encoding="utf-8")
     print("已写出:", args.dst, "(%d bytes)" % len(text.encode("utf-8")))
-    print("  新增一节：replay.argv 契约（%d 字符）" % len(REPLAY_CONTRACT_SECTION))
+    print("  新增：自检清单 1 条 + 末尾「replay.argv 契约」一节（%d 字符）"
+          % len(REPLAY_CONTRACT_SECTION))
 
 
 if __name__ == "__main__":
