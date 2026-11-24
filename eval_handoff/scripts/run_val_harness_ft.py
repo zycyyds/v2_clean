@@ -304,6 +304,28 @@ PROFILES = {
                      / "v2_rawerror_n18_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
     },
+    # N18 的 v6 prompt 版（相对 v5 只多一节：**显式 6 步顺序**，写死
+    # 「先 cohort 筛选、再修原生错误」—— v5 只说「最后一步算」，agent 自己排，
+    # 排在 cohort 筛选之前 ⇒ 池子混进非 cohort stay 的读数 ⇒ 原生格修成错值。
+    # 实测：4.7pct 的 validation 31 格里 14 格受影响 ⇒ 修复率 96.8% → 54.8%。)
+    "n18_mimicraw_16_v6": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_16",
+        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v6.md",
+        "exp_prefix": "n18_mimicraw_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test1.6pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
+    "n18_mimicraw_47_v6": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_47",
+        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v6.md",
+        "exp_prefix": "n18_mimicraw_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test4.7pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。

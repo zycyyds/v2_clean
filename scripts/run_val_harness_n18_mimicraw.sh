@@ -20,6 +20,7 @@ DRIVER="${DRIVER:-$WT/eval_handoff/scripts/run_val_harness_ft.py}"
 SUFFIX="${1:-v1}"
 
 TIER="${TIER:-16}"
+PROMPTV="${PROMPTV:-v5}"
 case "$TIER" in
   16)
     TAG="1.6pct"; VIEW="n18_mimicraw_16"
@@ -33,11 +34,15 @@ case "$TIER" in
     ;;
   *) echo "TIER 只能是 16 或 47" >&2; exit 2 ;;
 esac
+# v6 的 prompt 多一节「显式 6 步顺序」（先 cohort 筛选、再修原生错误）
+# ⇒ 用单独的 profile（driver 里 prompt 路径写死在 profile 上）。
+if [ "$PROMPTV" = "v6" ]; then
+  PROFILE="${PROFILE}_v6"
+fi
 
 DS="${DS:-$PROJ/datasets/val_views/$VIEW}"
 FULL="${FULL:-$PROJ/datasets/注入错误数据集/n18/$FULLBASE}"
 EXP="${EXP:-$RUN/experiments/${EXPPREFIX}_$SUFFIX}"
-PROMPTV="${PROMPTV:-v5}"
 PROMPT="${PROMPT:-$WT/eval_handoff/prompts/n18_${TAG}_mimicraw_val_prompt_${PROMPTV}.md}"
 LOG="${LOG:-$RUN/logs/${EXPPREFIX}_$SUFFIX.log}"
 
