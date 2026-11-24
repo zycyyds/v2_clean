@@ -49,55 +49,60 @@ A_LIMITS = "\n限制：\n"
 REPLAY_CONTRACT_SECTION = """
 ### ▶️ `submission.json` 的 `replay.argv` 契约（**写错这一关直接 0 分**）
 
-harness 会**独立重放**你的 pipeline（拿你的 `submission.json` 里的 `replay.argv` 真的跑一遍）。
-跑法是固定的：
+harness 会**独立重放**你的 pipeline：拿你 `submission.json` 里的 `replay.argv`，
+在一个 **sandbox**（`sandbox-exec`）里真的跑一遍，跑法固定：
 
 ```
-cd <workdir>                                     # cwd 就是 workdir
-/usr/bin/sandbox-exec -f <profile> <argv…>       # 默认拒绝一切的网络/文件访问
+cd <workdir>                                # cwd = workdir
+/usr/bin/sandbox-exec -f <profile> <argv…>  # 只放行 workdir / {raw_root} / {train_reference}，无网络
 ```
 
-sandbox 只放行：
-- **只有 harness 自己那个 python 可执行**；
-- 可读：`{workdir}`、`{raw_root}`、`{train_reference}`；
-- 可写：`{workdir}`、`$HOME`、`$TMPDIR`；**没有网络**。
-
-⇒ **五条硬规则**：
-
-1. **`argv[0]` 就写 `"python3"`** —— harness 会把它替换成它自己那个 python。
-   ⚠️ **绝对不要**写 `#!/usr/bin/env python3` 的 shebang 启动脚本、
-   **不要**写 `sh -c "…"` / `bash xxx.sh`：
-   **`/usr/bin/env` 和 `/bin/sh` 在 sandbox 里都不可执行 ⇒ 直接 ENOENT（执行失败）**。
-2. **脚本路径用 `{workdir}` 占位符**：`"{workdir}/run_pipeline.py"`
-   （写相对路径 `run_pipeline.py` 也可以，因为重放的 cwd 就是 workdir）。
-3. **不许出现「静态绝对路径」**：任何一项如果不含占位符，它就必须是相对路径
-   —— 否则 harness 报 `submission replay.argv cannot contain static absolute paths`。
-4. **必须含 `{raw_root}` 和 `{output_dir}` 两个占位符**（缺一个直接被拒）。
-   它们会被替换成**绝对路径**：`{output_dir}` = workdir 下的结果子目录，
-   `{raw_root}` = 本次重放的 raw 根。
-5. **`argv` 是 JSON 字符串数组**，不是对象、不是 shell 字符串。
-
-⇒ **照抄这个形状**（只改脚本名和你自己的参数名）：
+⇒ **直接照抄这两种之一**（这两种都是本仓库**已经跑通**的形状）：
 
 ```json
-"replay": {
-  "argv": ["python3", "{workdir}/run_pipeline.py",
-           "--raw_root", "{raw_root}",
-           "--output_dir", "{output_dir}",
-           "--train_reference", "{train_reference}",
-           "--workdir", "{workdir}"]
-}
+// A：脚本路径写相对（cwd 就是 workdir）
+"replay": {"argv": ["python3", "scripts/n18_clean.py",
+                    "--raw_root", "{raw_root}",
+                    "--output_dir", "{output_dir}",
+                    "--workdir", "{workdir}"]}
+```
+```json
+// B：脚本路径用 {workdir} 占位符
+"replay": {"argv": ["python3", "{workdir}/scripts/run_pipeline.py",
+                    "--raw-root", "{raw_root}",
+                    "--output-dir", "{output_dir}",
+                    "--train-reference", "{train_reference}",
+                    "--workdir", "{workdir}"]}
 ```
 
-⇒ **交付前自己验一遍**（这比事后猜省两轮）：
+⇒ **四条硬规则**（违反任何一条都会被 harness 直接拒）：
+
+1. **`argv[0]` 必须是 `"python3"` 或 `"python"`** —— harness 会把它换成它自己那个 python
+   （`argv[0] in {"python","python3"} ⇒ argv[0] = sys.executable`）。
+   ⚠️ **不要把「启动脚本」当 argv[0]**（`"run_pipeline"` / `"{workdir}/run_pipeline"` /
+   `"sh"` / `"bash"` 都**不行**）：sandbox 里执行启动脚本会被拒 ⇒
+   `independent replay: status=EXECUTION_FAILED score=0.000000` ⇒ **整轮 0 分**。
+2. **`argv[0]` 不能是 shell 命令字符串**：`sh` / `bash` / `zsh` / `dash` / `env` / `fish` / `ksh`
+   ⇒ harness 报 `submission replay.argv cannot execute shell command strings`。
+3. **必须含 `{raw_root}` 和 `{output_dir}` 两个占位符**（缺一个直接被拒）。
+   它们会被替换成**绝对路径**：`{output_dir}` = workdir 下的结果子目录，
+   `{raw_root}` = 本次重放的 raw 根。
+4. **不许出现「静态绝对路径」**：任何一项如果**不含占位符**，它就必须是**相对路径**
+   —— 否则 harness 报 `submission replay.argv cannot contain static absolute paths`。
+   （所以脚本路径要么相对、要么写成 `{workdir}/xxx.py`，不能写 `/Users/…/xxx.py`。）
+
+⚠️ **`argv` 是 JSON 字符串数组**，不是对象、不是 shell 字符串。
+
+⇒ **交付前自己验一遍**（比事后猜省两轮）：
+
 ```bash
 cd <workdir> && python3 -c "import json;print(json.load(open('submission.json'))['replay']['argv'])"
-# 然后用「同样的 cwd + 最小 PATH」实跑一遍：
+# 用「同样的 cwd + 最小 PATH」实跑一遍（模拟 sandbox 的环境）
 ( cd <workdir> && env -i PATH=/usr/bin:/bin HOME=$HOME TMPDIR=/tmp \
-    python3 <workdir>/run_pipeline.py --raw_root <raw> --output_dir <out> )
+    python3 scripts/n18_clean.py --raw_root <raw> --output_dir <out> )
 ```
-⚠️ `env -i` 那一行**必须用 `python3 <绝对脚本路径>`**（不要靠 shebang），
-这样才能提前暴露「sandbox 里没有 /usr/bin/env」这类问题。
+⚠️ 这一行**必须写成 `python3 <脚本路径>`**（不要靠 shebang 启动），
+这样才是 harness 真正的执行形态。
 """
 
 
