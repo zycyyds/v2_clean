@@ -61,6 +61,19 @@ def scan(path, wanted, do_restore=False):
     return hit
 
 
+def collect_values(path, wanted):
+    """流式扫一张表，只把 wanted 里的 key 的 valuenum 收进小字典。"""
+    out = {}
+    if not path.is_file():
+        return out
+    with path.open(newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            k = key_of(r)
+            if k in wanted and k not in out:
+                out[k] = r.get("valuenum")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True)
@@ -120,6 +133,33 @@ def main():
               "这 %d 格在 raw 里根本没有这个 key，"
               "agent 靠自己重建的时间锚点把它们找回来了"
               % (len(displaced), d, 100.0 * d / len(displaced), len(displaced)))
+
+    # ---- 再细分：key 命中的格里，**值**修对了没有（b_clean / b_wrong）----
+    agent_val = collect_values(res / "icu" / "chartevents.csv", agent_hit)
+    print()
+    print("=== 细分：key 命中 ≠ 值修对 ===")
+    print("  %-34s %6s %8s %8s" % ("分组", "命中格数", "值修对", "值修错"))
+    for name, s in (("raw 里 key 对得上", aligned),
+                    ("raw 里 key 对不上（行被挪过）", displaced)):
+        hit = s & agent_hit
+        clean = wrong = 0
+        for r in nat:
+            k = key_of(r)
+            if k not in hit:
+                continue
+            try:
+                got = float(agent_val.get(k))
+            except (TypeError, ValueError):
+                got = None
+            try:
+                rep = float(r.get("repaired_value"))
+            except (TypeError, ValueError):
+                rep = None
+            if got is not None and rep is not None and abs(got - rep) < 1e-9:
+                clean += 1
+            else:
+                wrong += 1
+        print("  %-34s %6d %8d %8d" % (name, len(hit), clean, wrong))
 
 
 if __name__ == "__main__":
