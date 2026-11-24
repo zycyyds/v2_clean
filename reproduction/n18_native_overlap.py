@@ -14,7 +14,7 @@
    在**源 raw 行号空间**，而两档的 raw 行数不同（1.6pct 1414 万 / 4.7pct 1780 万）
    ⇒ 行号跨档不可比。
    （⚠️ `i48_native_overlap.py` / `icu5000_native_overlap.py` 用的是行号 ——
-    icu5000 是对的（reference 相同 ⇒ 行号可比），i48 同样��� cohort 型，
+    icu5000 是对的（reference 相同 ⇒ 行号可比），i48 同样是 cohort 型，
     那个脚本的跨档对齐键**可能不对**，待复核。）
 
 只输出聚合（格数 / itemid 分布），不打印病人级信息。

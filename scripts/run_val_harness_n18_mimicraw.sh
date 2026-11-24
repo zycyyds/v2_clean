@@ -35,10 +35,14 @@ case "$TIER" in
   *) echo "TIER 只能是 16 或 47" >&2; exit 2 ;;
 esac
 # v6 的 prompt 多一节「显式 6 步顺序」（先 cohort 筛选、再修原生错误）
+# v7 的 prompt 再多一节「上下文预算 + 续跑摘要格式」（防上下文压缩摘要的 schema 崩）
 # ⇒ 用单独的 profile（driver 里 prompt 路径写死在 profile 上）。
-if [ "$PROMPTV" = "v6" ]; then
-  PROFILE="${PROFILE}_v6"
-fi
+case "$PROMPTV" in
+  v6) PROFILE="${PROFILE}_v6" ;;
+  v7) PROFILE="${PROFILE}_v7" ;;
+  v2|v3|v4|v5) : ;;
+  *) echo "PROMPTV 只能是 v2..v7" >&2; exit 2 ;;
+esac
 
 DS="${DS:-$PROJ/datasets/val_views/$VIEW}"
 FULL="${FULL:-$PROJ/datasets/注入错误数据集/n18/$FULLBASE}"

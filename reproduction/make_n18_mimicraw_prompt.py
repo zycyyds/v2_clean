@@ -33,7 +33,7 @@ A_FLOW = "### 推导与修正流程"
 A_CONSTRAINT = "**重要约束**："
 # ⚠️ result_root 的措辞缺口（1.6pct 第 1 轮实测踩到）：基线只说「相对 result_root」，
 #    agent 就写了 "."（= workdir 本身）⇒ harness 判「不是独立子目录」⇒ 本轮 0 分。
-#    ��轮 1 白跑了一整个回合 ⇒ 措辞必须写死。
+#    第 1 轮白跑了一整个回合 ⇒ 措辞必须写死。
 A_SUBMIT = ("- `submission.json` 必须包含 `schema_version=1`、相对 `result_root`，"
             "以及 JSON 参数数组形式的 `replay.argv`")
 A_SUBMIT_NEW = """- `submission.json` 必须包含 `schema_version=1`、相对 `result_root`，以及 JSON 参数数组形式的 `replay.argv`

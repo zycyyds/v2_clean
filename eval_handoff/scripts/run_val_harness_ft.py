@@ -326,6 +326,27 @@ PROFILES = {
                      / "v2_rawerror_n18_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
     },
+    # N18 的 v7 prompt 版（相对 v6 多一节：**上下文预算 + 续跑摘要格式**）。
+    # 这一节针对的是「上下文压缩摘要」的 schema 校验失败 —— 实测 5 个压缩事件里
+    # 2 个先失败一次，连挂 4 次 ⇒ worker 崩 ⇒ 整个 run 报废（N18 4.7pct 第 1 遍就是这样死的）。
+    "n18_mimicraw_16_v7": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_16",
+        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v7.md",
+        "exp_prefix": "n18_mimicraw_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test1.6pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
+    "n18_mimicraw_47_v7": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_47",
+        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v7.md",
+        "exp_prefix": "n18_mimicraw_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test4.7pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
