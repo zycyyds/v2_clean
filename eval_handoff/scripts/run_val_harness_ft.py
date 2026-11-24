@@ -498,6 +498,39 @@ async def _retrying_run_turn(self, prompt: str):
 JsonlWorkerClient.run_turn = _retrying_run_turn
 
 
+# ── 传输层加固：asyncio 的 stdout 行上限默认 64 KiB ──────────────────────────
+# agent/pi_worker_client.py 的 create_subprocess_exec() **没传 limit=**，
+# 而 StreamReader.readline() 超过 limit 会抛
+#     ValueError: Separator is not found, and chunk exceed the limit
+# 并且**丢弃已经读到的字节** ⇒ 控制通道从这一行开始**永久错位**：
+#     下一次 run_turn 读到上一条回复的尾巴 → "polluted the JSONL control channel"
+#     再往后读到上一条请求的正常响应 → "Pi worker response id mismatch"（序号落后 1）
+# 而上面的重试包装器会把**整轮重跑**（MAX_TURN_RETRIES=4），最后 worker_crash_finalized
+# —— 可 agent 当时其实**已经跑完并交付了**（rayyan val 就是这个情形：
+#     worker 回的是 "Round 3 complete ... verified" 却被告成 crash）。
+# 这里只放大 stdout 的行上限，**不动任何评测/打分逻辑**。
+_WORKER_STREAM_LIMIT = 64 * 1024 * 1024
+
+_orig_start = JsonlWorkerClient.start
+
+
+async def _start_with_large_stream_limit(self):
+    orig_exec = asyncio.create_subprocess_exec
+
+    async def _exec(*args, **kwargs):
+        kwargs.setdefault("limit", _WORKER_STREAM_LIMIT)
+        return await orig_exec(*args, **kwargs)
+
+    asyncio.create_subprocess_exec = _exec
+    try:
+        return await _orig_start(self)
+    finally:
+        asyncio.create_subprocess_exec = orig_exec
+
+
+JsonlWorkerClient.start = _start_with_large_stream_limit
+
+
 def make_config(exp_name: str, prof: dict) -> PiValidationHarnessConfig:
     ds = prof["ds"]
     return PiValidationHarnessConfig(
