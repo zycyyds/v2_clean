@@ -89,10 +89,16 @@ cd <workdir>                                # cwd = workdir
 ⇒ **四条硬规则**（违反任何一条都会被 harness 直接拒）：
 
 1. **`argv[0]` 必须是 `"python3"` 或 `"python"`** —— harness 会把它换成它自己那个 python
-   （`argv[0] in {"python","python3"} ⇒ argv[0] = sys.executable`）。
-   ⚠️ **不要把「启动脚本」当 argv[0]**（`"run_pipeline"` / `"{workdir}/run_pipeline"` /
-   `"sh"` / `"bash"` 都**不行**）：sandbox 里执行启动脚本会被拒 ⇒
-   `independent replay: status=EXECUTION_FAILED score=0.000000` ⇒ **整轮 0 分**。
+   （`argv[0] in {"python","python3"} ⇒ argv[0] = sys.executable`），
+   **脚本是作为参数传进去的（不解析 shebang）**。
+   ⚠️ **绝对不要把脚本本身当 `argv[0]`**（`"run_pipeline.py"` / `"{workdir}/run_pipeline.py"` 都**不行**）：
+   那样会**按脚本的 shebang 启动**，而重放环境的 PATH 只有
+   `/usr/bin:/bin:/usr/sbin:/sbin` ⇒ `#!/usr/bin/env python3` 会解析到
+   **`/usr/bin/python3`（macOS 的 Xcode CLT 壳程序）**，
+   它在 sandbox 里读不到真正的解释器 ⇒ 启动失败 ⇒ harness 报
+   `sandbox-exec: execvp() of 'run_pipeline.py' failed: No such file or directory`
+   （ENOENT，**看着像文件不存在，其实是解释器起不来**）⇒ **整轮 0 分**。
+   ⇒ **所以：解释器交给 harness 指定，脚本由你当参数传。**
 2. **`argv[0]` 不能是 shell 命令字符串**：`sh` / `bash` / `zsh` / `dash` / `env` / `fish` / `ksh`
    ⇒ harness 报 `submission replay.argv cannot execute shell command strings`。
 3. **必须含 `{raw_root}` 和 `{output_dir}` 两个占位符**（缺一个直接被拒）。
