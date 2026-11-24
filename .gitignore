@@ -39,3 +39,7 @@ i48_agent_run/logs/
 n18_agent_run/experiments/
 n18_agent_run/logs/
 n18_agent_run/archive/
+
+# 校正类（单表纠错）跑批产物
+correction_agent_run/experiments/
+correction_agent_run/logs/

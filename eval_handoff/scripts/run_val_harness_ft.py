@@ -403,15 +403,12 @@ PROFILES = {
     #   ⇒ 注意 gold 目录叫 **gold** 不是 reference（所以下面要覆盖 validation_gold_subdir）
     #   ⇒ correction/reference_private 与 host_private 对 agent 不可读（sandbox 只放行
     #     train raw / train reference / validation raw 三个根）
-    "flights_correction": {
-        "ds": PROJ / "datasets/correction/flights_curated10_val20_v1",
-        "prompt": WT / "eval_handoff/prompts/flights_correction_val_prompt_v1.md",
-        "exp_prefix": "flights_correction_val_seed666",
-        "manifest": (PROJ / "datasets/correction/flights_curated10_val20_v1"
-                     / "split_manifest.json"),
-        "eval_manifest": WT / "evaluation_manifests/raha_correction_flights_v1.json",
-        "validation_gold_subdir": "validation/gold",
-    },
+    #
+    # ⚠️ 盘上**现存的四个切分**（datasets/correction/）：
+    #     beers / rayyan / tax / raha_hospital(dense)
+    #   ⇒ flights 的两个切分（flights_curated10_val20_v1、flights_curated10_groupdense_v1）
+    #     **已从盘上删除** ⇒ 下面两个 flights profile 现在指向不存在的目录，
+    #     启动脚本会先检查并在缺失时直接报错（不会静默跑错）。
     "hospital_correction": {
         "ds": PROJ / "datasets/correction/raha_hospital_curated10_val20_dense_v1",
         "prompt": WT / "eval_handoff/prompts/hospital_correction_val_prompt_v1.md",
@@ -419,6 +416,45 @@ PROFILES = {
         "manifest": (PROJ / "datasets/correction/raha_hospital_curated10_val20_dense_v1"
                      / "split_manifest.json"),
         "eval_manifest": WT / "evaluation_manifests/raha_correction_hospital_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
+    # 下面三个是 10:20:rest 切分（train 10~30 行 + validation 20 行 + correction=rest）。
+    # train 与旧的 10:rest split 逐字节一致；validation 的 20 行从旧 correction(=test) 抽。
+    "beers_correction": {
+        "ds": PROJ / "datasets/correction/beers_curated10_val20_v1",
+        "prompt": WT / "eval_handoff/prompts/beers_correction_val_prompt_v1.md",
+        "exp_prefix": "beers_correction_val_seed666",
+        "manifest": (PROJ / "datasets/correction/beers_curated10_val20_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_beers_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
+    "rayyan_correction": {
+        "ds": PROJ / "datasets/correction/rayyan_curated10_val20_v1",
+        "prompt": WT / "eval_handoff/prompts/rayyan_correction_val_prompt_v1.md",
+        "exp_prefix": "rayyan_correction_val_seed666",
+        "manifest": (PROJ / "datasets/correction/rayyan_curated10_val20_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_rayyan_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
+    "tax_correction": {
+        "ds": PROJ / "datasets/correction/tax_curated10_val20_v1",
+        "prompt": WT / "eval_handoff/prompts/tax_correction_val_prompt_v1.md",
+        "exp_prefix": "tax_correction_val_seed666",
+        "manifest": (PROJ / "datasets/correction/tax_curated10_val20_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_tax_v1.json",
+        "validation_gold_subdir": "validation/gold",
+    },
+    # ⚠️ flights 的两个切分**已从盘上删除**（保留 profile 只作历史参考，勿直接启动）
+    "flights_correction": {
+        "ds": PROJ / "datasets/correction/flights_curated10_val20_v1",
+        "prompt": WT / "eval_handoff/prompts/flights_correction_val_prompt_v1.md",
+        "exp_prefix": "flights_correction_val_seed666",
+        "manifest": (PROJ / "datasets/correction/flights_curated10_val20_v1"
+                     / "split_manifest.json"),
+        "eval_manifest": WT / "evaluation_manifests/raha_correction_flights_v1.json",
         "validation_gold_subdir": "validation/gold",
     },
     # flights 的**组密集**切分版：train 里每个航班给多行，
