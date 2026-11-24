@@ -41,8 +41,9 @@ case "$PROMPTV" in
   v6) PROFILE="${PROFILE}_v6" ;;
   v7) PROFILE="${PROFILE}_v7" ;;
   v8) PROFILE="${PROFILE}_v8" ;;
+  v9) PROFILE="${PROFILE}_v9" ;;
   v2|v3|v4|v5) : ;;
-  *) echo "PROMPTV 只能是 v2..v8" >&2; exit 2 ;;
+  *) echo "PROMPTV 只能是 v2..v9" >&2; exit 2 ;;
 esac
 
 DS="${DS:-$PROJ/datasets/val_views/$VIEW}"

@@ -370,6 +370,32 @@ PROFILES = {
                      / "v2_rawerror_n18_final_report.json"),
         "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
     },
+    # N18 的 v9 prompt 版（相对 v8 多一节：**submission.json 的 replay.argv 契约**）。
+    # 针对的是「独立重放这一关判 0」—— 1.6pct v7 run 实测：
+    #   [Harness] independent replay: status=EXECUTION_FAILED score=0.000000
+    #   [Harness] replay repair 1: status=INVALID_SUBMISSION score=0.000000
+    # 成因两条（源码 agent/pi_harness.py + pi_harness_sandbox.py）：
+    #   ① sandbox 只放行 harness 自己那个 python ⇒ /usr/bin/env、/bin/sh 不可执行
+    #      ⇒ shebang 启动脚本 / sh -c 一律 ENOENT；
+    #   ② 校验器拒绝「不含占位符的绝对路径」⇒ 脚本路径要写成 {workdir}/xxx.py。
+    "n18_mimicraw_16_v9": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_16",
+        "prompt": WT / "eval_handoff/prompts/n18_1.6pct_mimicraw_val_prompt_v9.md",
+        "exp_prefix": "n18_mimicraw_1p6_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test1.6pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
+    "n18_mimicraw_47_v9": {
+        "ds": PROJ / "datasets/val_views/n18_mimicraw_47",
+        "prompt": WT / "eval_handoff/prompts/n18_4.7pct_mimicraw_val_prompt_v9.md",
+        "exp_prefix": "n18_mimicraw_4p7_val_seed666",
+        "manifest": (PROJ / "datasets/注入错误数据集/n18"
+                     / "N18_ckd_ED_v2_rawerror_mimicraw_test4.7pct_490M"
+                     / "v2_rawerror_n18_final_report.json"),
+        "eval_manifest": PROJ / "evaluation_manifests/n18_ckd_ED_notes_v1.json",
+    },
     # ---- 校正类（单表纠错）----
     # 和上面那几族完全不同：不是 MIMIC cohort 清洗，是「给 10 行脏↔干净对照，
     # 归纳破坏规则，修好整张单表」。切分是 Raha 的 curated10 切分。
