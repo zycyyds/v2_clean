@@ -21,17 +21,33 @@
 
 | 结果目录 | 跑者 | 口径 | Det F1 | Rep F1 | b_clean | b_wrong | b_dirty | b_missing |
 |---|---|---|---:|---:|---:|---:|---:|---:|
+| `n18/1.6pct_我们的agent_pi+val_mimicraw` | 我们 | **str** | **0.997021** | **0.770292** | 2,518,246 | 926,404 | 13,315 | 6,348 |
+| `n18/1.6pct_我们的agent_pi+val_mimicraw` | 我们 | **oldsw** | **0.589662** | **0.582126** | 2,503,270 | 40,525 | 255 | 4,407,917 |
+| `n18/1.6pct_我们的agent_pi+val_mimicraw` | 我们 | **old** | **0.588310** | **0.464639** | 1,867,550 | 664,543 | 11,957 | 4,407,917 |
+| `n18/1.6pct_我们的agent_pi+val_mimicraw` | 我们 | **goldv29** | **0.998211** | **0.955918** | 3,284,567 | 173,114 | 284 | 6,348 |
+| `n18/4.7pct_我们的agent_pi+val_mimicraw` | 我们 | **str** | **0.993245** | **0.813892** | 7,990,218 | 2,273,779 | 122,103 | 48,167 |
+| `n18/4.7pct_我们的agent_pi+val_mimicraw` | 我们 | **oldsw** | **0.527422** | **0.524070** | 5,939,693 | 52,881 | 14,846 | 14,894,606 |
+| `n18/4.7pct_我们的agent_pi+val_mimicraw` | 我们 | **old** | **0.524704** | **0.445464** | 4,686,547 | 1,247,773 | 73,100 | 14,894,606 |
+| `n18/4.7pct_我们的agent_pi+val_mimicraw` | 我们 | **goldv29** | **0.997321** | **0.987942** | 10,248,038 | 119,396 | 18,666 | 48,167 |
+| `n18/4.7pct_cc基线_ClaudeCode` | cc | **str** | **0.798627** | **0.457561** | 2,599,182 | 3,672,775 | 1,478,177 | 2,684,133 |
+| `n18/4.7pct_cc基线_ClaudeCode` | cc | **oldsw** | **0.438065** | **0.357886** | 3,034,792 | 1,201,461 | 940,714 | 15,725,059 |
+| `n18/4.7pct_cc基线_ClaudeCode` | cc | **old** | **0.438065** | **0.357886** | 3,034,792 | 1,201,461 | 940,714 | 15,725,059 |
+| `n18/4.7pct_cc基线_ClaudeCode` | cc | **goldv29** | **0.803126** | **0.621452** | 4,389,472 | 1,963,799 | 1,396,863 | 2,684,133 |
 | `n18/deepprep-less` | deepprep | str/oldsw/goldv29 | — | — | — | — | — | — |
 | `n18/deepprep-more` | deepprep | str/oldsw/goldv29 | — | — | — | — | — | — |
 | `I48/deepprep-less` | deepprep | str/oldsw/goldv29 | — | — | — | — | — | — |
 | `I48/deepprep-more` | deepprep | str/oldsw/goldv29 | — | — | — | — | — | — |
 
-> ⚠️ 四个 deepprep 目录的**错误级算不出来**：I48 / n18 的 deepprep 输出里有**空表**
-> （`admissions.csv` 只有表头；n18 的 `icu/outputevents.csv` 同样为空）⇒
-> `compute_error_metrics.py` 建 sqlite 索引时直接炸（`KeyError: 'subject_id'` /
-> `sqlite3.OperationalError`）。这是**数据本身的缺陷**（deepprep 的结构性输出问题），
-> 不是工具问题 —— K29 / ICU5000 的 deepprep 输出 `admissions.csv` 有 8,093 / 6,476 行，
-> 工具跑得通，所以那两档在原表里有错误级数字。
+> ⚠️ 四个 deepprep 目录的**错误级算不出来**，但坏法各不相同（都是 deepprep 产物自身的缺陷，
+> 不是工具问题 —— 工具要按 key 列给每张表建 sqlite 索引，坏表直接建不出来）：
+> | 目录 | 坏在哪 |
+> |---|---|
+> | `n18/deepprep-less` | `admissions.csv` 0 行；`icu/outputevents.csv` **缺 subject_id** 且 0 行 |
+> | `n18/deepprep-more` | `admissions.csv` **缺 hadm_id**；`icu/{icustays,inputevents}.csv` 0 行；`icu/{chartevents,outputevents}.csv` **缺 subject_id** 且 0 行 |
+> | `I48/deepprep-less` | `admissions.csv` 是 **1 字节空文件**（连表头都没有）⇒ 建表 SQL 语法错 `near ")"` |
+> | `I48/deepprep-more` | 只坏 `icu/outputevents.csv`（**缺 charttime**），其余 6 张表都齐 |
+> ⇒ 对照：K29 / ICU5000 的 deepprep `admissions.csv` 有 8,093 / 6,476 行且 key 齐 ⇒ 工具跑得通，
+> 所以那两档在原表里有错误级数字。
 
 ## 维度三：MIMIC 原生错误格（string 口径）
 
