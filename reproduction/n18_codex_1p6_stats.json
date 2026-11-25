@@ -1,0 +1,101 @@
+{
+  "train": {
+    "entries": 14792,
+    "cells": 14737,
+    "files": 7,
+    "total_cells": 197742,
+    "stays": 10,
+    "native": 15,
+    "by_op": {
+      "cell_update": 12483,
+      "duplicate": 1282,
+      "insert": 1027
+    },
+    "by_cls": {
+      "class1_intra_table": 7889,
+      "class3_cross_table": 1592,
+      "class2_entity_alignment": 3188,
+      "class4_task_oriented": 2123
+    },
+    "by_sub": {
+      "schema_range_violation": 10,
+      "enum_violation": 10,
+      "unexpected_missingness": 39,
+      "label_conflict_with_cohort": 39,
+      "temporal_order_violation": 10,
+      "med_end_before_start": 526,
+      "sentinel_or_negative_med_amount": 526,
+      "medication_itemid_alias_split": 526,
+      "stay_hadm_mismatch": 526,
+      "sentinel_chart_value": 4133,
+      "unit_scale_error": 1028,
+      "duplicate_row": 1282,
+      "chart_itemid_alias_split": 2005,
+      "orphan_feature_stay_id": 1027,
+      "future_window_leakage": 1096,
+      "label_leakage_feature": 1027,
+      "implausible_negative_event_time": 310,
+      "diagnosis_code_alias_split": 657,
+      "mimic_native_injected_example": 15
+    },
+    "by_file": {
+      "hosp/patients.csv": 20,
+      "hosp/admissions.csv": 78,
+      "icu/icustays.csv": 10,
+      "icu/inputevents.csv": 2104,
+      "icu/chartevents.csv": 11613,
+      "icu/outputevents.csv": 310,
+      "hosp/diagnoses_icd.csv": 657
+    }
+  },
+  "test": {
+    "entries": 7904260,
+    "cells": 7888725,
+    "files": 7,
+    "total_cells": 108264808,
+    "stays": 2970,
+    "native": 715,
+    "by_op": {
+      "cell_update": 6951967,
+      "duplicate": 329306,
+      "insert": 622987
+    },
+    "by_cls": {
+      "class1_intra_table": 5061173,
+      "class3_cross_table": 904030,
+      "class2_entity_alignment": 962357,
+      "class4_task_oriented": 976700
+    },
+    "by_sub": {
+      "schema_range_violation": 2970,
+      "enum_violation": 2970,
+      "unexpected_missingness": 17679,
+      "label_conflict_with_cohort": 17679,
+      "temporal_order_violation": 3270,
+      "med_end_before_start": 346659,
+      "sentinel_or_negative_med_amount": 346659,
+      "medication_itemid_alias_split": 346659,
+      "stay_hadm_mismatch": 324857,
+      "sentinel_chart_value": 3171506,
+      "unit_scale_error": 693716,
+      "duplicate_row": 329306,
+      "chart_itemid_alias_split": 484021,
+      "orphan_feature_stay_id": 561494,
+      "future_window_leakage": 353713,
+      "label_leakage_feature": 622987,
+      "implausible_negative_event_time": 145723,
+      "diagnosis_code_alias_split": 131677,
+      "mimic_native_impossible_value": 660,
+      "mimic_native_sentinel_value": 55
+    },
+    "by_file": {
+      "hosp/patients.csv": 5940,
+      "hosp/admissions.csv": 35358,
+      "icu/icustays.csv": 3270,
+      "icu/inputevents.csv": 1364834,
+      "icu/chartevents.csv": 6217458,
+      "icu/outputevents.csv": 145723,
+      "hosp/diagnoses_icd.csv": 131677
+    }
+  }
+}
