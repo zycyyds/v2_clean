@@ -1,0 +1,106 @@
+=================== train ===================
+-- 条数 --
+58445
+-- 相关 cell（distinct file,row,col）--
+   57750
+-- 影响 ICU stay（distinct canonical_stay_id，非空）--
+      10
+-- 按 operation --
+     cell_update                        30466
+     duplicate                          23688
+     insert                             4291
+-- 按 error_class --
+     class1_intra_table                 37453
+     class4_task_oriented               8260
+     class2_entity_alignment            7484
+     class3_cross_table                 5248
+-- 按 error_subtype --
+     duplicate_row                      23688
+     chart_itemid_alias_split           5080
+     label_leakage_feature              4291
+     sentinel_chart_value               4036
+     future_window_leakage              3969
+     orphan_feature_stay_id             3032
+     sentinel_or_negative_med_amount    2640
+     med_end_before_start               2640
+     implausible_negative_event_time    2310
+     stay_hadm_mismatch                 2193
+     unit_scale_error                   2071
+     medication_itemid_alias_split      2071
+     diagnosis_code_alias_split         333
+     unexpected_missingness             23
+     label_conflict_with_cohort         23
+     temporal_order_violation           14
+     mimic_native_impossible_value      11
+     schema_range_violation             10
+     enum_violation                     10
+-- 按 raw_file --
+     icu/chartevents.csv            46178
+     icu/inputevents.csv            9544
+     icu/outputevents.csv           2310
+     hosp/diagnoses_icd.csv         333
+     hosp/admissions.csv            46
+     hosp/patients.csv              20
+     icu/icustays.csv               14
+-- 涉及 raw 表的总 cell（非 key 列）--
+     hosp/admissions.csv  rows=23 cols=16 keycols=2 cells=322
+     hosp/diagnoses_icd.csv  rows=333 cols=5 keycols=3 cells=666
+     hosp/patients.csv  rows=10 cols=6 keycols=1 cells=50
+     icu/chartevents.csv  rows=174124 cols=11 keycols=4 cells=1218868
+     icu/icustays.csv  rows=14 cols=8 keycols=3 cells=70
+     icu/inputevents.csv  rows=2640 cols=26 keycols=3 cells=60720
+     icu/outputevents.csv  rows=2310 cols=9 keycols=4 cells=11550
+=================== test ===================
+-- 条数 --
+21544474
+-- 相关 cell（distinct file,row,col）--
+ 21312430
+-- 影响 ICU stay（distinct canonical_stay_id，非空）--
+    2970
+-- 按 operation --
+     cell_update                        17429021
+     duplicate                          2779645
+     insert                             1335808
+-- 按 error_class --
+     class1_intra_table                 16138405
+     class4_task_oriented               2474908
+     class3_cross_table                 1887545
+     class2_entity_alignment            1043616
+-- 按 error_subtype --
+     sentinel_chart_value               7710091
+     unit_scale_error                   4485893
+     duplicate_row                      2779645
+     orphan_feature_stay_id             1418174
+     label_leakage_feature              1335808
+     future_window_leakage              1139100
+     stay_hadm_mismatch                 457338
+     sentinel_or_negative_med_amount    457338
+     medication_itemid_alias_split      457338
+     med_end_before_start               457338
+     chart_itemid_alias_split           396818
+     implausible_negative_event_time    225526
+     diagnosis_code_alias_split         189460
+     unexpected_missingness             12033
+     label_conflict_with_cohort         12033
+     temporal_order_violation           3363
+     schema_range_violation             2970
+     enum_violation                     2970
+     mimic_native_impossible_value      1216
+     mimic_native_sentinel_value        22
+-- 按 raw_file --
+     icu/chartevents.csv            19266767
+     icu/inputevents.csv            1829352
+     icu/outputevents.csv           225526
+     hosp/diagnoses_icd.csv         189460
+     hosp/admissions.csv            24066
+     hosp/patients.csv              5940
+     icu/icustays.csv               3363
+-- 涉及 raw 表的总 cell（非 key 列）--
+     hosp/admissions.csv  rows=12033 cols=16 keycols=2 cells=168462
+     hosp/diagnoses_icd.csv  rows=189460 cols=5 keycols=3 cells=378920
+     hosp/patients.csv  rows=2970 cols=6 keycols=1 cells=14850
+     icu/chartevents.csv  rows=20132205 cols=11 keycols=4 cells=140925435
+     icu/icustays.csv  rows=3363 cols=8 keycols=3 cells=16815
+     icu/inputevents.csv  rows=457338 cols=26 keycols=3 cells=10518774
+     icu/outputevents.csv  rows=225526 cols=9 keycols=4 cells=1127630
+DONE

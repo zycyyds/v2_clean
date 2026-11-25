@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """核对打包后的 结果包/ 与源目录一一对应（相对路径 + md5 全量）。"""
+import csv
 import hashlib
 import json
 from pathlib import Path
+
+csv.field_size_limit(2 ** 31)
 
 OUT = Path("/Users/mac/Downloads/ceshi1")
 WT = Path("/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/k29-mimicraw")
@@ -45,6 +48,8 @@ SRC = {
     "n18/1.6pct_cc基线_ClaudeCode":
         Path("/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/n18-codex-pipeline/"
              "agent_work/n18_codex_16/work/test_out"),
+    "I48/4.7pct_cc基线_ClaudeCode":
+        PROJ / "agent_work/i48_more_v1/output/test",
 }
 
 
@@ -92,6 +97,73 @@ for name, src in SRC.items():
         print("      包有源无:", only_d)
     if mism:
         print("      内容不同:", mism[:5])
+
+print("\n=== 校正类（单表纠错）四数据集 ===")
+CORR = {
+    "hospital": ("raha_hospital_curated10_val20_dense_v1", "index"),
+    "beers": ("beers_curated10_val20_v1", "index"),
+    "rayyan": ("rayyan_curated10_val20_v1", "id"),
+    "tax": ("tax_curated10_val20_v1", "__row_id"),
+}
+BASE_DIR = PROJ / "对比结果"
+BASE_FILE = {"hospital": ("hospital", "result_package/cleaned.csv"),
+             "beers": ("beers_correction_v1", "result_package/beers.csv"),
+             "rayyan": ("rayyan_clean_v1", "result_package/cleaned.csv"),
+             "tax": ("tax_correction_v1", "result_package/tax.csv")}
+CORR_DS = PROJ / "datasets/correction"
+corr_ok = True
+for d, (ds, key) in CORR.items():
+    # ① agent 结果包：与跑批源逐一 md5
+    src = WT / ("correction_agent_run/experiments/%s_correction_test_seed666_v1"
+                "/host/test_result_package" % d)
+    pkg = OUT / "校正类" / d / "结果包" / ("%s.csv" % d)
+    m_agent = pkg.exists() and md5(src / ("%s.csv" % d)) == md5(pkg)
+    # ② gold：与数据集的 reference_private 逐一 md5
+    gsrc = CORR_DS / ds / "correction/reference_private" / ("%s.csv" % d)
+    gpkg = OUT / "校正类/gold/reference" / ("%s.csv" % d)
+    m_gold = gpkg.exists() and md5(gsrc) == md5(gpkg)
+    # ③ 基线：包内是**变换后**的表（补 key 列 + 取 test 行子集）⇒ 重新推导再比 md5
+    bdir, brel = BASE_FILE[d]
+    bsrc = BASE_DIR / bdir / brel
+    bpkg = OUT / "校正类" / ("%s_基线_ClaudeCode" % d) / "结果包" / ("%s.csv" % d)
+    m_base = False
+    if bsrc.exists() and bpkg.exists():
+        with open(bsrc, newline="", encoding="utf-8", errors="replace") as f:
+            rd = csv.reader(f)
+            bh = next(rd)
+            brows = list(rd)
+        with open(bpkg, newline="", encoding="utf-8", errors="replace") as f:
+            rd = csv.reader(f)
+            ph = next(rd)
+            prows = list(rd)
+        if key in bh:
+            with open(gsrc, newline="", encoding="utf-8", errors="replace") as f:
+                rd = csv.reader(f)
+                gh = next(rd)
+                grows = list(rd)
+            bk, gk = bh.index(key), gh.index(key)
+            keep = {r[gk] for r in grows}
+            bmap = {}
+            for r in brows:
+                bmap.setdefault(r[bk], r)
+            exp_hdr, exp_rows = list(bh), [bmap[r[gk]] for r in grows if r[gk] in bmap]
+        else:  # tax：按原表行号补 key 列
+            with open(gsrc, newline="", encoding="utf-8", errors="replace") as f:
+                rd = csv.reader(f)
+                gh = next(rd)
+                grows = list(rd)
+            gk = gh.index(key)
+            exp_hdr = [key] + list(bh)
+            exp_rows = [[r[gk]] + list(brows[int(r[gk])]) for r in grows]
+        m_base = (ph == exp_hdr and len(prows) == len(exp_rows)
+                  and all(a == b for a, b in zip(prows, exp_rows)))
+    corr_ok &= m_agent and m_gold and m_base
+    print("  %s %-26s agent结果包 %s | gold %s | 基线(变换后重推) %s"
+          % ("✓" if (m_agent and m_gold and m_base) else "✗", d,
+             "md5 一致" if m_agent else "不一致",
+             "md5 一致" if m_gold else "不一致",
+             "逐行一致" if m_base else "不一致"))
+ok &= corr_ok
 
 print("\n=== 旧 harness 档（test 产物已清理，只能核对结构与评估记录）===")
 for name in OLD_SNAPSHOT_ONLY:
