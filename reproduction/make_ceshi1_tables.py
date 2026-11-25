@@ -129,7 +129,9 @@ for label, runner, tier, ds, d in D1:
         continue
     lines.append("| `%s` | %s | %s | %s | **%.6f** | %.4f | %.4f | %.4f | %.4f |" % (label, runner, tier, ds, *v))
 lines.append("")
-lines.append("## 维度二：错误级指标（str / oldsw / goldv29）\n")
+lines.append("## 维度二：错误级指标（str / oldsw / old / goldv29）\n")
+lines.append("> 口径定义见 `五档七口径横向对比.md` §1.1：**oldsw = 数值比对**、**old = 纯字符串**"
+             "（两者只差「①值比对」这一个开关）；`old` 一并给出便于对照。\n")
 lines.append("| 结果目录 | 跑者 | 口径 | Det F1 | Rep F1 | b_clean | b_wrong | b_dirty | b_missing |")
 lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|")
 for label, (runner, d) in D2_SRC.items():
