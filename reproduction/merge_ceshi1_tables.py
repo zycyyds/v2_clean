@@ -388,16 +388,19 @@ rp = rows_progress()
 L = insert_after(L, "| I48/4.7pct_我们 |", pick(rows_progress, "我们"))
 L = insert_after(L, "| I48/1.6pct_cc |", pick(rows_progress, "cc"))
 L = insert_after(L, "| ICU5000/deepprep-more |", pick(rows_progress, "deepprep"))
+NTOT = 15 + len(NEW_ROWS)
+NCOMP = (15 + len(DIRS_OURS) + len(DIRS_BASE)) * 3
 L = [l.replace("# 评估进度表（15 个结果目录 × 3 个维度）",
-               "# 评估进度表（24 个结果目录 × 3 个维度）") for l in L]
+               "# 评估进度表（%d 个结果目录 × 3 个维度）" % NTOT) for l in L]
 L = [l.replace("| **composite** | **15/15** ✅ | 9 个复用 + 6 个新算 |",
-               "| **composite** | **24/24** ✅ | 15 个原有 + 9 个新补（n18 全 6 个 + I48 4.7pct cc + I48 deepprep 2 个） |")
-     for l in L]
+               "| **composite** | **%d/%d** ✅ | 15 个原有 + %d 个新补（%s） |"
+               % (NTOT, NTOT, len(NEW_ROWS),
+                  "、".join(SHORT[d] for d, _r, _t, _ds in NEW_ROWS))) for l in L]
 L = [l.replace("| **错误级** | 45/45 | 每目录 3 个口径（str / oldsw / goldv29） |",
-               "| **错误级** | 60/60 + 4 个「—」 | 每目录 3 个口径（str / oldsw / goldv29）；"
-               "4 个 deepprep 目录因产物缺陷算不出（见下方脚注） |") for l in L]
+               "| **错误级** | %d/%d + 4 个「—」 | 每目录 3 个口径（str / oldsw / goldv29）；"
+               "4 个 deepprep 目录因产物缺陷算不出（见下方脚注） |" % (NCOMP, NCOMP)) for l in L]
 L = [l.replace("| **原生格** | 15/15 | 每目录 1 个口径（string；numeric 已取消） |",
-               "| **原生格** | 24/24 | 每目录 1 个口径（string；numeric 已取消） |") for l in L]
+               "| **原生格** | **%d/%d** | 每目录 1 个口径（string；numeric 已取消） |" % (NTOT, NTOT)) for l in L]
 if not any("native 脚注" in l for l in L):
     L += [
         "",
@@ -459,7 +462,7 @@ L = insert_after(L, "| `I48/4.7pct_我们的agent_pi+val_mimicraw2` | 我们 | s
 L = insert_after(L, "| `I48/1.6pct_cc基线_ClaudeCode` | cc | string |", pick(rows_d3, "cc"))
 L = insert_after(L, "| `ICU5000/deepprep-more` | deepprep | string |", pick(rows_d3, "deepprep"))
 L = [l.replace("# ceshi1 三维度横向对比（15 个结果目录）",
-               "# ceshi1 三维度横向对比（24 个结果目录）") for l in L]
+               "# ceshi1 三维度横向对比（%d 个结果目录）" % (15 + len(NEW_ROWS))) for l in L]
 L += [
     "",
     "7. **n18 / I48 是本轮补齐的（新增 9 个结果目录）** —— n18 六档全补上（1.6/4.7pct 我们的 agent、"
