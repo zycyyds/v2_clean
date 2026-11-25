@@ -29,6 +29,42 @@ nat = load("n18_16_agent_native.json"), load("n18_47_agent_native.json"), load("
 dpnat = load("deepprep_native.json", {}) or {}
 em_new = load("error_metrics_new.json", {}) or {}
 em_agent = load("error_metrics_n18_agent.json", {}) or {}
+em_oldsw = load("error_metrics_oldsw.json", {}) or {}
+
+
+def per_caliber_json(ds_key):
+    """从每口径的单独 json 兜底读取（那个被中止的任务没写汇总 json，但每口径的 json 已落盘）。
+
+    文件名约定：err_<key>_<cal>.json；`old`（纯字符串版）单独用 _old 后缀，
+    避免与真正的 `oldsw`（数值版）同名互相覆盖。
+    """
+    out = {}
+    for cal, suffix in (("str", "str"), ("oldsw", "oldsw"), ("old", "old"), ("goldv29", "goldv29")):
+        p = TMP / ("err_%s_%s.json" % (ds_key, suffix))
+        if not p.exists():
+            continue
+        d = json.load(open(p))
+        det, rep = d.get("detection", {}), d.get("repair", {})
+        out[cal] = {"det_f1": det.get("F1"), "det_p": det.get("P"), "det_r": det.get("R"),
+                    "rep_f1": rep.get("F1"), "rep_p": rep.get("P"), "rep_r": rep.get("R"),
+                    "buckets": d.get("buckets")}
+    return out
+
+
+def merge_calibers(a, b):
+    """合并并**纠正口径标签**：
+    先前那档用了 --string-compare ⇒ 实际是「old」（纯字符串 + no-recover + keep-rows）；
+    真正的「oldsw」是数值版，另跑在 b 里。
+    """
+    out = {}
+    if a:
+        for cal, v in a.items():
+            out["old" if cal == "oldsw" else cal] = v
+    if b:
+        for cal, v in b.items():
+            if cal == "oldsw":
+                out["oldsw"] = v
+    return out
 
 
 def sc(d):
@@ -43,16 +79,14 @@ def fmt(x, nd=6):
     return "—" if x is None else ("%.*f" % (nd, x))
 
 
-def nat_row(label, runner, tier, d, total, clean, dirty, missing, wrong=0):
+def nat_row(label, runner, caliber, d):
     if d is None:
         return None
     n = d.get("n_native_cells")
     b = d.get("buckets", {})
     rate = d.get("repair_rate")
-    p_rep = b.get("b_clean", 0) / (b.get("b_clean", 0) + b.get("b_wrong", 0)) \
-        if (b.get("b_clean", 0) + b.get("b_wrong", 0)) else 0.0
-    return "| `%s` | %s | %s | string | %s | %s | %s | %s | **%.6f** |" % (
-        label, runner, tier, n, b.get("b_clean", 0), b.get("b_dirty", 0),
+    return "| `%s` | %s | %s | %s | %s | %s | %s | **%.6f** |" % (
+        label, runner, caliber, n, b.get("b_clean", 0), b.get("b_dirty", 0),
         b.get("b_missing", 0), rate if rate is not None else 0.0)
 
 
@@ -69,9 +103,15 @@ D1 = [
 
 # ── 维度二（错误级）──
 D2_SRC = {
-    "n18/1.6pct_我们的agent_pi+val_mimicraw": ("我们", em_agent.get("n18/1.6pct_我们的agent_pi+val_mimicraw/结果包")),
-    "n18/4.7pct_我们的agent_pi+val_mimicraw": ("我们", em_agent.get("n18/4.7pct_我们的agent_pi+val_mimicraw/结果包")),
-    "n18/4.7pct_cc基线_ClaudeCode": ("cc", em_new.get("n18/4.7pct_cc基线_ClaudeCode/结果包")),
+    "n18/1.6pct_我们的agent_pi+val_mimicraw": ("我们", merge_calibers(
+        em_agent.get("n18/1.6pct_我们的agent_pi+val_mimicraw/结果包"),
+        em_oldsw.get("n18/1.6pct_我们的agent_pi+val_mimicraw/结果包"))),
+    "n18/4.7pct_我们的agent_pi+val_mimicraw": ("我们", merge_calibers(
+        em_agent.get("n18/4.7pct_我们的agent_pi+val_mimicraw/结果包"),
+        em_oldsw.get("n18/4.7pct_我们的agent_pi+val_mimicraw/结果包"))),
+    "n18/4.7pct_cc基线_ClaudeCode": ("cc", merge_calibers(
+        em_new.get("n18/4.7pct_cc基线_ClaudeCode/结果包") or per_caliber_json("ceshi1_n18_cc47"),
+        em_oldsw.get("n18/4.7pct_cc基线_ClaudeCode/结果包"))),
 }
 
 lines = []
@@ -95,7 +135,7 @@ lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|")
 for label, (runner, d) in D2_SRC.items():
     if not d:
         continue
-    for cal in ("str", "oldsw", "goldv29"):
+    for cal in ("str", "oldsw", "old", "goldv29"):
         c = d.get(cal)
         if not c:
             continue
@@ -109,31 +149,47 @@ lines.append("| `n18/deepprep-more` | deepprep | str/oldsw/goldv29 | — | — |
 lines.append("| `I48/deepprep-less` | deepprep | str/oldsw/goldv29 | — | — | — | — | — | — |")
 lines.append("| `I48/deepprep-more` | deepprep | str/oldsw/goldv29 | — | — | — | — | — | — |")
 lines.append("")
-lines.append("> ⚠️ 四个 deepprep 目录的**错误级算不出来**：I48 / n18 的 deepprep 输出里有**空表**\n"
-             "> （`admissions.csv` 只有表头；n18 的 `icu/outputevents.csv` 同样为空）⇒\n"
-             "> `compute_error_metrics.py` 建 sqlite 索引时直接炸（`KeyError: 'subject_id'` /\n"
-             "> `sqlite3.OperationalError`）。这是**数据本身的缺陷**（deepprep 的结构性输出问题），\n"
-             "> 不是工具问题 —— K29 / ICU5000 的 deepprep 输出 `admissions.csv` 有 8,093 / 6,476 行，\n"
-             "> 工具跑得通，所以那两档在原表里有错误级数字。\n")
+lines.append("> ⚠️ 四个 deepprep 目录的**错误级算不出来**，但坏法各不相同（都是 deepprep 产物自身的缺陷，\n"
+             "> 不是工具问题 —— 工具要按 key 列给每张表建 sqlite 索引，坏表直接建不出来）：\n"
+             "> | 目录 | 坏在哪 |\n"
+             "> |---|---|\n"
+             "> | `n18/deepprep-less` | `admissions.csv` 0 行；`icu/outputevents.csv` **缺 subject_id** 且 0 行 |\n"
+             "> | `n18/deepprep-more` | `admissions.csv` **缺 hadm_id**；`icu/{icustays,inputevents}.csv` 0 行；"
+             "`icu/{chartevents,outputevents}.csv` **缺 subject_id** 且 0 行 |\n"
+             "> | `I48/deepprep-less` | `admissions.csv` 是 **1 字节空文件**（连表头都没有）⇒ 建表 SQL 语法错 `near \")\"` |\n"
+             "> | `I48/deepprep-more` | 只坏 `icu/outputevents.csv`（**缺 charttime**），其余 6 张表都齐 |\n"
+             "> ⇒ 对照：K29 / ICU5000 的 deepprep `admissions.csv` 有 8,093 / 6,476 行且 key 齐 ⇒ 工具跑得通，\n"
+             "> 所以那两档在原表里有错误级数字。\n")
 lines.append("## 维度三：MIMIC 原生错误格（string 口径）\n")
 lines.append("| 结果目录 | 跑者 | 口径 | 总格数 | 修对 | 没动 | 缺行 | **修复率** |")
 lines.append("|---|---|---|---:|---:|---:|---:|---:|")
-r = nat_row("n18/1.6pct_我们的agent_pi+val_mimicraw", "我们", "1.6pct", nat[0], 715, 711, 0, 3)
+r = nat_row("n18/1.6pct_我们的agent_pi+val_mimicraw", "我们", "string", nat[0])
 if r:
     lines.append(r)
-r = nat_row("n18/4.7pct_我们的agent_pi+val_mimicraw", "我们", "4.7pct", nat[1], 586, 578, 0, 7)
+r = nat_row("n18/4.7pct_我们的agent_pi+val_mimicraw", "我们", "string", nat[1])
 if r:
     lines.append(r)
-r = nat_row("n18/4.7pct_cc基线_ClaudeCode", "cc", "4.7pct", nat[2], 586, 0, 444, 142)
+r = nat_row("n18/4.7pct_cc基线_ClaudeCode", "cc", "string", nat[2])
 if r:
     lines.append(r)
-for label, tier in (("n18/deepprep-less", "1.6pct"), ("n18/deepprep-more", "4.7pct"),
-                     ("I48/deepprep-less", "1.6pct"), ("I48/deepprep-more", "4.7pct")):
-    lines.append("| `%s` | deepprep | string | %s | 0 | %s | %s | **0.000000** |" % (
-        label, "715" if "less" in label else "586",
-        "0" if label.startswith("n18") else ("200" if "less" in label else "785"),
-        "715" if label == "n18/deepprep-less" else ("586" if label == "n18/deepprep-more"
-                                                     else ("59" if "less" in label else "217"))))
+# deepprep 四行：从重判输出里解析总格数与三桶（不手填，避免串档）
+for label in ("n18/deepprep-less/output", "n18/deepprep-more/output",
+              "I48/deepprep-less/output", "I48/deepprep-more/output"):
+    raw_lines = dpnat.get(label) or []
+    tot = dirty = missing = None
+    for l in raw_lines:
+        s = l.strip()
+        if s.startswith("总格数"):
+            tot = s.split()[-1]
+        elif s.startswith("b_dirty"):
+            dirty = s.split()[1]
+        elif s.startswith("b_missing"):
+            missing = s.split()[1]
+    if tot is None:
+        continue
+    pkg = label.replace("/output", "")
+    lines.append("| `%s` | deepprep | string | %s | 0 | %s | %s | **0.000000** |"
+                 % (pkg, tot, dirty, missing))
 lines.append("")
 lines.append("## 读表提醒（补齐部分）\n")
 lines.append("1. **n18 的 1.6pct 没有 cc/codex 基线** —— 不是漏拷，是**从来没跑过**：\n"

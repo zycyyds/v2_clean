@@ -53,13 +53,13 @@
 
 | 结果目录 | 跑者 | 口径 | 总格数 | 修对 | 没动 | 缺行 | **修复率** |
 |---|---|---|---:|---:|---:|---:|---:|
-| `n18/1.6pct_我们的agent_pi+val_mimicraw` | 我们 | 1.6pct | string | 715 | 711 | 0 | 3 | **0.994406** |
-| `n18/4.7pct_我们的agent_pi+val_mimicraw` | 我们 | 4.7pct | string | 586 | 578 | 0 | 7 | **0.986348** |
-| `n18/4.7pct_cc基线_ClaudeCode` | cc | 4.7pct | string | 586 | 0 | 444 | 142 | **0.000000** |
+| `n18/1.6pct_我们的agent_pi+val_mimicraw` | 我们 | string | 715 | 711 | 0 | 3 | **0.994406** |
+| `n18/4.7pct_我们的agent_pi+val_mimicraw` | 我们 | string | 586 | 578 | 0 | 7 | **0.986348** |
+| `n18/4.7pct_cc基线_ClaudeCode` | cc | string | 586 | 0 | 444 | 142 | **0.000000** |
 | `n18/deepprep-less` | deepprep | string | 715 | 0 | 0 | 715 | **0.000000** |
 | `n18/deepprep-more` | deepprep | string | 586 | 0 | 0 | 586 | **0.000000** |
-| `I48/deepprep-less` | deepprep | string | 715 | 0 | 200 | 59 | **0.000000** |
-| `I48/deepprep-more` | deepprep | string | 586 | 0 | 785 | 217 | **0.000000** |
+| `I48/deepprep-less` | deepprep | string | 1264 | 0 | 200 | 59 | **0.000000** |
+| `I48/deepprep-more` | deepprep | string | 1238 | 0 | 785 | 217 | **0.000000** |
 
 ## 读表提醒（补齐部分）
 
