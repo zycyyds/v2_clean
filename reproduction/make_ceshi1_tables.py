@@ -213,8 +213,14 @@ lines.append("2. **codex 基线在 train 上就没做到「与 reference 一致�
              "   且集中在四列：`demographics.anchor_age` 错 9/10 行、`multimodal/ed_triage.pain`\n"
              "   错 **18/18** 行、`admissions.insurance` 错 3 行、`icu/icustays.los` 错 1 行；\n"
              "   另 `icu/chartevents.csv` 少 162 行、`icu/outputevents.csv` 少 2 行。\n")
-lines.append("3. **n18 4.7pct 的 cc 基线原生修复率 = 0**（444 没动 / 142 缺行）——\n"
-             "   与包里其它 cc/codex 基线一致：规则推导法碰不到哨兵码与生理不可能值（原生错误类）。\n")
+lines.append("3. **cc 基线修不动 MIMIC 原生错误格**：n18 4.7pct 修复率 **0**（444 没动 / 142 缺行）、\n"
+             "   n18 1.6pct 修复率仅 **0.032168**（23 修对 / 626 没动 / 26 缺行）；\n"
+             "   对照我们的 agent：1.6pct **0.994406**、4.7pct **0.986348** ⇒ 差 30 倍以上。\n"
+             "   原因：规则推导法碰不到哨兵码与生理不可能值（原生错误类）。\n")
+lines.append("4. **cc 基线的错误级 Det F1 也全面低于我们的 agent**（1.6pct：str 0.854 vs 0.997、\n"
+             "   goldv29 0.855 vs 0.998；Rep F1 0.553 vs 0.770、0.722 vs 0.956）⇒\n"
+             "   差距不只在原生层，整张表上 codex 都留下了更多脏数据\n"
+             "   （1.6pct str 口径 b_wrong 130 万 vs 我们 92.6 万）。\n")
 lines.append("4. **n18 的 deepprep composite 只有 0.20**（I48 的 deepprep 是 0.40~0.46）——\n"
              "   原因是 **key 几乎全错**（0.165 / 0.151 vs K29 的 0.83）⇒ deepprep **没做 cohort 筛选**，\n"
              "   而 n18/i48 的输出表是**筛选之后**的表 ⇒ 结构上就对不上。\n")
