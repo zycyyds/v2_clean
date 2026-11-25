@@ -42,6 +42,9 @@ SRC = {
     "n18/4.7pct_我们的agent_pi+val_mimicraw":
         WT / "n18_agent_run/experiments/n18_mimicraw_4p7_test_seed666_v1/host/test_result_package",
     "n18/4.7pct_cc基线_ClaudeCode": PROJ / "agent_work/n18_more_v1/output",
+    "n18/1.6pct_cc基线_ClaudeCode":
+        Path("/Users/mac/PycharmProjects/v2_clean/.claude/worktrees/n18-codex-pipeline/"
+             "agent_work/n18_codex_16/work/test_out"),
 }
 
 

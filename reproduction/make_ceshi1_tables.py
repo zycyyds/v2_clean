@@ -25,11 +25,14 @@ def load(name, default=None):
 
 scores = load("new_pkg_scores.json", {}) or {}
 dpscores = load("deepprep_scores.json", {}) or {}
+cc16_score = load("n18_codex16_score.json", {}) or {}
 nat = load("n18_16_agent_native.json"), load("n18_47_agent_native.json"), load("n18_47_cc_native.json")
+cc16_nat = load("n18_cc16_native.json")
 dpnat = load("deepprep_native.json", {}) or {}
 em_new = load("error_metrics_new.json", {}) or {}
 em_agent = load("error_metrics_n18_agent.json", {}) or {}
 em_oldsw = load("error_metrics_oldsw.json", {}) or {}
+em_cc16 = load("error_metrics_n18_cc16.json", {}) or {}
 
 
 def per_caliber_json(ds_key):
@@ -93,6 +96,7 @@ def nat_row(label, runner, caliber, d):
 # ── 维度一 ──
 D1 = [
     ("n18/1.6pct_我们的agent_pi+val_mimicraw", "我们", "1.6pct", "mimicraw", scores.get("n18/1.6pct_我们的agent_pi+val_mimicraw/结果包")),
+    ("n18/1.6pct_cc基线_ClaudeCode", "cc", "1.6pct", "raw(无原生层)", cc16_score),
     ("n18/4.7pct_我们的agent_pi+val_mimicraw", "我们", "4.7pct", "mimicraw", scores.get("n18/4.7pct_我们的agent_pi+val_mimicraw/结果包")),
     ("n18/4.7pct_cc基线_ClaudeCode", "cc", "4.7pct", "raw(无原生层)", scores.get("n18/4.7pct_cc基线_ClaudeCode/结果包")),
     ("n18/deepprep-less", "deepprep", "1.6pct", "mimicraw", dpscores.get("n18/deepprep-less/output")),
@@ -112,10 +116,11 @@ D2_SRC = {
     "n18/4.7pct_cc基线_ClaudeCode": ("cc", merge_calibers(
         em_new.get("n18/4.7pct_cc基线_ClaudeCode/结果包") or per_caliber_json("ceshi1_n18_cc47"),
         em_oldsw.get("n18/4.7pct_cc基线_ClaudeCode/结果包"))),
+    "n18/1.6pct_cc基线_ClaudeCode": ("cc", em_cc16.get("n18/1.6pct_cc基线_ClaudeCode/结果包", {})),
 }
 
 lines = []
-lines.append("# ceshi1 三维度横向对比 —— **新增的 7 个结果目录**（2026-11-25 补齐）\n")
+lines.append("# ceshi1 三维度横向对比 —— **新增的 8 个结果目录**（2026-11-25 补齐）\n")
 lines.append("> 本文件是 `00_三维度横向对比.md` / `00_紧凑横向对比.md` / `00_评估进度表.md` 的**增量**：\n"
              "> 那三张表是既有手写文件（未改动），这里给出补齐 n18 / I48 后**新增的行**。\n"
              "> 数字全部从 JSON 读出、无手抄；composite 用 harness 自己的打分器重打，\n"
@@ -174,6 +179,9 @@ if r:
 r = nat_row("n18/4.7pct_cc基线_ClaudeCode", "cc", "string", nat[2])
 if r:
     lines.append(r)
+r = nat_row("n18/1.6pct_cc基线_ClaudeCode", "cc", "string", cc16_nat)
+if r:
+    lines.append(r)
 # deepprep 四行：从重判输出里解析总格数与三桶（不手填，避免串档）
 for label in ("n18/deepprep-less/output", "n18/deepprep-more/output",
               "I48/deepprep-less/output", "I48/deepprep-more/output"):
@@ -194,14 +202,20 @@ for label in ("n18/deepprep-less/output", "n18/deepprep-more/output",
                  % (pkg, tot, dirty, missing))
 lines.append("")
 lines.append("## 读表提醒（补齐部分）\n")
-lines.append("1. **n18 的 1.6pct 没有 cc/codex 基线** —— 不是漏拷，是**从来没跑过**：\n"
-             "   cc/codex 基线当时跑的是 `datasets/注入错误数据集/n18_less` / `n18_more` 两个切片\n"
-             "   （已从盘上删除），其 cohort 分别是 7,445 / 7,048 行；当前 mimicraw n18 的 cohort 是 **7,048** 行\n"
-             "   ⇒ `n18_more`（4.7pct）**可比、已入库**，`n18_less`（1.6pct，cohort 7,445）**不可比、没入库**。\n"
-             "   要补 1.6pct 的 cc 基线，只能在 mimicraw 1.6pct 上**重跑一次 cc/codex**。\n")
-lines.append("2. **n18 4.7pct 的 cc 基线原生修复率 = 0**（444 没动 / 142 缺行）——\n"
+lines.append("1. **n18 的 1.6pct cc 基线是本轮新跑的**（跑在 mimicraw 1.6pct 上，\n"
+             "   数据集切片 `datasets/注入错误数据集/n18_codex_16/` + prompt\n"
+             "   `~/Downloads/codexfuxian/n18_codex_16_prompt.md`）。\n"
+             "   ⚠️ 早先 `agent_work/n18_less_cc_v1` 那次 cc 跑批**没有入库**：它跑的是\n"
+             "   `n18_less` 切片（已从盘上删除），cohort **7,445 行** ≠ 当前 mimicraw 的 **7,048 行**\n"
+             "   ⇒ 另一个数据集构建，不可比。`n18_more_v1`（4.7pct，cohort 7,048）才是可比的 ⇒ 已入库。\n")
+lines.append("2. **codex 基线在 train 上就没做到「与 reference 一致」**（prompt 的硬要求）：\n"
+             "   独立核它的 `work/train_out` vs 切片 `train/reference` ⇒ **31 个错 cell**，\n"
+             "   且集中在四列：`demographics.anchor_age` 错 9/10 行、`multimodal/ed_triage.pain`\n"
+             "   错 **18/18** 行、`admissions.insurance` 错 3 行、`icu/icustays.los` 错 1 行；\n"
+             "   另 `icu/chartevents.csv` 少 162 行、`icu/outputevents.csv` 少 2 行。\n")
+lines.append("3. **n18 4.7pct 的 cc 基线原生修复率 = 0**（444 没动 / 142 缺行）——\n"
              "   与包里其它 cc/codex 基线一致：规则推导法碰不到哨兵码与生理不可能值（原生错误类）。\n")
-lines.append("3. **n18 的 deepprep composite 只有 0.20**（I48 的 deepprep 是 0.40~0.46）——\n"
+lines.append("4. **n18 的 deepprep composite 只有 0.20**（I48 的 deepprep 是 0.40~0.46）——\n"
              "   原因是 **key 几乎全错**（0.165 / 0.151 vs K29 的 0.83）⇒ deepprep **没做 cohort 筛选**，\n"
              "   而 n18/i48 的输出表是**筛选之后**的表 ⇒ 结构上就对不上。\n")
 
