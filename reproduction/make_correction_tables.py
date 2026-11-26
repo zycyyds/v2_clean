@@ -105,7 +105,11 @@ L.append("3. **rayyan 是我们赢最多的一档（+9.3 个点）**："
          "我们的 agent 在 train 上就发现 gold 写法不唯一、保留了原值 ⇒ exact 0.9206。\n")
 L.append("4. **hospital / beers 差距小（+0.2 / +2.0 个点）**：两档的破坏规则偏机械"
          "（跨列语义推断 / 格式前缀），两个跑者都能推出来。\n")
-L.append("5. **我们的 agent 重打分与 harness 的 score_report 逐位一致**"
+L.append("5. **`gold/` 是「错误完全修复」的干净表**（已实测）：拿注入器自己的逐 cell 差分档案 "
+         "`host_private/cell_diff.jsonl` 对着 gold 逐格核 —— hospital 455 / beers 4,282 / rayyan 891 / "
+         "tax 121,108 个坏 cell，**每一格的 gold 值都等于 clean_value、都不等于 dirty_value**，0 个 key 未命中 "
+         "（脚本：`reproduction/check_correction_gold_clean.py`）。gold 只含 **test 段**的行。\n")
+L.append("6. **我们的 agent 重打分与 harness 的 score_report 逐位一致**"
          "（hospital 0.997031 / beers 1.000000 / rayyan 0.973187 / tax 0.973634）"
          "⇒ 打分链路可复现，且包内拷贝无损。\n")
 
