@@ -129,6 +129,10 @@ N18_CC_47 = "n18/4.7pct_cc基线_ClaudeCode"
 I48_CC_47 = "I48/4.7pct_cc基线_ClaudeCode"
 DP = ["n18/deepprep-less", "n18/deepprep-more", "I48/deepprep-less", "I48/deepprep-more"]
 
+# deepprep 四档：**只有 str 口径**算得出来（配合 build_eval_cache 的降级补丁：
+# 坏表记成「没有输出」，其注入错误如实计 b_missing）；oldsw / goldv29 仍不可算。
+_dpstr = load("deepprep_str_metrics.json", {}) or {}
+
 ERR = {
     N18_AGENT_16: merge_calibers(em_agent.get(N18_AGENT_16 + "/结果包"),
                                  em_oldsw.get(N18_AGENT_16 + "/结果包")),
@@ -139,6 +143,11 @@ ERR = {
                               em_oldsw.get(N18_CC_47 + "/结果包")),
     I48_CC_47: (load("error_metrics_i48_cc47.json", {}) or {}).get(I48_CC_47 + "/结果包", {}) or {},
 }
+for _k, _v in _dpstr.items():
+    if _k.startswith("【回归】"):
+        continue
+    ERR.setdefault(_k, {})["str"] = {"det_f1": _v.get("det_f1"), "rep_f1": _v.get("rep_f1"),
+                                     "buckets": _v.get("buckets") or {}}
 
 COMP = {
     N18_AGENT_16: scores.get(N18_AGENT_16 + "/结果包"),
@@ -389,7 +398,7 @@ L = insert_after(L, "| I48/4.7pct_我们 |", pick(rows_progress, "我们"))
 L = insert_after(L, "| I48/1.6pct_cc |", pick(rows_progress, "cc"))
 L = insert_after(L, "| ICU5000/deepprep-more |", pick(rows_progress, "deepprep"))
 NTOT = 15 + len(NEW_ROWS)
-NCOMP = (15 + len(DIRS_OURS) + len(DIRS_BASE)) * 3
+NCOMP = (15 + len(DIRS_OURS) + len(DIRS_BASE)) * 3 + len(DIRS_DP)
 L = [l.replace("# 评估进度表（15 个结果目录 × 3 个维度）",
                "# 评估进度表（%d 个结果目录 × 3 个维度）" % NTOT) for l in L]
 L = [l.replace("| **composite** | **15/15** ✅ | 9 个复用 + 6 个新算 |",
@@ -397,8 +406,9 @@ L = [l.replace("| **composite** | **15/15** ✅ | 9 个复用 + 6 个新算 |",
                % (NTOT, NTOT, len(NEW_ROWS),
                   "、".join(SHORT[d] for d, _r, _t, _ds in NEW_ROWS))) for l in L]
 L = [l.replace("| **错误级** | 45/45 | 每目录 3 个口径（str / oldsw / goldv29） |",
-               "| **错误级** | %d/%d + 4 个「—」 | 每目录 3 个口径（str / oldsw / goldv29）；"
-               "4 个 deepprep 目录因产物缺陷算不出（见下方脚注） |" % (NCOMP, NCOMP)) for l in L]
+               "| **错误级** | %d/%d | 20 个目录 × 3 口径（str / oldsw / goldv29）+ "
+               "4 个 deepprep 目录 × 1 口径（只有 str 算得出，oldsw/goldv29 记「—」，见下方脚注） |"
+               % (NCOMP, NCOMP)) for l in L]
 L = [l.replace("| **原生格** | 15/15 | 每目录 1 个口径（string；numeric 已取消） |",
                "| **原生格** | **%d/%d** | 每目录 1 个口径（string；numeric 已取消） |" % (NTOT, NTOT)) for l in L]
 if not any("native 脚注" in l for l in L):
@@ -415,6 +425,12 @@ if not any("native 脚注" in l for l in L):
         "所以那两档在原表里有错误级数字。",
         "",
         "> **原生 P_rep 口径** = `b_clean / (b_clean + b_wrong)`；分母为 0 记「—」。",
+        "",
+        "> **deepprep 的 str 口径是「降级记账」**：deepprep 产物有空表 / 缺 key 列，"
+        "工具建不出索引 ⇒ 补丁把这些表记成「agent 没交出这张表」（0 行），"
+        "**它们名下的注入错误全部如实计成 b_missing（= 没修好）**，而不是被跳过消失。"
+        "（否则会算出一个偏乐观的数）⇒ deepprep 的 str Det/Rep F1 只有 **0.03~0.26**，"
+        "与它 composite 0.20~0.46 一致。",
     ]
 write(KEEP / p1.name, L)
 if WRITE_DL:

@@ -51,6 +51,27 @@ def build_one(raw_file, kind, src_path):
         keys = RAW_TO_OUTPUT[raw_file][1]
         use = [c for c in cols if c in keys]
 
+        if not cols or len(use) < len(keys):
+            # 【降级补丁 · worktree 本地】结构坏掉的表（空表头 / 缺 key 列 / 无可用 key）
+            # ⇒ 记成「agent 没有交出这张表」：建一个 **0 行**的表（列 = 文件列 ∪ key 列）。
+            # 不打这个补丁会出三种错：
+            #   ① 空表头 ⇒ CREATE TABLE data () ⇒ SQL 语法错 near ")"
+            #   ② 缺 key 列 ⇒ DB.__init__ 里 self.cidx[k] ⇒ KeyError
+            #   ③ 整表 SKIP ⇒ 它名下的注入错误**凭空消失** ⇒ 算出来的 F1 偏乐观
+            # 降级后：这���表的注入错误全部如实计成 b_missing（= 没修好），
+            # 对 deepprep 这类「产物结构本身坏掉」的基线才是诚实的记账。
+            cols2 = list(dict.fromkeys(list(cols) + list(keys)))
+            con = sqlite3.connect(str(dst))
+            con.execute("PRAGMA journal_mode=OFF")
+            con.execute("PRAGMA synchronous=OFF")
+            con.execute("CREATE TABLE data (%s)"
+                        % ",".join(['"%s" TEXT' % c for c in cols2]))
+            con.commit()
+            con.close()
+            print("built %-52s %10d rows  (结构不可用 ⇒ 记成没有输出)"
+                  % (dst.name, 0), flush=True)
+            return
+
         con = sqlite3.connect(str(dst))
         con.execute("PRAGMA journal_mode=OFF")
         con.execute("PRAGMA synchronous=OFF")

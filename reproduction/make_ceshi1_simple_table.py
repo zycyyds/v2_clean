@@ -106,8 +106,10 @@ L.append("> **三个错误级口径并排**，供挑选：**str**（纯字符串
          "**goldv29**（gold 的真实值当判据，**唯一可跨档比**的口径 —— str 会把「值对但写法不同」判成改错）。")
 L.append("> **mimic 原生错误 = 原生错误格的修复率**（修对格数 / 候选可修格数）；"
          "composite = harness 打分器 `equal_file_row_aligned_v1`。")
-L.append("> **粗体 = 该档（less / more）内三行里的最优值**。"
-         "DeepPrep 四行的错误级算不出来（产物有空表 / 缺 key 列）⇒ 记「—」，不是 0。\n")
+L.append("> **粗体 = 该档（less / more）内三行里的最优值**。")
+L.append("> DeepPrep 的 **str 口径是「降级记账」**：它产物有空表 / 缺 key 列，工具建不出索引 ⇒ "
+         "补丁把这些表记成「没交出这张表」，其注入错误**如实计成漏检**（而不是被跳过消失）⇒ "
+         "所以它的 str 数字很低（0.03~0.26），**oldsw / goldv29 仍算不出、记「—」**。\n")
 
 for tier in TIERS:
     L.append("## %s\n" % tier)
